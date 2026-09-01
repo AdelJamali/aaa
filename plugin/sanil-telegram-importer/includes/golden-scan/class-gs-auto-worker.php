@@ -60,7 +60,7 @@ class STI_GS_Auto_Worker {
 	const IN_PROGRESS = array( 'DOWNLOADING', 'MEDIA_BUILDING', 'PRODUCT_BUILDING' );
 
 	/** حالت‌هایی که کار تمام است و Worker نباید دستشان بزند. */
-	const TERMINAL = array( 'REVIEW_READY', 'PUBLISHED', 'SKIPPED', 'NEEDS_REVIEW' );
+	const TERMINAL = array( 'REVIEW_READY', 'PUBLISHED', 'SKIPPED', 'NEEDS_REVIEW', 'ERROR_FILE_NOT_FOUND' );
 
 	/** حالت‌هایی که یعنی «منتظر ربات» — شمارنده‌ی تلاش بالا نمی‌رود. */
 	const WAITING = array( 'WAITING_BOT', 'ERROR_BOT_TIMEOUT', 'CHAIN_WAITING' );
@@ -504,9 +504,9 @@ class STI_GS_Auto_Worker {
 			array_merge( array( self::MAX_ATTEMPTS ), $terminal )
 		) );
 
-		// NEEDS_REVIEW — نیاز به بررسی انسانی (واقعی، نه فقط برچسب).
+		// NEEDS_REVIEW / ERROR_FILE_NOT_FOUND — نیاز به بررسی انسانی (۱۰.۸.۵).
 		$review = (int) $wpdb->get_var( $wpdb->prepare(
-			"SELECT COUNT(*) FROM {$table} WHERE state = 'NEEDS_REVIEW'"
+			"SELECT COUNT(*) FROM {$table} WHERE state IN ('NEEDS_REVIEW','ERROR_FILE_NOT_FOUND')"
 		) );
 
 		$today = get_option( self::STATS_KEY, array() );

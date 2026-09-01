@@ -23,7 +23,7 @@ $today = $stats['today'] ?? array();
 		</div>
 		<div style="flex:1;min-width:130px;padding:14px;border-radius:8px;background:<?php echo $stats['stuck'] > 0 ? '#ffebee' : '#f5f5f5'; ?>;border:1px solid #ccc;">
 			<div style="font-size:26px;font-weight:700;" id="gs-w-stuck"><?php echo (int) ( $stats['stuck'] + ( $stats['review'] ?? 0 ) ); ?></div>
-			<div>نیازمند بازبینی (شامل NEEDS_REVIEW)</div>
+			<div>نیازمند بازبینی (شامل NEEDS_REVIEW / فایل یافت‌نشده)</div>
 		</div>
 	</div>
 

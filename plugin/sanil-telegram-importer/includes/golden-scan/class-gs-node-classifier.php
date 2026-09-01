@@ -280,6 +280,43 @@ class STI_GS_Node_Classifier {
 	/* ── ابزارها ───────────────────────────────────────────────────────── */
 
 	/** آیا متن شبیه فرمان/دروازه است (ربات چیزی می‌خواهد)؟ */
+	/** آیا این متن «اطلاعات فایل» ربات است (پاسخ معتبر — Rule 5)؟ */
+	public static function looks_like_file_info( $text ) {
+		$t = (string) $text;
+		return ( false !== mb_stripos( $t, 'file name' ) && false !== mb_stripos( $t, 'file code' ) );
+	}
+
+	/** آیا این متن «فایل یافت نشد» است (پاسخ قطعی — Rule 4)؟ */
+	public static function looks_like_file_not_found( $text ) {
+		$t = (string) $text;
+		foreach ( array(
+			'فایل درخواستی یافت نشد',
+			'فایل موردنظر یافت نشد',
+			'فایل مورد نظر یافت نشد',
+			'فایلی یافت نشد',
+			'file not found',
+			'file was not found',
+		) as $p ) {
+			if ( false !== mb_stripos( $t, $p ) ) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** استخراج کد فایل از متن ربات (Rule 2): «File Code : PAHCZG2» یا «کد فایل: 228963153». */
+	public static function extract_file_code( $text ) {
+		$t = (string) $text;
+		if ( preg_match( '/File\s*Code\s*[:：]\s*([A-Za-z0-9_\-]+)/iu', $t, $m ) ) {
+			return trim( $m[1] );
+		}
+		if ( preg_match( '/(?:کد\s*فایل|کدفایل)\s*[:：]\s*([A-Za-z0-9_\-]+)/iu', $t, $m ) ) {
+			return trim( $m[1] );
+		}
+		return '';
+	}
+
+	/** آیا این متن «درخواست کد» است (گیت)؟ */
 	public static function looks_like_gate( $text ) {
 		$t = mb_strtolower( trim( (string) $text ) );
 		if ( '' === $t ) {

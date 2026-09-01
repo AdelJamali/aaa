@@ -538,6 +538,29 @@ class STI_GS_Chain_Engine {
 
 			$node = STI_GS_Handoff_Steps::row_to_node( $step );
 
+			/* ۱۰.۸.۵ — Rule 3: گام‌های TEXT قدیمی (پیش از ۱۰.۸.۴) که
+			   «ارسال کد» بودند، به‌جای خطای غیرقابل‌اجرا، همان کد را
+			   برای ربات می‌فرستند (send_text مثل GATE). کد: خودِ متن اگر
+			   الگوی کد داشته باشد (مثل 228963153) وگرنه file_code سشن. */
+			if ( STI_GS_Node::NODE_TEXT === $node->type ) {
+				$text_code = STI_GS_Node_Classifier::extract_file_code( $node->text );
+				if ( '' === $text_code && preg_match( '/^[A-Za-z0-9_\-]{4,32}$/', trim( (string) $node->text ) ) ) {
+					$text_code = trim( (string) $node->text );
+				}
+				if ( '' === $text_code ) {
+					$text_code = (string) ( $session['file_code'] ?? '' );
+				}
+				if ( '' !== $text_code ) {
+					$node->type = STI_GS_Node::NODE_GATE; // ارسال متن = همان اکشن GATE
+					$node->text = STI_GS_Node::string_code( $text_code );
+					STI_GS_Artifact::log( $session_id, 'chain_text_step_as_code', array(
+						'step_no'   => (int) $step['step_no'],
+						'code'      => $text_code,
+						'converted' => true,
+					) );
+				}
+			}
+
 			/* حفاظت حلقه‌ی ربات‌ها — PartyManagerBot → FileechBot → PartyManagerBot = Loop */
 			if ( '' !== $node->bot_username && STI_GS_Handoff_Steps::has_bot_loop( $session_id, $node->bot_username ) ) {
 				self::fail_chain( $session_id, 'CHAIN_LOOP_DETECTED',
@@ -975,6 +998,11 @@ class STI_GS_Chain_Engine {
 							'count'   => $info_count,
 							'reason'  => 'gate_repeat',
 						) );
+						$step_meta = array_merge( $step_meta, array(
+							'last_msg_id' => (int) ( $m['id'] ?? 0 ),
+							'info_count'  => $info_count,
+							'info_last'   => 'GATE_REPEAT: ' . mb_substr( trim( (string) $incoming->text ), 0, 120 ),
+						) );
 						if ( $info_count >= STI_GS_Node::MAX_INFORMATIONAL_STEPS ) {
 							self::fail_chain( $session_id, 'CHAIN_NO_PROGRESS',
 								'بیش از ' . STI_GS_Node::MAX_INFORMATIONAL_STEPS . ' درخواست تکراری کد بدون پیشرفت.' );
@@ -991,9 +1019,47 @@ class STI_GS_Chain_Engine {
 						return new WP_Error( 'sti_gs_chain_loop', 'حلقه‌ی ربات شناسایی شد.' );
 					}
 
-					/* گیت: اگر ربات کد می‌خواهد، کد همین Session را بفرست */
-					if ( STI_GS_Node::NODE_GATE === $incoming->type && '' !== (string) ( $session['file_code'] ?? '' ) ) {
-						$incoming->text = STI_GS_Node::string_code( $session['file_code'] );
+					/* گیت: اگر ربات کد می‌خواهد، کد همین Session را بفرست.
+					   ۱۰.۸.۵ — Rule 2/3: اگر file_code روی Session نبود، از
+					   متن خودِ درخواست (File Code : X) یا آخرین «اطلاعات
+					   فایل» دیده‌شده (file_code_seen) استفاده می‌شود. */
+					if ( STI_GS_Node::NODE_GATE === $incoming->type ) {
+						$gate_code = (string) ( $session['file_code'] ?? '' );
+						if ( '' === $gate_code ) {
+							$gate_code = STI_GS_Node_Classifier::extract_file_code( $incoming->text );
+						}
+						if ( '' === $gate_code ) {
+							$gate_code = (string) ( $step_meta['file_code_seen'] ?? '' );
+						}
+						if ( '' !== $gate_code ) {
+							$incoming->text = STI_GS_Node::string_code( $gate_code );
+						} else {
+							/* بدون کدِ قابل‌ارسال: گام جدید نساز (منتظر می‌مانیم)
+							   و درخواست را به‌عنوان informational ثبت می‌کنیم. */
+							$g_count = (int) ( $step_meta['info_count'] ?? 0 ) + 1;
+							STI_GS_Handoff_Steps::mark( (int) $step['id'], STI_GS_Handoff_Steps::STATUS_WAITING, array(
+								'last_msg_id' => (int) ( $m['id'] ?? 0 ),
+								'info_count'  => $g_count,
+								'info_last'   => 'GATE_NO_CODE: ' . mb_substr( trim( (string) $incoming->text ), 0, 120 ),
+							) );
+						STI_GS_Artifact::log( $session_id, 'chain_informational', array(
+							'step_no' => (int) $step['step_no'],
+							'text'    => mb_substr( trim( (string) $incoming->text ), 0, 200 ),
+							'count'   => $g_count,
+							'reason'  => 'gate_no_code',
+						) );
+						$step_meta = array_merge( $step_meta, array(
+							'last_msg_id' => (int) ( $m['id'] ?? 0 ),
+							'info_count'  => $g_count,
+							'info_last'   => 'GATE_NO_CODE: ' . mb_substr( trim( (string) $incoming->text ), 0, 120 ),
+						) );
+						if ( $g_count >= STI_GS_Node::MAX_INFORMATIONAL_STEPS ) {
+								self::fail_chain( $session_id, 'CHAIN_NO_PROGRESS',
+									'ربات کد می‌خواهد ولی file_code در دسترس نیست (' . STI_GS_Node::MAX_INFORMATIONAL_STEPS . ' بار).' );
+								return new WP_Error( 'sti_gs_chain_no_progress', 'کد فایل در دسترس نیست.' );
+							}
+							continue;
+						}
 					}
 
 					$incoming->peer   = '' !== $peer ? $peer : $incoming->peer;
@@ -1030,19 +1096,67 @@ class STI_GS_Chain_Engine {
 				}
 
 				if ( STI_GS_Node::NODE_TEXT === $incoming->type && '' !== trim( (string) $incoming->text ) ) {
-					/* ۱۰.۸.۴ — متن اطلاعاتی: روی همان گام جاری ثبت می‌شود،
-					   نه به‌عنوان گام جدید (BUG-2: Step Explosion ممنوع).
-					   گام جاری در وضعیت waiting می‌ماند تا پاسخ معتبر برسد. */
+					/* ۱۰.۸.۵ — Rule 4: پاسخ قطعی «فایل یافت نشد» → ترمینال؛
+					   نه ۱۵ دقیقه Poll بی‌فایده. اگر متن مربوط به قبل از
+					   اجرای آخرین اکشن گام باشد (anchor)، پاسخِ این اکشن
+					   نیست — ربات هنوز کد را دریافت نکرده؛ ترمینال نمی‌کنیم
+					   (informational با برچسب STALE) تا اگر فایل رسید
+					   گرفته شود. */
+					$is_stale_nf = false;
+					if ( STI_GS_Node_Classifier::looks_like_file_not_found( $incoming->text ) ) {
+						if ( $anchor_action_ts && (int) ( $m['date'] ?? 0 ) < ( $anchor_action_ts - 10 ) ) {
+							$is_stale_nf = true;
+							STI_GS_Artifact::log( $session_id, 'chain_file_not_found_stale', array(
+								'step_no'      => (int) $step['step_no'],
+								'msg_id'       => (int) ( $m['id'] ?? 0 ),
+								'date'         => (int) ( $m['date'] ?? 0 ),
+								'action_at_ts' => $anchor_action_ts,
+								'text'         => mb_substr( trim( (string) $incoming->text ), 0, 200 ),
+							) );
+							STI_GS_Event::log( $session_id, 'chain_engine', 'retry',
+								'«فایل یافت نشد» مربوط به قبل از آخرین اکشن بود — منتظر پاسخ واقعی می‌مانیم (نه ترمینال).' );
+						} else {
+							self::file_not_found( $session_id, (int) $step['step_no'], (int) ( $m['id'] ?? 0 ), $incoming->text );
+							return array( 'state' => 'ERROR_FILE_NOT_FOUND', 'terminal' => true );
+						}
+					}
+
+					/* ۱۰.۸.۵ — Rule 2/5: متن «File Name / File Code» یک پاسخ
+					   معتبر ربات است (fresh_response) — کد فایل استخراج و روی
+					   گام ذخیره می‌شود تا اگر ربات کد خواست (GATE) با همان
+					   کد پاسخ بدهیم؛ پنجره‌ی پاسخ نیز تمدید می‌شود. */
 					$info_count = (int) ( $step_meta['info_count'] ?? 0 ) + 1;
 					$new_meta = array(
 						'last_msg_id' => (int) ( $m['id'] ?? 0 ),
 						'info_count'  => $info_count,
-						'info_last'   => mb_substr( trim( (string) $incoming->text ), 0, 200 ),
+						'info_last'   => ( $is_stale_nf ? 'STALE_NOT_FOUND: ' : '' )
+							. mb_substr( trim( (string) $incoming->text ), 0, 200 ),
 					);
 					if ( $info_count <= 10 ) {
 						$new_meta[ 'info_' . $info_count ] = mb_substr( trim( (string) $incoming->text ), 0, 200 );
 					}
+
+					$file_code_seen = STI_GS_Node_Classifier::extract_file_code( $incoming->text );
+					if ( '' !== $file_code_seen ) {
+						$new_meta['file_code_seen'] = $file_code_seen;
+						STI_GS_Artifact::log( $session_id, 'chain_file_info', array(
+							'step_no'    => (int) $step['step_no'],
+							'file_code'  => $file_code_seen,
+							'msg_id'     => (int) ( $m['id'] ?? 0 ),
+							'fresh_response' => true,
+						) );
+						/* پاسخ معتبر ربات = تمدید پنجره‌ی مکالمه (anchor گام
+						   دست نمی‌خورد؛ فقط clicked_at برای timeout تمدید می‌شود). */
+						STI_GS_Session::update( $session_id, array( 'clicked_at' => current_time( 'mysql' ) ) );
+						STI_GS_Event::log( $session_id, 'chain_engine', 'ok',
+							'پاسخ متنی معتبر از ربات: اطلاعات فایل (کد: ' . $file_code_seen . ') — پنجره‌ی پاسخ تمدید شد.' );
+					}
+
 					STI_GS_Handoff_Steps::mark( (int) $step['id'], STI_GS_Handoff_Steps::STATUS_WAITING, $new_meta );
+					/* ۱۰.۸.۵ — همگام‌سازی محلی: اگر در همین Poll پیام بعدی
+					   GATE (درخواست کد) باشد، file_code_seen دیده‌شده باید
+					   در دسترس باشد وگرنه «بدون کد» نتیجه می‌دهد (Rule 3). */
+					$step_meta = array_merge( $step_meta, $new_meta );
 					STI_GS_Artifact::log( $session_id, 'chain_informational', array(
 						'step_no' => (int) $step['step_no'],
 						'text'    => mb_substr( trim( (string) $incoming->text ), 0, 200 ),
@@ -1096,6 +1210,20 @@ class STI_GS_Chain_Engine {
 				return array( 'state' => 'WAITING_BOT', 'asset_detected' => true, 'inbox_id' => $asset_inbox );
 			}
 
+			/* ۱۰.۸.۵ — Rule 4 (بازگشتی): Sessionهای گیرکرده‌ای که قبلاً متن
+			   «فایل یافت نشد» را به‌عنوان informational ثبت کرده‌اند، به
+			   ERROR_FILE_NOT_FOUND می‌روند. عمداً بعد از بلوک Asset: اگر
+			   فایلی تازه رسیده باشد اول گرفته می‌شود و ترمینالِ اشتباه رخ
+			   نمی‌دهد. برچسب STALE_NOT_FOUND (جوابِ قبل از آخرین اکشن)
+			   ترمینال نمی‌شود. */
+			$last_info = (string) ( $step_meta['info_last'] ?? '' );
+			if ( '' !== $last_info
+				&& 0 !== strpos( $last_info, 'STALE_NOT_FOUND:' )
+				&& STI_GS_Node_Classifier::looks_like_file_not_found( $last_info ) ) {
+				self::file_not_found( $session_id, (int) $step['step_no'], 0, $last_info );
+				return array( 'state' => 'ERROR_FILE_NOT_FOUND', 'terminal' => true );
+			}
+
 			/* ذخیره‌ی آخرین msg_id دیده‌شده روی گام جاری */
 			if ( $max_msg_id > $last_msg_id ) {
 				STI_GS_Handoff_Steps::mark( (int) $step['id'], (string) $step['status'], array(
@@ -1136,6 +1264,29 @@ class STI_GS_Chain_Engine {
 		) );
 		STI_GS_Event::log( $session_id, 'chain_engine', 'error', $code . ': ' . $reason );
 		STI_GS_Artifact::log( $session_id, 'chain_failed', array( 'code' => $code, 'reason' => $reason ) );
+	}
+
+	/**
+	 * ۱۰.۸.۵ — Rule 4: پاسخ قطعی ربات «فایل یافت نشد».
+	 *
+	 * Session به حالت ترمینال ERROR_FILE_NOT_FOUND می‌رود (Worker دیگر
+	 * آن را pick نمی‌کند؛ در TERMINAL است). برخلاف CHAIN_FAILED، این
+	 * retry نمی‌خواهد — ربات صریحاً گفته فایل وجود ندارد. attempts دست
+	 * نمی‌خورد.
+	 */
+	protected static function file_not_found( $session_id, $step_no, $msg_id, $text ) {
+		STI_GS_Session::update( (int) $session_id, array(
+			'state'        => 'ERROR_FILE_NOT_FOUND',
+			'stage'        => 'chain_engine',
+			'error_reason' => 'CHAIN_FILE_NOT_FOUND: ربات اعلام کرد فایل درخواستی یافت نشد (گام ' . (int) $step_no . ').',
+		) );
+		STI_GS_Event::log( (int) $session_id, 'chain_engine', 'error',
+			'CHAIN_FILE_NOT_FOUND: ربات اعلام کرد فایل درخواستی یافت نشد (گام ' . (int) $step_no . ').' );
+		STI_GS_Artifact::log( (int) $session_id, 'chain_file_not_found', array(
+			'step_no' => (int) $step_no,
+			'msg_id'  => (int) $msg_id,
+			'text'    => mb_substr( (string) $text, 0, 200 ),
+		) );
 	}
 
 	/** تصمیم legacy روی Session ثبت می‌شود تا نگاشت Stage به Resolver قدیمی برگردد. */

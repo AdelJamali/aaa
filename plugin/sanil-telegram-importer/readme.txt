@@ -1,3 +1,12 @@
+== 10.8.5 ==
+* NEW Conversation-Bot support (FileechBot & similar): DeepLink → file info → code request → send code → file.
+* NEW Rule 4: definitive bot text "file not found" (متاسفانه فایل درخواستی یافت نشد / file not found) → terminal state ERROR_FILE_NOT_FOUND (worker TERMINAL, review counter, dashboard) instead of 15-minute pointless polling; also applied retroactively to stuck sessions whose recorded info_last matches (first poll after upgrade).
+* NEW Rule 4 guard: a "file not found" text that predates the step's last action (anchor, 10s tolerance) is a stale answer — recorded as informational (STALE_NOT_FOUND) instead of terminating, so the real file that follows the sent code is still accepted.
+* NEW Rule 2/5: bot text containing "File Name :" + "File Code :" is a valid fresh response — code extracted (File Code: X / کد فایل: X), stored in step meta (file_code_seen), response window extended (clicked_at refreshed, step anchor untouched), artifacts chain_file_info + fresh_response.
+* NEW Rule 3: GATE payload resolution now falls back to the code extracted from the bot's own request text, then to the last seen file code (file_code_seen); step meta is kept in sync within the same poll so a GATE request arriving right after the file info in the same batch still gets the code; if no code is available the GATE is recorded as informational (gate_no_code, no empty send, no step explosion).
+* NEW Rule 3 (legacy): pre-10.8.4 TEXT steps whose text is a code are executed as send_text (chain_text_step_as_code) instead of failing as non-executable.
+* Retrofit ordering: the info_last check runs after the new-message scan, so a freshly arrived file wins over an old "not found" note (no false terminal).
+
 == 10.8.4 ==
 * FIX Response Correlation (BUG-1/2/3 from Session 228963153 runtime):
 * FIX Engine's own outgoing messages are no longer treated as bot responses: normalize_message keeps the `out` flag; recent_peer_messages / poll / File_Hunter::history_docs filter them out (prevents self-echo creating fake TEXT/GATE steps and fake inbox documents).
