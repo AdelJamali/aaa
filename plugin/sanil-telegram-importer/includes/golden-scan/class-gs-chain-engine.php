@@ -170,6 +170,138 @@ class STI_GS_Chain_Engine {
 		}
 	}
 
+	/* ═══════════════ گام ۰.۵: recover — انتقال Sessionهای قدیمی به زنجیره ═══════════════ */
+
+	/**
+	 * Sessionهایی که در مسیر قدیم گیر کرده‌اند (WAITING_BOT / BUTTON_FOUND /
+	 * ERROR_CLICK / ERROR_BOT_TIMEOUT / ERROR_MATCH) و هنوز هیچ گامی در
+	 * زنجیره ندارند را به زنجیره منتقل می‌کند.
+	 *
+	 * این همان «موتور اصلی» است که وقتی حالت chain فعال می‌شود، Sessionهای
+	 * از قبل موجود را هم از مسیر قدیم (Resolver → Executor) برمی‌دارد:
+	 *
+	 *   ۱) اگر button_payload یک deep link باشد → گام DEEP_LINK ساخته می‌شود
+	 *   ۲) اگر bot_username داشته باشد → گام BOT ساخته می‌شود
+	 *   ۳) در غیر این صورت → پیام مبدأ مثل init طبقه‌بندی می‌شود
+	 *
+	 * بعد از این، Session وارد چرخه‌ی عادی زنجیره می‌شود (CHAIN_STEP → …
+	 * → CHAIN_WAITING → poll → …) و Chain Engine بقیه‌ی راه را می‌رود.
+	 *
+	 * @return array|WP_Error
+	 */
+	public static function recover( $session_id ) {
+		$session_id = (int) $session_id;
+		$session    = STI_GS_Session::get( $session_id );
+		if ( ! $session ) {
+			return new WP_Error( 'sti_gs_no_session', 'Session پیدا نشد.' );
+		}
+
+		$state = (string) $session['state'];
+		if ( ! in_array( $state, array(
+			'WAITING_BOT', 'BUTTON_FOUND', 'ERROR_CLICK', 'ERROR_BOT_TIMEOUT', 'ERROR_MATCH',
+		), true ) ) {
+			return array( 'state' => $state, 'skipped' => true, 'no_progress' => true );
+		}
+
+		// اگر خودِ زنجیره قبلاً این Session را legacy کرده، دوباره تلاش نکن
+		// (حلقه‌ی recover → fallback → recover). به مسیر قدیم برمی‌گردد.
+		if ( STI_GS_Node::MODE_LEGACY === STI_GS_Node::string_code( $session['chain_mode'] ?? '' ) ) {
+			return array( 'state' => $state, 'skipped' => true, 'no_progress' => true, 'decision' => 'legacy' );
+		}
+
+		// اگر گام دارد، یعنی خودِ زنجیره این Session را (بعد از ASSET) به
+		// WAITING_BOT فرستاده — آنجا مسیر قدیم Asset درست است، نه recover.
+		if ( STI_GS_Handoff_Steps::depth( $session_id ) > 0 ) {
+			return array( 'state' => $state, 'skipped' => true, 'no_progress' => true );
+		}
+
+		$worker_id = 'chain-recover-' . getmypid() . '-' . wp_generate_password( 6, false );
+		if ( ! STI_GS_Session::claim( $session_id, $worker_id, 60 ) ) {
+			return new WP_Error( 'sti_gs_locked', 'این Session همین الان توسط worker دیگری پردازش می‌شود.' );
+		}
+
+		try {
+			/* ۱) deep link ذخیره‌شده روی خود Session (button_payload قدیمی) */
+			$node  = null;
+			$button = json_decode( (string) ( $session['button_payload'] ?? '' ), true );
+			$url    = is_array( $button ) ? (string) ( $button['url'] ?? '' ) : '';
+			if ( '' !== $url ) {
+				$parsed = STI_GS_Deep_Link_Parser::parse( $url );
+				if ( ! is_wp_error( $parsed ) && 'bot_start' === (string) ( $parsed['kind'] ?? '' ) ) {
+					$node = new STI_GS_Node( STI_GS_Node::NODE_DEEP_LINK );
+					$node->bot_username = (string) $parsed['bot_username'];
+					$node->set_payload( (string) $parsed['start_param'] ); // string-only
+					$node->url          = $url;
+					$node->confidence   = 90;
+				}
+			}
+
+			/* ۲) ربات ذخیره‌شده روی Session */
+			if ( ! $node && '' !== STI_GS_Node::string_code( $session['bot_username'] ?? '' ) ) {
+				$node = new STI_GS_Node( STI_GS_Node::NODE_BOT );
+				$node->bot_username = STI_GS_Node::string_code( $session['bot_username'] );
+				$node->confidence   = 80;
+			}
+
+			/* ۳) طبقه‌بندی پیام مبدأ (مثل init) */
+			if ( ! $node ) {
+				$message = self::load_message( (int) $session['message_pk'] );
+				if ( $message ) {
+					$raw = json_decode( (string) ( $message['raw_json'] ?? '' ), true );
+					if ( is_array( $raw ) ) {
+						$classified = STI_GS_Node_Classifier::classify( $raw );
+						if ( $classified->is_actionable() ) {
+							$channel = STI_GS_Channel::get( (int) $session['channel_id'] );
+							if ( $channel && (int) $channel['chat_id'] ) {
+								$classified->peer   = (int) $channel['chat_id'];
+								$classified->msg_id = (int) $message['message_id'];
+							}
+							$node = $classified;
+						}
+					}
+				}
+			}
+
+			if ( ! $node ) {
+				// چیزی برای ادامه نیست — به مسیر قدیم برگرد تا Resolver/Skip تصمیم بگیرد.
+				self::fallback_to_legacy( $session_id, 'گره‌ی قابل اجرایی برای انتقال به زنجیره یافت نشد (recover).' );
+				return array( 'state' => $state, 'skipped' => true, 'no_progress' => true, 'decision' => 'legacy' );
+			}
+
+			// گیت: اگر ربات کد می‌خواهد، کد همین Session را بفرست.
+			if ( STI_GS_Node::NODE_GATE === $node->type && '' !== STI_GS_Node::string_code( $session['file_code'] ?? '' ) ) {
+				$node->text = STI_GS_Node::string_code( $session['file_code'] );
+			}
+
+			$step_id = STI_GS_Handoff_Steps::append( $session_id, $node, STI_GS_Handoff_Steps::STATUS_PENDING );
+			if ( is_wp_error( $step_id ) ) {
+				self::fail_chain( $session_id, 'CHAIN_RECOVER_FAILED', $step_id->get_error_message() );
+				return new WP_Error( 'sti_gs_chain_recover_failed', $step_id->get_error_message() );
+			}
+
+			STI_GS_Session::update( $session_id, array(
+				'state'             => 'CHAIN_STEP',
+				'stage'             => 'chain_engine',
+				'chain_mode'        => self::mode(),
+				'chain_current_step'=> 1,
+				'error_reason'      => null,
+			) );
+
+			STI_GS_Event::log( $session_id, 'chain_engine', 'ok',
+				'Session از مسیر قدیم (' . $state . ') به زنجیره منتقل شد — گام ۱ = '
+				. STI_GS_Node::type_label( $node->type )
+				. ( '' !== $node->bot_username ? ' → ' . $node->bot_username : '' ) . '.',
+				array( 'from_state' => $state, 'node' => $node->to_array() ) );
+
+			return array( 'state' => 'CHAIN_STEP', 'step_no' => 1, 'node_type' => $node->type, 'recovered' => true, 'from_state' => $state );
+		} finally {
+			STI_GS_Session::release( $session_id, $worker_id );
+			if ( class_exists( 'STI_MTProto' ) ) {
+				STI_MTProto::stop_client();
+			}
+		}
+	}
+
 	/* ═══════════════ گام ۱: advance — اجرای دقیقاً یک گام ═══════════════ */
 
 	/**

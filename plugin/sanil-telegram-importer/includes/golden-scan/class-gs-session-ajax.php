@@ -336,17 +336,14 @@ class STI_GS_Session_Ajax {
 		);
 
 		/* ═══════════ معماری زنجیره‌ای (۱۰.۸) ═══════════ */
-		if ( class_exists( 'STI_GS_Chain_Engine' )
-			&& STI_GS_Node::MODE_LEGACY !== STI_GS_Chain_Engine::mode() ) {
+		$global_mode = class_exists( 'STI_GS_Chain_Engine' ) ? STI_GS_Chain_Engine::mode() : STI_GS_Node::MODE_LEGACY;
+		if ( STI_GS_Node::MODE_LEGACY !== $global_mode ) {
 
 			// حالت‌های زنجیره همیشه در دسترس‌اند (حتی اگر وسط زنجیره Flag عوض شود).
 			$map['CHAIN_STEP']    = array( 'Chain Step', array( 'STI_GS_Chain_Engine', 'advance' ) );
 			$map['CHAIN_FAILED']  = array( 'Chain Step (تلاش دوباره)', array( 'STI_GS_Chain_Engine', 'advance' ) );
 			$map['CHAIN_WAITING'] = array( 'Chain Poll', array( 'STI_GS_Chain_Engine', 'poll' ) );
 
-			// SCANNED تازه: مسیر بر اساس chain_mode ثبت‌شده روی Session.
-			//   auto/chain → Chain Init (تصمیم نهایی را خودش می‌گیرد)
-			//   legacy/بدون مقدار → Resolver قدیمی (سازگاری کامل با قبل)
 			$session_chain = '';
 			if ( $session_id ) {
 				$s = STI_GS_Session::get( (int) $session_id );
@@ -354,8 +351,46 @@ class STI_GS_Session_Ajax {
 					$session_chain = (string) ( $s['chain_mode'] ?? '' );
 				}
 			}
-			if ( in_array( $session_chain, array( STI_GS_Node::MODE_AUTO, STI_GS_Node::MODE_CHAIN ), true ) ) {
-				$map['SCANNED'] = array( 'Chain Init', array( 'STI_GS_Chain_Engine', 'init' ) );
+
+			if ( STI_GS_Node::MODE_CHAIN === $global_mode ) {
+				/**
+				 * حالت chain = «همه‌چیز از زنجیره».
+				 *
+				 * حتی Sessionهای قدیمی (chain_mode NULL) هم وارد زنجیره
+				 * می‌شوند — مگر اینکه خودِ زنجیره قبلاً تصمیم legacy گرفته
+				 * باشد (fallback_to_legacy روی خود Session ثبت می‌کند).
+				 */
+				if ( STI_GS_Node::MODE_LEGACY !== $session_chain ) {
+					$map['SCANNED'] = array( 'Chain Init', array( 'STI_GS_Chain_Engine', 'init' ) );
+				}
+
+				/**
+				 * Sessionهای گیرکرده در مسیر قدیم (WAITING_BOT / BUTTON_FOUND /
+				 * ERROR_CLICK / ERROR_BOT_TIMEOUT / ERROR_MATCH) که هنوز هیچ
+				 * گامی در زنجیره ندارند، با recover() به زنجیره منتقل می‌شوند.
+				 *
+				 * اگر گام دارند (یعنی خودِ زنجیره آن‌ها را بعد از ASSET به
+				 * WAITING_BOT فرستاده)، همان مسیر قدیم Asset (Collector →
+				 * Matcher) درست است و دست نمی‌خورند.
+				 */
+				$has_steps = $session_id && class_exists( 'STI_GS_Handoff_Steps' )
+					&& STI_GS_Handoff_Steps::depth( (int) $session_id ) > 0;
+				// Sessionهایی که خودِ زنجیره قبلاً legacy کرده (fallback) دوباره
+				// recover نمی‌شوند — به مسیر قدیم برمی‌گردند تا حلقه نیفتد.
+				if ( ! $has_steps && STI_GS_Node::MODE_LEGACY !== $session_chain ) {
+					$map['WAITING_BOT']       = array( 'Chain Recover', array( 'STI_GS_Chain_Engine', 'recover' ) );
+					$map['BUTTON_FOUND']      = array( 'Chain Recover', array( 'STI_GS_Chain_Engine', 'recover' ) );
+					$map['ERROR_CLICK']       = array( 'Chain Recover', array( 'STI_GS_Chain_Engine', 'recover' ) );
+					$map['ERROR_BOT_TIMEOUT'] = array( 'Chain Recover', array( 'STI_GS_Chain_Engine', 'recover' ) );
+					$map['ERROR_MATCH']       = array( 'Chain Recover', array( 'STI_GS_Chain_Engine', 'recover' ) );
+				}
+			} else {
+				// auto: تصمیم SCANNED بر اساس chain_mode ثبت‌شده روی Session.
+				//   auto/chain → Chain Init (تصمیم نهایی را خودش می‌گیرد)
+				//   legacy/بدون مقدار → Resolver قدیمی (سازگاری کامل با قبل)
+				if ( in_array( $session_chain, array( STI_GS_Node::MODE_AUTO, STI_GS_Node::MODE_CHAIN ), true ) ) {
+					$map['SCANNED'] = array( 'Chain Init', array( 'STI_GS_Chain_Engine', 'init' ) );
+				}
 			}
 		}
 

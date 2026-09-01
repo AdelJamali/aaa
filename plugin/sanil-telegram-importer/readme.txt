@@ -1,3 +1,11 @@
+== 10.8.1 ==
+* FIX The chain engine now actually takes over EXISTING sessions: in `chain` mode, `next_stage()` routes every SCANNED session to Chain Init (even old sessions with `chain_mode = NULL`), and stuck old-path states (WAITING_BOT / BUTTON_FOUND / ERROR_CLICK / ERROR_BOT_TIMEOUT / ERROR_MATCH with no chain steps) are migrated into the chain via the new `STI_GS_Chain_Engine::recover()` — it rebuilds step 1 from the stored deep link, bot username, or the original message classification.
+* FIX Manual "Execute Action" / "ادامه پردازش" on a WAITING_BOT session no longer ends in INVALID_STATE: the Action Executor requeues to BUTTON_FOUND itself when a button payload exists (retry-click path), so the old dev-tool buttons work again.
+* FIX Loop guard: sessions the chain already marked legacy are not re-recovered (recover → fallback → recover infinite loop closed).
+* FIX Auto Worker: WAITING_BOT timeout requeue now also guards missing button payload (skip with a clear reason instead of silent loop).
+* FIX MTProto press_button: "endpoint does not exist" / "event loop terminated" / "query_id_invalid" with a t.me deep-link as callback data falls back to start_bot_dialog instead of failing hard.
+* FIX chain-engine advance: chat_info() is wrapped in try/catch so a MadelineProto fiber crash cannot destroy a successful step; session attempts reset to 0 on each successful chain step (real 5+ hop chains no longer hit MAX_ATTEMPTS and get shelved).
+
 == 10.8.0 ==
 * NEW Chain architecture: Golden Scan is now a Telegram Interaction Engine (Telegram Node → Node → Node → Asset) instead of the obsolete Button → File resolver.
 * NEW STI_GS_Node_Classifier (replaces the resolver's click-and-expect-file assumption) + STI_GS_Node_Processor (executes exactly one hop) + STI_GS_Chain_Engine (iterative, one Chain Step per worker run — recursion is forbidden by design).
