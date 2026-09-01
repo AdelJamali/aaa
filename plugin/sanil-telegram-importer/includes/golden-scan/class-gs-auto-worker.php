@@ -279,6 +279,9 @@ class STI_GS_Auto_Worker {
 		 * ERROR_CLICK را می‌پذیرد — نتیجه‌اش INVALID_STATE بود، همان دو
 		 * خطای Session #36.
 		 */
+		// از ERROR_BOT_TIMEOUT یا ERROR_MATCH برای کلیک دوباره باید حتماً
+		// به BUTTON_FOUND برگردیم؛ گارد Action Executor فقط BUTTON_FOUND و
+		// ERROR_CLICK را می‌پذیرد. ERROR_MATCH مستقیم = INVALID_STATE.
 		if ( in_array( $state, array( 'ERROR_BOT_TIMEOUT', 'ERROR_MATCH' ), true ) ) {
 
 			/**
@@ -306,20 +309,31 @@ class STI_GS_Auto_Worker {
 			$state = 'BUTTON_FOUND';
 		}
 
+		// WAITING_BOT بعد از مهلت هم برای کلیک دوباره باید BUTTON_FOUND شود
+		// (نه ERROR_CLICK) — تا گارد Action Executor همیشه راضی بماند.
+		// این دقیقاً همان مسیر ۱۰.۵.۴ است که در گزارش به‌صورت
+		// «Execute Action — INVALID_STATE» دیده شد.
 		if ( 'WAITING_BOT' === $state ) {
 			$clicked = ! empty( $session['clicked_at'] ) ? strtotime( $session['clicked_at'] ) : 0;
 			$timeout = class_exists( 'STI_GS_Bot_Candidate_Collector' )
 				? STI_GS_Bot_Candidate_Collector::BOT_TIMEOUT_SEC
 				: 900;
 
-			if ( $clicked && ( time() - $clicked ) > $timeout && ! empty( $session['button_payload'] ) ) {
+			if ( $clicked && ( time() - $clicked ) > $timeout ) {
+				if ( empty( $session['button_payload'] ) ) {
+					// بدون payload دکمه، کلیک دوباره ممکن نیست.
+					STI_GS_Event::log( $session_id, 'auto_worker', 'ok',
+						'WAITING_BOT بدون payload — برای کلیک دوباره کنار گذاشته شد.' );
+					self::skip( $session_id, 'WAITING_BOT بدون payload دکمه — کلیک دوباره ممکن نیست.' );
+					return 'skipped';
+				}
 				STI_GS_Session::update( $session_id, array(
 					'state'        => 'BUTTON_FOUND',
 					'stage'        => 'auto_worker',
 					'error_reason' => null,
 				) );
 				STI_GS_Event::log( $session_id, 'auto_worker', 'ok', sprintf(
-					'پس از %d ثانیه انتظار بی‌نتیجه، دوباره روی دکمه کلیک می‌شود.',
+					'پس از %d ثانیه انتظار بی‌نتیجه، دوباره روی دکمه کلیک می‌شود (BUTTON_FOUND).',
 					time() - $clicked
 				) );
 				$state = 'BUTTON_FOUND';

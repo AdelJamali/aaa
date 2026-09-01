@@ -1511,9 +1511,29 @@ class STI_MTProto {
 			) );
 			return is_array( $answer ) ? $answer : array();
 		} catch ( \Throwable $e ) {
-			// بعضی بات‌ها پاسخ کالبک را نمی‌پذیرند ولی باز هم فایل می‌فرستند؛ پس فقط لاگ کن.
-			STI_Logger::warning( 'MTProto: getBotCallbackAnswer — ' . $e->getMessage() );
-			return new WP_Error( 'sti_mt_callback', $e->getMessage() );
+			$err = $e->getMessage();
+			$low = mb_strtolower( (string) $err );
+
+			/**
+			 * خطاهای «endpoint does not exist» و «Event loop terminated»
+			 * معمولاً یعنی MadelineProto نتوانسته با این روش کالبک را اجرا کند
+			 * (نسخه‌ی قدیمی phar، یا بات/پیام خاص). در این حالت هنوز یک راه
+			 * هست: همان deep link / startBot که در مسیر legacy هم جواب می‌دهد.
+			 *
+			 * اگر داده‌ی دکمه یک URL باشد (مثل deep link)، با start_bot_dialog
+			 * تلاش می‌کنیم؛ در غیر این صورت فقط لاگ می‌کنیم و خطا را برمی‌گردانیم.
+			 */
+			if ( false !== strpos( $low, 'endpoint does not exist' )
+				|| false !== strpos( $low, 'event loop terminated' )
+				|| false !== strpos( $low, 'query_id_invalid' ) ) {
+				$data_str = (string) $data;
+				if ( '' !== $data_str && preg_match( '~t\\.me/([A-Za-z0-9_]+)\\?start=([A-Za-z0-9_-]+)~i', $data_str, $m ) ) {
+					STI_Logger::warning( 'MTProto: getBotCallbackAnswer — ' . $err . ' — fallback به start_bot_dialog' );
+					return $this->start_bot_dialog( $m[1], $m[2] );
+				}
+			}
+			STI_Logger::warning( 'MTProto: getBotCallbackAnswer — ' . $err );
+			return new WP_Error( 'sti_mt_callback', $err );
 		}
 	}
 

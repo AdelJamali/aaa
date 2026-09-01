@@ -254,6 +254,35 @@ class STI_GS_Session_Ajax {
 		return STI_GS_Bot_Candidate_Collector::build_for_session( (int) $session_id );
 	}
 
+	/**
+	 * برگرداندن Session به BUTTON_FOUND برای کلیک دوباره.
+	 *
+	 * گارد Action Executor فقط BUTTON_FOUND و ERROR_CLICK را می‌پذیرد؛
+	 * ERROR_BOT_TIMEOUT/ERROR_MATCH مستقیم = INVALID_STATE (همان سه خطای
+	 * گزارش). این مرحله فقط state را عوض می‌کند و کار دیگری نمی‌کند —
+	 * قدم بعدیِ worker همان Execute Action است.
+	 */
+	public static function requeue_click( $session_id ) {
+		$session = STI_GS_Session::get( (int) $session_id );
+		if ( ! $session ) {
+			return new WP_Error( 'sti_gs_no_session', 'Session پیدا نشد.' );
+		}
+		if ( ! in_array( (string) $session['state'], array( 'ERROR_BOT_TIMEOUT', 'ERROR_MATCH' ), true ) ) {
+			return array( 'state' => $session['state'], 'skipped' => true, 'no_progress' => true );
+		}
+		if ( empty( $session['button_payload'] ) ) {
+			return new WP_Error( 'sti_gs_no_payload', 'برای کلیک دوباره payload دکمه لازم است.' );
+		}
+		STI_GS_Session::update( (int) $session_id, array(
+			'state'        => 'BUTTON_FOUND',
+			'stage'        => 'session_ajax',
+			'error_reason' => null,
+		) );
+		STI_GS_Event::log( (int) $session_id, 'session_ajax', 'ok',
+			'برای کلیک دوباره به BUTTON_FOUND برگردانده شد (از ' . $session['state'] . ').' );
+		return array( 'state' => 'BUTTON_FOUND' );
+	}
+
 	/** نگاشت State فعلی به موتوری که باید اجرا شود. */
 	/**
 	 * عمومی است تا Auto Worker از **همین** نگاشت استفاده کند.
@@ -288,10 +317,10 @@ class STI_GS_Session_Ajax {
 			 *
 			 * مسیر درست بازیابی، کلیک دوباره روی همان deep link است.
 			 */
-			'ERROR_BOT_TIMEOUT'  => array( 'Execute Action (کلیک دوباره)', array( 'STI_GS_Action_Executor', 'execute' ) ),
+			'ERROR_BOT_TIMEOUT'  => array( 'Execute Action (کلیک دوباره)', array( __CLASS__, 'requeue_click' ) ),
 			'BOT_RESPONSE'       => array( 'Match File', array( 'STI_GS_File_Matcher', 'match' ) ),
 			// همان استدلال: بدون فایل تازه، تطبیق دوباره نتیجه‌ی یکسان می‌دهد.
-			'ERROR_MATCH'        => array( 'Execute Action (کلیک دوباره)', array( 'STI_GS_Action_Executor', 'execute' ) ),
+			'ERROR_MATCH'        => array( 'Execute Action (کلیک دوباره)', array( __CLASS__, 'requeue_click' ) ),
 			'FILE_MATCHED'       => array( 'Download', array( 'STI_GS_Download_Engine', 'download' ) ),
 			'DOWNLOAD_PENDING'   => array( 'Download', array( 'STI_GS_Download_Engine', 'download' ) ),
 			'DOWNLOADING'        => array( 'Download', array( 'STI_GS_Download_Engine', 'download' ) ),

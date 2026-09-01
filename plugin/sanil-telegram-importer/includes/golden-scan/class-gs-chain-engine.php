@@ -272,10 +272,17 @@ class STI_GS_Chain_Engine {
 			$bot_username = STI_GS_Node::string_code( $node->bot_username );
 			$bot_chat_id  = $node->bot_chat_id ? (int) $node->bot_chat_id : null;
 			if ( '' !== $bot_username && ! $bot_chat_id && class_exists( 'STI_MTProto' ) ) {
-				// شناسه‌ی عددی ربات برای poll مطمئن‌تر است.
-				$info = STI_MTProto::instance()->chat_info( $bot_username );
-				if ( ! is_wp_error( $info ) && ! empty( $info['id'] ) ) {
-					$bot_chat_id = (int) $info['id'];
+				try {
+					// شناسه‌ی عددی ربات برای poll مطمئن‌تر است.
+					$info = STI_MTProto::instance()->chat_info( $bot_username );
+					if ( ! is_wp_error( $info ) && ! empty( $info['id'] ) ) {
+						$bot_chat_id = (int) $info['id'];
+					}
+				} catch ( \Throwable $e ) {
+					// کراش فیبر MadelineProto نباید گامِ موفق را خراب کند؛
+					// bot_chat_id اختیاری است و poll با username هم کار می‌کند.
+					STI_GS_Event::log( $session_id, 'chain_engine', 'retry',
+						'chat_info برای ' . $bot_username . ' ناموفق (بی‌اهمیت): ' . $e->getMessage() );
 				}
 			}
 
@@ -287,7 +294,11 @@ class STI_GS_Chain_Engine {
 				'bot_chat_id'       => $bot_chat_id ?: ( $session['bot_chat_id'] ?? null ),
 				'chain_current_step'=> (int) $step['step_no'],
 				'error_reason'      => null,
-				'attempts'          => (int) $session['attempts'] + 1,
+				// شمارنده‌ی تلاش را بالا نمی‌بریم: هر گام موفق زنجیره یک
+				// «پیشرفت» است، نه تلاش. بالا بردن آن باعث می‌شد زنجیره‌های
+				// واقعی (۵+ گام) بعد از ۵ گام به سقف MAX_ATTEMPTS برسند و
+				// Session شش ساعت کنار گذاشته شود.
+				'attempts'          => 0,
 			) );
 
 			STI_GS_Artifact::log( $session_id, 'chain_step_done', array(
