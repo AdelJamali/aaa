@@ -130,6 +130,34 @@ class STI_GS_Handoff_Steps {
 		), ARRAY_A );
 	}
 
+	/** آیا این node_type یک گام «اجرایی» است (اکشن تلگرام می‌فرستد)؟ */
+	public static function is_executable_type( $node_type ) {
+		return in_array( (string) $node_type, array(
+			STI_GS_Node::NODE_BUTTON,
+			STI_GS_Node::NODE_DEEP_LINK,
+			STI_GS_Node::NODE_BOT,
+			STI_GS_Node::NODE_WEBAPP,
+			STI_GS_Node::NODE_CHAT_INVITE,
+			STI_GS_Node::NODE_GATE,
+		), true );
+	}
+
+	/**
+	 * ۱۰.۸.۴ — آخرین گام «اجرایی» (گام‌های informational TEXT/UNKNOWN را
+	 * نادیده می‌گیرد). جلوگیری از Step Explosion: تا وقتی گام جاری
+	 * «منتظر پاسخ» است، هیچ گام جدیدی (حتی informational) نباید جای آن
+	 * را بگیرد (BUG-2).
+	 */
+	public static function current_executable( $session_id ) {
+		global $wpdb;
+		return $wpdb->get_row( $wpdb->prepare(
+			'SELECT * FROM ' . self::table() . ' WHERE session_id = %d AND node_type IN (%s,%s,%s,%s,%s,%s) ORDER BY step_no DESC LIMIT 1',
+			(int) $session_id,
+			STI_GS_Node::NODE_BUTTON, STI_GS_Node::NODE_DEEP_LINK, STI_GS_Node::NODE_BOT,
+			STI_GS_Node::NODE_WEBAPP, STI_GS_Node::NODE_CHAT_INVITE, STI_GS_Node::NODE_GATE
+		), ARRAY_A );
+	}
+
 	/** آخرین گامی که اجرا شده (done یا waiting) — برای Poll. */
 	public static function latest_done( $session_id ) {
 		global $wpdb;

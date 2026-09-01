@@ -113,6 +113,8 @@ class STI_File_Hunter {
 		foreach ( (array) $mt->safe_history( $peer, $limit ) as $m ) {
 			$n = $mt->normalize_message( $m );
 			if ( ! $n || ! self::is_file_message( $n ) ) { continue; }
+			/* ۱۰.۸.۴ — فایل‌هایی که خودمان برای ربات فرستاده‌ایم، پاسخ نیستند (BUG-3). */
+			if ( ! empty( $n['out'] ) ) { continue; }
 			if ( (int) ( $n['date'] ?? 0 ) < $min_date ) { continue; }
 			$out[] = $n;
 		}

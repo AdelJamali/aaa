@@ -255,6 +255,17 @@ class STI_GS_Bot_Candidate_Collector {
 				}
 
 				$candidate = self::build_candidate( $session, $row, $clicked_ts );
+				if ( null === $candidate ) {
+					/* ۱۰.۸.۴ — کاندید رد شد (file code ناسازگار با Session). */
+					STI_GS_Artifact::log( $session_id, 'candidate_rejected', array(
+						'inbox_id'    => (int) $row['id'],
+						'file_name'   => (string) ( $row['file_name'] ?? '' ),
+						'reason'      => 'file_code_mismatch',
+						'session_code'=> $session['file_code'] ?? '',
+						'row_codes'   => (string) ( $row['codes'] ?? '' ),
+					) );
+					continue;
+				}
 				if ( STI_GS_Bot_Candidate::create( $candidate ) ) {
 					$created++;
 				}
@@ -321,6 +332,20 @@ class STI_GS_Bot_Candidate_Collector {
 			$candidate_file_code = $session_file_code; // دقیقاً همان چیزی که دنبالش بودیم
 		} elseif ( ! empty( $codes ) ) {
 			$candidate_file_code = $codes[0];
+		}
+
+		/**
+		 * ۱۰.۸.۴ — Response Correlation (BUG-1):
+		 * Observation مشترک (global_poll) فقط Candidate تولید می‌کند؛
+		 * اما هر Session باید قبل از قبول، کاندید را با file_code خودش
+		 * validate کند. اگر Session file_code دارد و ردیف inbox کدِ
+		 * متفاوتی دارد (یا کدی دارد که با file_code نمی‌خواند)، این
+		 * فایل متعلق به این Session نیست — حتی اگر از همان peer آمده
+		 * باشد (ربات‌های عمومی history همه‌ی کاربران را نشان می‌دهند).
+		 */
+		if ( '' !== $session_file_code && ! empty( $codes )
+			&& ! in_array( $session_file_code, $codes, true ) ) {
+			return null; // رد کاندید — متعلق به Session دیگر است
 		}
 
 		$score_file_code = ( '' !== $session_file_code && $candidate_file_code === $session_file_code ) ? 100 : 0;

@@ -1358,6 +1358,10 @@ class STI_MTProto {
 			'mime_type'  => $mime_type ?? '',
 			'buttons'    => $buttons,
 			'has_callback_button' => false,
+			// ۱۰.۸.۴ — پرچم جهت پیام: true = خودِ Engine فرستاده (پاسخ ربات نیست).
+			// برای Response Correlation حیاتی است: پیام‌های ارسالیِ خودِ
+			// سیستم هرگز نباید به‌عنوان پاسخ/گام بعدی شمرده شوند (BUG-3).
+			'out'        => (bool) ( $m['out'] ?? false ),
 			'raw'        => $m, // برای دانلود مستقیم توسط MadelineProto
 		);
 		foreach ( $buttons as $b ) {
@@ -2091,6 +2095,10 @@ class STI_MTProto {
 		foreach ( ( $h['messages'] ?? array() ) as $m ) {
 			$n = $this->normalize_message( $m );
 			if ( ! $n ) {
+				continue;
+			}
+			/* ۱۰.۸.۴ — پیام‌های ارسالی خودِ Engine (out) پاسخ ربات نیستند (BUG-3). */
+			if ( ! empty( $n['out'] ) ) {
 				continue;
 			}
 			if ( $since_ts && (int) $n['date'] < (int) $since_ts ) {

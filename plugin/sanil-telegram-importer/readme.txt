@@ -1,3 +1,10 @@
+== 10.8.4 ==
+* FIX Response Correlation (BUG-1/2/3 from Session 228963153 runtime):
+* FIX Engine's own outgoing messages are no longer treated as bot responses: normalize_message keeps the `out` flag; recent_peer_messages / poll / File_Hunter::history_docs filter them out (prevents self-echo creating fake TEXT/GATE steps and fake inbox documents).
+* NEW per-step Correlation Anchor stored at action dispatch (advance): expected_peer + action_at_ts + anchor_msg_id in step meta. poll() only accepts messages with id > anchor, date >= action_at - 10s, and never messages that existed before the action (before_action rejected + chain_correlate_rejected artifact).
+* FIX Step Explosion: poll() now uses the last executable step (current_executable, TEXT/UNKNOWN rows ignored); informational bot texts are recorded on the current waiting step (info_count meta) instead of appending new TEXT steps; repeated GATE (gate_repeat) is informational, not a new node.
+* FIX Global Poll decoupled from session decision: global_poll stays observation-only (cache kept); the candidate collector now rejects inbox rows whose codes conflict with the session file_code (candidate_rejected artifact) — a shared observation can never become session evidence without file-code correlation.
+
 == 10.8.3 ==
 * ARCH Bot Handoff stability: no Telegram/MTProto operation may hang the worker or pipeline forever.
 * NEW STI_GS_Deadline guard (class-gs-deadline.php): pcntl SIGALRM → controlled STI_GS_Deadline_Exception (finally runs, lock released); no-pcntl fallback → bounded set_time_limit + stale-lock recovery via lock TTL. Honest per-mode behavior, no fake timeouts.

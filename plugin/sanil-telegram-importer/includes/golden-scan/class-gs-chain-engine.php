@@ -653,10 +653,27 @@ class STI_GS_Chain_Engine {
 			}
 
 			/* موفق — گام done شد و منتظر پاسخ ربات می‌مانیم */
+
+			/**
+			 * ۱۰.۸.۴ — Response Correlation Anchor:
+			 * در لحظه‌ی dispatch اکشن، anchor گام ذخیره می‌شود تا poll فقط
+			 * پیام‌های بعد از این لحظه (و از همین peer) را به‌عنوان پاسخ
+			 * بپذیرد (BUG-1/BUG-2). anchor_msg_id = آخرین msg_id شناخته‌شده
+			 * قبل از اکشن.
+			 */
+			$anchor_meta   = json_decode( (string) ( $step['meta'] ?? '' ), true );
+			$anchor_meta   = is_array( $anchor_meta ) ? $anchor_meta : array();
+			$anchor_peer   = STI_GS_Node::string_code( $node->bot_username );
+			if ( '' === $anchor_peer && $node->peer ) {
+				$anchor_peer = (string) $node->peer;
+			}
 			STI_GS_Handoff_Steps::mark_done( (int) $step['id'], array(
-				'result'    => is_array( $result ) ? $result : array( 'ok' => true ),
-				'elapsed_ms'=> $elapsed_ms,
-				'done_at'   => current_time( 'mysql' ),
+				'result'         => is_array( $result ) ? $result : array( 'ok' => true ),
+				'elapsed_ms'     => $elapsed_ms,
+				'done_at'        => current_time( 'mysql' ),
+				'action_at_ts'   => time(),
+				'expected_peer'  => $anchor_peer,
+				'anchor_msg_id'  => (int) ( $anchor_meta['last_msg_id'] ?? 0 ),
 			) );
 
 			$bot_username = STI_GS_Node::string_code( $node->bot_username );
@@ -752,12 +769,17 @@ class STI_GS_Chain_Engine {
 				return array( 'state' => $session['state'], 'skipped' => true, 'no_progress' => true );
 			}
 
-			$step = STI_GS_Handoff_Steps::current( $session_id );
+			/**
+			 * ۱۰.۸.۴ — گام جاری فقط «اجرایی» (BUG-2: گام‌های informational
+			 * TEXT هرگز نباید گام جاری شوند؛ اگر از نسخه‌های قبل ردیف TEXT
+			 * در انتهای زنجیره مانده باشد، نادیده گرفته می‌شود).
+			 */
+			$step = STI_GS_Handoff_Steps::current_executable( $session_id );
 			if ( ! $step ) {
-				// Session زنجیره‌ای بدون گام (حالت ناسازگار): به مسیر قدیم برگرد.
+				// Session زنجیره‌ای بدون گام اجرایی (حالت ناسازگار): به مسیر قدیم برگرد.
 				STI_GS_Session::update( $session_id, array(
 					'state' => 'WAITING_BOT', 'stage' => 'chain_engine',
-					'error_reason' => 'CHAIN_NO_STEP_RECOVERY: گامی نبود؛ به مسیر قدیم برگشت.',
+					'error_reason' => 'CHAIN_NO_STEP_RECOVERY: گام اجرایی‌ای نبود؛ به مسیر قدیم برگشت.',
 				) );
 				return array( 'state' => 'WAITING_BOT', 'waiting' => true );
 			}
@@ -772,6 +794,33 @@ class STI_GS_Chain_Engine {
 			$peer = STI_GS_Node::string_code( $node->bot_username );
 			if ( '' === $peer && $node->peer ) {
 				$peer = (string) $node->peer;
+			}
+
+			/* ═══ ۱۰.۸.۴ — Response Correlation: Anchor گام ═══
+			 *
+			 * هر گامی که اکشن dispatch کرده، در advance() این anchor را در
+			 * meta خود ذخیره می‌کند:
+			 *   expected_peer   — رباتی که باید پاسخ دهد
+			 *   action_at_ts    — لحظه‌ی dispatch اکشن (unix)
+			 *   anchor_msg_id   — آخرین msg_id شناخته‌شده قبل از اکشن
+			 *
+			 * فقط پیام‌هایی که:
+			 *   ۱) از همان peer باشند (recent_peer_messages خودش این را تضمین می‌کند)
+			 *   ۲) out نباشند (توسط خودِ Engine ارسال نشده باشند)
+			 *   ۳) id > آخرین msg_id مصرف‌شده
+			 *   ۴) date >= action_at (با tolerance ۱۰ ثانیه) — پیام‌های قبل
+			 *      از اکشن هرگز پاسخ این اکشن نیستند
+			 * …به‌عنوان «پاسخ معتبر» این گام پذیرفته می‌شوند.
+			 */
+			$step_meta_anchor = json_decode( (string) ( $step['meta'] ?? '' ), true );
+			$step_meta_anchor = is_array( $step_meta_anchor ) ? $step_meta_anchor : array();
+			$anchor_action_ts = (int) ( $step_meta_anchor['action_at_ts'] ?? 0 );
+			if ( ! $anchor_action_ts ) {
+				$anchor_action_ts = $clicked_ts; // backward compat: گام‌های قدیمی
+			}
+			$anchor_peer = (string) ( $step_meta_anchor['expected_peer'] ?? '' );
+			if ( '' === $anchor_peer ) {
+				$anchor_peer = $peer; // backward compat
 			}
 
 			/**
@@ -819,8 +868,7 @@ class STI_GS_Chain_Engine {
 
 			/* ۲) خواندن پیام‌های تازه‌ی ربات جاری (برای گره‌های میانی) */
 			$new_messages = array();
-			$step_meta    = json_decode( (string) ( $step['meta'] ?? '' ), true );
-			$step_meta    = is_array( $step_meta ) ? $step_meta : array();
+			$step_meta    = $step_meta_anchor; // decode شده در بخش anchor
 			$last_msg_id  = (int) ( $step_meta['last_msg_id'] ?? 0 );
 
 			if ( '' !== $peer && class_exists( 'STI_MTProto' ) ) {
@@ -848,12 +896,34 @@ class STI_GS_Chain_Engine {
 						'خواندن تاریخچه‌ی ' . $peer . ' ناموفق: ' . $msgs->get_error_message() );
 					$msgs = array();
 				}
+				$scan_max_id = $last_msg_id; // برای پیشروی msg_id حتی روی پیام‌های ردشده
 				foreach ( (array) $msgs as $m ) {
+					$scan_max_id = max( $scan_max_id, (int) ( $m['id'] ?? 0 ) );
+					/* ۱۰.۸.۴ — Correlation: پیام‌های ارسالی خودِ Engine پاسخ نیستند. */
+					if ( ! empty( $m['out'] ) ) {
+						STI_GS_Artifact::log( $session_id, 'chain_correlate_rejected', array(
+							'msg_id' => (int) ( $m['id'] ?? 0 ),
+							'reason' => 'outgoing_self_message',
+							'text'   => mb_substr( (string) ( $m['text'] ?? '' ), 0, 80 ),
+						) );
+						continue;
+					}
 					if ( (int) ( $m['id'] ?? 0 ) <= $last_msg_id ) {
 						continue; // مصرف‌شده
 					}
+					/* پیام‌های قبل از اکشنِ این گام، پاسخِ این اکشن نیستند (قانون anchor). */
+					if ( $anchor_action_ts && (int) ( $m['date'] ?? 0 ) < ( $anchor_action_ts - 10 ) ) {
+						STI_GS_Artifact::log( $session_id, 'chain_correlate_rejected', array(
+							'msg_id' => (int) ( $m['id'] ?? 0 ),
+							'reason' => 'before_action',
+							'date'   => (int) ( $m['date'] ?? 0 ),
+							'action_at_ts' => $anchor_action_ts,
+						) );
+						continue;
+					}
 					$new_messages[] = $m;
 				}
+				$last_msg_id = max( $last_msg_id, $scan_max_id );
 			}
 
 			/* ۳) طبقه‌بندی پیام‌های تازه */
@@ -888,6 +958,31 @@ class STI_GS_Chain_Engine {
 				}
 
 				if ( $incoming->is_executable() ) {
+					/* ۱۰.۸.۴ — BUG-3: GATE تکراری (گام جاری خودش GATE است و
+					   ربات دوباره درخواست کد کرده) → informational، نه گام
+					   جدید. «پیام‌های command-like پاسخِ تازه نیستند.» */
+					if ( STI_GS_Node::NODE_GATE === $incoming->type
+						&& STI_GS_Node::NODE_GATE === (string) $step['node_type'] ) {
+						$info_count = (int) ( $step_meta['info_count'] ?? 0 ) + 1;
+						STI_GS_Handoff_Steps::mark( (int) $step['id'], STI_GS_Handoff_Steps::STATUS_WAITING, array(
+							'last_msg_id' => (int) ( $m['id'] ?? 0 ),
+							'info_count'  => $info_count,
+							'info_last'   => 'GATE_REPEAT: ' . mb_substr( trim( (string) $incoming->text ), 0, 120 ),
+						) );
+						STI_GS_Artifact::log( $session_id, 'chain_informational', array(
+							'step_no' => (int) $step['step_no'],
+							'text'    => mb_substr( trim( (string) $incoming->text ), 0, 200 ),
+							'count'   => $info_count,
+							'reason'  => 'gate_repeat',
+						) );
+						if ( $info_count >= STI_GS_Node::MAX_INFORMATIONAL_STEPS ) {
+							self::fail_chain( $session_id, 'CHAIN_NO_PROGRESS',
+								'بیش از ' . STI_GS_Node::MAX_INFORMATIONAL_STEPS . ' درخواست تکراری کد بدون پیشرفت.' );
+							return new WP_Error( 'sti_gs_chain_no_progress', 'زنجیره پیشرفتی نداشت.' );
+						}
+						continue;
+					}
+
 					/* حفاظت حلقه‌ی ربات‌ها */
 					if ( '' !== $incoming->bot_username
 						&& STI_GS_Handoff_Steps::has_bot_loop( $session_id, $incoming->bot_username ) ) {
@@ -935,15 +1030,25 @@ class STI_GS_Chain_Engine {
 				}
 
 				if ( STI_GS_Node::NODE_TEXT === $incoming->type && '' !== trim( (string) $incoming->text ) ) {
-					/* متن اطلاعاتی — ثبت می‌شود ولی اکشنی ندارد */
-					$info_id = STI_GS_Handoff_Steps::append( $session_id, $incoming, STI_GS_Handoff_Steps::STATUS_DONE );
-					if ( ! is_wp_error( $info_id ) ) {
-						STI_GS_Handoff_Steps::mark( (int) $info_id, STI_GS_Handoff_Steps::STATUS_DONE, array(
-							'last_msg_id' => (int) ( $m['id'] ?? 0 ),
-							'info'        => mb_substr( trim( (string) $incoming->text ), 0, 200 ),
-						) );
+					/* ۱۰.۸.۴ — متن اطلاعاتی: روی همان گام جاری ثبت می‌شود،
+					   نه به‌عنوان گام جدید (BUG-2: Step Explosion ممنوع).
+					   گام جاری در وضعیت waiting می‌ماند تا پاسخ معتبر برسد. */
+					$info_count = (int) ( $step_meta['info_count'] ?? 0 ) + 1;
+					$new_meta = array(
+						'last_msg_id' => (int) ( $m['id'] ?? 0 ),
+						'info_count'  => $info_count,
+						'info_last'   => mb_substr( trim( (string) $incoming->text ), 0, 200 ),
+					);
+					if ( $info_count <= 10 ) {
+						$new_meta[ 'info_' . $info_count ] = mb_substr( trim( (string) $incoming->text ), 0, 200 );
 					}
-					if ( STI_GS_Handoff_Steps::consecutive_informational( $session_id ) >= STI_GS_Node::MAX_INFORMATIONAL_STEPS ) {
+					STI_GS_Handoff_Steps::mark( (int) $step['id'], STI_GS_Handoff_Steps::STATUS_WAITING, $new_meta );
+					STI_GS_Artifact::log( $session_id, 'chain_informational', array(
+						'step_no' => (int) $step['step_no'],
+						'text'    => mb_substr( trim( (string) $incoming->text ), 0, 200 ),
+						'count'   => $info_count,
+					) );
+					if ( $info_count >= STI_GS_Node::MAX_INFORMATIONAL_STEPS ) {
 						self::fail_chain( $session_id, 'CHAIN_NO_PROGRESS',
 							'بیش از ' . STI_GS_Node::MAX_INFORMATIONAL_STEPS . ' پیام اطلاعاتی پشت‌سرهم بدون گره‌ی قابل اجرا.' );
 						return new WP_Error( 'sti_gs_chain_no_progress', 'زنجیره پیشرفتی نداشت.' );
