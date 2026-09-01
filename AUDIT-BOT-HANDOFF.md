@@ -211,3 +211,43 @@ T1–T8 از §۱۴: **منتظر تأیید کاربر برای Runtime Test** 
 - DB: حذف ایندکس `session_step` (اختیاری؛ افزودنی و بی‌خطر).
 - نسخه به ۱۰.۸.۲ برگردانده شود.
 
+
+## §۲۰ — ۱۰.۸.۵ Conversation-Bot (FileechBot): Audit + تست‌های شبیه‌سازی‌شده (2026-09-01)
+
+### قوانین کاربر (R1–R5) — پیاده‌سازی
+- R1: poll همه‌ی انواع پیام (TEXT/PHOTO/DOCUMENT/BUTTONS) را پردازش می‌کند؛ TEXT حالا تصمیم‌ساز است.
+- R2: `extract_file_code()` — «File Code : X» (انگلیسی/فارسی، با `:：`).
+- R3: GATE — ترتیب کد: session.file_code ← متن خودِ درخواست ← file_code_seen (متای گام). بدون کد → gate_no_code (informational، بدون گام جدید). گام‌های TEXT قدیمی با متنِ کد → send_text (Rule 3 legacy).
+- R4: «فایل یافت نشد» → ترمینال ERROR_FILE_NOT_FOUND (TERMINAL worker، شمارنده‌ی بازبینی، بدون مصرف attempts، بدون poll ۱۵ دقیقه‌ای).
+- R5: متن دارای File Name + File Code = پاسخ معتبر (fresh_response=true) + تمدید clicked_at + artifact chain_file_info.
+
+### سه باگی که در audit خودِ پیاده‌سازی پیدا و رفع شد
+1. **GATE همان Poll کد را نمی‌دید** (نقض R3): file-info و درخواست کد که در یک batch می‌رسند — file_code_seen فقط در DB نوشته می‌شد و `$step_meta` محلی stale می‌ماند → GATE_NO_CODE → تکرار همان باگ gbqcy28. رفع: `$step_meta = array_merge($step_meta, $new_meta)` بعد از هر mark() در حلقه.
+2. **ترمینال کاذب Rule 4**: «فایل یافت نشد» که ربات قبل از دریافت کدِ ما فرستاده (صبر ربات تمام شده) → گارد staleness با anchor (action_at_ts − ۱۰s) → informational با برچسب STALE_NOT_FOUND، نه ترمینال؛ فایلِ بعد از ارسال کد گرفته می‌شود.
+3. **ترتیب retrofit**: چک info_last به بالای poll منتقل شده بود و فایلِ تازه‌رسیده را می‌باخت. رفع: چک بعد از حلقه‌ی پیام‌ها و بلوک Asset (فایل برنده است) + رد برچسب STALE_NOT_FOUND.
+
+### مرز Global Poll → Matcher (نگرانی کاربر درباره‌ی ۵ سند بی‌ربط gbqcy28)
+- `global_poll()` هیچ session_id نمی‌گیرد — فقط `record_many_verbose` به inbox (observation مشترک).
+- `build_for_session()`: `fetch_inbox_rows` با `WHERE LOWER(peer)=LOWER(%s)` — فقط ربات خودِ Session.
+- `build_candidate()`: file_code ناسازگار → null (candidate_rejected/file_code_mismatch).
+- `file_matcher`: اولویت مطلق file_code؛ identity_strength ≥ ۶۰؛ بدون حدس (WAITING/ERROR_MATCH).
+- ۵ سند gbqcy28 (Magnific_11531053.zip و…) همگی peer="0" هستند → هرگز fetch نمی‌شوند؛ photo_*/file_* هم is_auto_named/identity=0. اتصال اشتباه غیرممکن است.
+
+### تست‌های شبیه‌سازی‌شده (سیم‌عامل faithful از کد؛ زمان مطلق، هر tick = ۲۵s)
+| سناریو | نتیجه | state نهایی | steps | attempts |
+|---|---|---|---|---|
+| ۱ موفقیت (not-found پیش از کد → stale → فایل) | PASS | REVIEW_READY | 3 (DL, GATE, ASSET) | 0 |
+| ۲ فایل یافت نشد قطعی (بعد از کد) | PASS | ERROR_FILE_NOT_FOUND | 2 | 0 |
+| ۲ب retrofit gbqcy28 (info_last=یافت نشد) | PASS | ERROR_FILE_NOT_FOUND (اولین poll) | 1 | 0 |
+| ۳ File Info تنها (کد استخراج، بدون گام جدید) | PASS | CHAIN_WAITING | 1 | 0 |
+| ۴ شش poll بی‌پیام (عدم Step Explosion) | PASS | CHAIN_WAITING | 1 (ثابت) | 0 |
+| ۵ retrofit + فایل تازه (فایل برنده است) | PASS | WAITING_BOT | 2 | 0 |
+
+### Tests pending (runtime روی سایت کاربر)
+- Session کاملاً جدید fileechbot: DEEP_LINK → File Info (fresh) → GATE → ارسال خودکار کد → ASSET → MATCH → REVIEW_READY.
+- Session‌های 67/68 (retrofit): info_last=یافت نشد → ERROR_FILE_NOT_FOUND؛ یا فایل تازه → WAITING_BOT.
+- خروجی‌های موردنیاز: state transition, handoff_steps, attempts, queue_status, artifacts.
+
+### Rollback plan (10.8.5)
+- حذف فایل‌ها از ZIP قبلی (10.8.4) و نصب مجدد؛ یا revert commit بعد از release (git revert) — ۶ فایل: chain-engine, node-classifier, auto-worker, worker.php, readme.txt, main plugin file.
+- DB: بدون migration؛ ERROR_FILE_NOT_FOUND یک مقدار state است (بی‌خطر در داده‌ی موجود).
