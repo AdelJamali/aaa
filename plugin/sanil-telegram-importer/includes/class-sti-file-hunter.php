@@ -260,6 +260,10 @@ class STI_File_Hunter {
 		$dest = trailingslashit( $dest_dir ) . $name;
 
 		$errors = array();
+
+		/* ۱۰.۸.۳: کران‌دار — نه بی‌کران. مهلت دقیق دانلود با guard پایین. */
+		@set_time_limit( class_exists( 'STI_MTProto' ) ? STI_MTProto::MAX_PHP_SECONDS : 590 );
+
 		for ( $attempt = 1; $attempt <= 3; $attempt++ ) {
 			$media = self::media_payload( $mt, $doc, $attempt > 1 );
 			if ( empty( $media ) ) {
@@ -289,9 +293,18 @@ class STI_File_Hunter {
 			);
 
 			foreach ( $methods as $label => $fn ) {
-				@set_time_limit( 0 );
+				/* ۱۰.۸.۳: هر تلاش دانلود مهلت کران‌دار دارد (اگر Deadline در دسترس بود). */
 				try {
-					$path = $fn();
+					if ( class_exists( 'STI_GS_Deadline' ) ) {
+						try {
+							$path = STI_GS_Deadline::guard( $fn, 560, 'file_download' );
+						} catch ( \STI_GS_Deadline_Exception $e ) {
+							$errors[] = $label . ': مهلت دانلود تمام شد';
+							continue;
+						}
+					} else {
+						$path = $fn();
+					}
 					$ok = ( is_string( $path ) && $path && @is_file( $path ) && STI_Security::safe_file_size( $path ) > 0 ) ? $path : '';
 					if ( ! $ok && @is_file( $dest ) && STI_Security::safe_file_size( $dest ) > 0 ) { $ok = $dest; }
 					if ( $ok ) {

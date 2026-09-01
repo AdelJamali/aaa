@@ -25,10 +25,24 @@ if ( ! defined( 'ABSPATH' ) ) { exit; }
  */
 class STI_GS_Handoff_Steps {
 
+	/**
+	 * نگاشت رسمی وضعیت‌ها (۱۰.۸.۳ — این جدول منبع وضعیت هر گام است):
+	 *
+	 *   pending  → ساخته شده، هنوز اجرا نشده (یا برای retry دوباره pending شد)
+	 *   running  → اکشن در حال اجراست (advance قبل از تماس تلگرام)
+	 *   waiting  → اکشن dispatch موفق؛ منتظر پاسخ ربات (poll بی‌پاسخ)
+	 *   done     → اکشن با موفقیت انجام شد / گام مصرف شد (success)
+	 *   failed   → خطای قطعی یا بعد از سقف retry (NEEDS_REVIEW)
+	 *   skipped  → در زنجیره استفاده نمی‌شود (معادل منطقی: NEEDS_REVIEW)
+	 *
+	 * قرارداد: «done» هرگز attempts را صفر نمی‌کند؛ فقط append() یک گام
+	 * واقعاً جدید با attempts=0 می‌سازد.
+	 */
 	const STATUS_PENDING = 'pending';
 	const STATUS_DONE    = 'done';
 	const STATUS_FAILED  = 'failed';
 	const STATUS_WAITING = 'waiting';
+	const STATUS_RUNNING = 'running';
 
 	public static function table() {
 		return STI_GS_DB::handoff_steps_table();
@@ -116,11 +130,11 @@ class STI_GS_Handoff_Steps {
 		), ARRAY_A );
 	}
 
-	/** آخرین گامی که done شده — برای Poll (فقط پیام‌های بعد از آن مهم‌اند). */
+	/** آخرین گامی که اجرا شده (done یا waiting) — برای Poll. */
 	public static function latest_done( $session_id ) {
 		global $wpdb;
 		return $wpdb->get_row( $wpdb->prepare(
-			'SELECT * FROM ' . self::table() . " WHERE session_id = %d AND status = 'done' ORDER BY step_no DESC LIMIT 1",
+			'SELECT * FROM ' . self::table() . " WHERE session_id = %d AND status IN ('done','waiting') ORDER BY step_no DESC LIMIT 1",
 			(int) $session_id
 		), ARRAY_A );
 	}

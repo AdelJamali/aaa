@@ -47,6 +47,17 @@ class STI_MTProto {
 	/** @var string عمر سشن فعال در حافظه (ثانیه) — برای کش‌کردن client. */
 	const CLIENT_TTL = 120;
 
+	/**
+	 * سقف PHP برای هر درخواستِ دارای MTProto (ثانیه).
+	 *
+	 * ۱۰.۸.۳: قبلاً harden_runtime() و مسیرهای دانلود set_time_limit(0)
+	 * می‌زدند — یعنی یک RPC قفل‌شده (یا flood-sleep) می‌توانست درخواست
+	 * cron را برای همیشه معلق کند. حالا سقف کران‌دار است؛ هر عملیات
+	 * حساس علاوه بر این با STI_GS_Deadline::guard() مهلت دقیق‌تری
+	 * می‌گیرد و Lock (TTL) بازیابی نهایی را تضمین می‌کند.
+	 */
+	const MAX_PHP_SECONDS = 590;
+
 	protected static function option_ttl() {
 		return HOUR_IN_SECONDS;
 	}
@@ -196,7 +207,8 @@ class STI_MTProto {
 			return new WP_Error( 'sti_mt_write', 'پوشه‌ی سشن قابل نوشتن نیست: ' . self::base_dir() . ' — دسترسی پوشه را ۷۷۵/۷۷۷ کنید یا فایل را دستی آپلود کنید.' );
 		}
 
-		@set_time_limit( 0 );
+		// ۱۰.۸.۳: کران‌دار — نصب موتور نباید درخواست را برای همیشه معلق کند.
+		@set_time_limit( self::MAX_PHP_SECONDS );
 
 		$sources = self::engine_download_sources();
 		$tmp     = self::base_dir() . '/' . self::engine_filename() . '.part';
@@ -560,6 +572,36 @@ class STI_MTProto {
 				$logger->setLoggerLevel( 3 );
 			}
 			$settings->setLogger( $logger );
+
+			/**
+			 * ۱۰.۸.۳ — FLOOD_WAIT نباید sleep بلوک‌کننده باشد.
+			 *
+			 * MadelineProto به‌صورت پیش‌فرض هنگام flood منتظر می‌ماند
+			 * (گاهی چند دقیقه). اگر نسخه‌ی نصب‌شده تنظیم RPC را پشتیبانی
+			 * کند، مهلت flood را به ۳ ثانیه محدود می‌کنیم تا خطای FloodWait
+			 * پرتاب شود و لایه‌ی بالاتر (STI_GS_Retry::flood_wait_until)
+			 * آن را به next_retry_at تبدیل کند — بدون sleep.
+			 *
+			 * method_exists guard: API بین نسخه‌های MadelineProto عوض
+			 * می‌شود؛ اگر متد نبود، بی‌صدا رد می‌شویم و deadline guard
+			 * (STI_GS_Deadline) توری امنیتی نهایی است.
+			 */
+			if ( class_exists( '\\danog\\MadelineProto\\Settings\\RPC' ) ) {
+				try {
+					$rpc = new \danog\MadelineProto\Settings\RPC();
+					if ( method_exists( $rpc, 'setFloodTimeout' ) ) {
+						$rpc->setFloodTimeout( 3 );
+					}
+					if ( method_exists( $rpc, 'setFloodWaitTimeout' ) ) {
+						$rpc->setFloodWaitTimeout( 3 );
+					}
+					if ( method_exists( $settings, 'setRPC' ) ) {
+						$settings->setRPC( $rpc );
+					}
+				} catch ( \Throwable $e ) {
+					// بی‌خطر — deadline guard پوشش می‌دهد.
+				}
+			}
 
 			// اول بدون پراکسی (ساده‌ترین حالت — خیلی از هاست‌ها مستقیم وصل می‌شوند)
 			$candidates[] = $settings;
@@ -1395,6 +1437,8 @@ class STI_MTProto {
 		}
 
 		$last_error = null;
+		// ۱۰.۸.۳: یک‌بار قبل از حلقه — نه در هر تلاش (جمع تلاش‌ها نباید از قفل ۶۰۰s بگذرد).
+		@set_time_limit( self::MAX_PHP_SECONDS );
 		for ( $attempt = 0; $attempt < 3; $attempt++ ) {
 			// در تلاش‌های بعدی، پیام را تازه بگیر (رفرش file_reference)
 			if ( $attempt > 0 && $peer && $msg_id ) {
@@ -1420,7 +1464,6 @@ class STI_MTProto {
 			$name = ! empty( $message['file_name'] ) ? sanitize_file_name( $message['file_name'] ) : ( 'file_' . $msg_id . '.bin' );
 			$dest = trailingslashit( $dest_dir ) . $name;
 
-			@set_time_limit( 0 );
 			try {
 				$path = $this->download_cascade( $mad, $raw, $dest, $dest_dir );
 				$path = is_string( $path ) ? $path : '';
@@ -1466,7 +1509,8 @@ class STI_MTProto {
 		$name = ! empty( $message['file_name'] ) ? sanitize_file_name( $message['file_name'] ) : ( 'file_' . $message['id'] . '.bin' );
 		$dest = trailingslashit( $dest_dir ) . $name;
 
-		@set_time_limit( 0 );
+		// ۱۰.۸.۳: کران‌دار.
+		@set_time_limit( self::MAX_PHP_SECONDS );
 		try {
 			$path = $mad->downloadToFile( $message['raw'], $dest );
 		} catch ( \Throwable $e ) {
@@ -1971,6 +2015,54 @@ class STI_MTProto {
 	 * @param int        $since_ts  فقط پیام‌های جدیدتر از این timestamp
 	 * @return array|WP_Error  array از normalize_message
 	 */
+	/**
+	 * استخراج ثانیه‌های FLOOD_WAIT از هر خطا (exception/WP_Error/string).
+	 *
+	 * الگوهای پشتیبانی‌شده:
+	 *   - کلاس exception حاوی FloodWait با پراپرتی waitTime/floodWait/seconds
+	 *   - پیام «FLOOD_WAIT_120» / «FLOOD_WAIT 120»
+	 *   - پیام «flood wait: 120 seconds» / «flood_wait_120»
+	 *
+	 * @param mixed $err
+	 * @return int|null  ثانیه یا null اگر flood نبود
+	 */
+	public static function flood_seconds( $err ) {
+		$msg = is_object( $err ) && method_exists( $err, 'getMessage' )
+			? (string) $err->getMessage()
+			: (string) $err;
+
+		if ( is_object( $err ) ) {
+			$cls = strtolower( basename( str_replace( '\\', '/', get_class( $err ) ) ) );
+			if ( false !== strpos( $cls, 'floodwait' ) ) {
+				foreach ( array( 'waitTime', 'floodWait', 'seconds', 'timeout' ) as $prop ) {
+					if ( isset( $err->{$prop} ) && is_numeric( $err->{$prop} ) ) {
+						return max( 1, (int) $err->{$prop} );
+					}
+				}
+			}
+		}
+
+		if ( preg_match( '/FLOOD_WAIT[_ ]*(\d+)/i', $msg, $m ) ) {
+			return max( 1, (int) $m[1] );
+		}
+		if ( preg_match( '/(?:flood[ _]?wait[:\s_]+)(\d+)/i', $msg, $m ) ) {
+			return max( 1, (int) $m[1] );
+		}
+		return null;
+	}
+
+	/** اگر خطا flood باشد، WP_Error با پیام نرمال‌شده‌ی FLOOD_WAIT_n برمی‌گرداند. */
+	public static function flood_error( $err, $fallback_code = 'sti_mt_flood' ) {
+		$sec = self::flood_seconds( $err );
+		if ( null === $sec ) {
+			return null;
+		}
+		$msg = is_object( $err ) && method_exists( $err, 'getMessage' )
+			? (string) $err->getMessage()
+			: (string) $err;
+		return new WP_Error( $fallback_code, sprintf( 'FLOOD_WAIT_%d: %s', $sec, $msg ) );
+	}
+
 	public function recent_peer_messages( $peer, $limit = 30, $since_ts = 0 ) {
 		$mad = $this->client();
 		if ( is_wp_error( $mad ) ) {
@@ -1988,6 +2080,10 @@ class STI_MTProto {
 				'hash'        => 0,
 			) );
 		} catch ( \Throwable $e ) {
+			$flood = self::flood_error( $e );
+			if ( $flood ) {
+				return $flood;
+			}
 			return new WP_Error( 'sti_mt_history_failed', $peer . ' → ' . $e->getMessage() );
 		}
 
@@ -2236,7 +2332,8 @@ class STI_MTProto {
 		$done = true;
 
 		@ignore_user_abort( true );
-		@set_time_limit( 0 );
+		// ۱۰.۸.۳: کران‌دار — نه بی‌کران. مهلت دقیق عملیات با STI_GS_Deadline::guard().
+		@set_time_limit( self::MAX_PHP_SECONDS );
 
 		if ( function_exists( 'pcntl_signal' ) && function_exists( 'pcntl_async_signals' ) ) {
 			try {

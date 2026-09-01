@@ -23,6 +23,18 @@ class STI_GS_Bot_Candidate_Collector {
 	const BOT_TIMEOUT_SEC     = 900;  // بعد از این مدت بدون candidate → ERROR_BOT_TIMEOUT
 	const SCORE_TIME_WINDOW   = 300;  // ثانیه؛ برای تابع نزولی score_time
 
+	/**
+	 * ۱۰.۸.۳ — Shared Observation.
+	 *
+	 * GLOBAL_POLL_INTERVAL: نتیجه‌ی اسکن سنگین به مدت این چند ثانیه کش
+	 * می‌شود تا هر Session/تیک دوباره کل ربات‌ها را اسکن نکند (coupling
+	 * بین Sessionها حذف می‌شود — Audit §۹-P3).
+	 * GLOBAL_POLL_TIMEOUT: سقف هر اسکن (توسط STI_GS_Deadline).
+	 */
+	const GLOBAL_POLL_INTERVAL = 60;
+	const GLOBAL_POLL_TIMEOUT  = 45;
+	const GLOBAL_POLL_CACHE    = 'sti_gs_global_poll_cache';
+
 	/** یعنی Match قبلاً انجام شده (یا فراتر) — Poll دوباره لازم نیست. */
 	const PAST_STATES = array(
 		'FILE_MATCHED', 'DOWNLOAD_PENDING', 'DOWNLOADING', 'DOWNLOAD_FAILED', 'STORED',
@@ -34,6 +46,23 @@ class STI_GS_Bot_Candidate_Collector {
 	public static function global_poll() {
 		global $wpdb;
 		$sessions_table = STI_GS_Session::table();
+
+		/**
+		 * ۱۰.۸.۳ — Shared Observation: اگر همین چند ثانیه‌ی پیش یک اسکن
+		 * کامل انجام شده، نتیجه‌اش را برمی‌گردانیم (بدون تماس تلگرام).
+		 * نتیجه‌ی «NO_WAITING_SESSIONS» (ارزان) کش نمی‌شود تا Session
+		 * تازه‌واردشده سریع اسکن بگیرد.
+		 */
+		if ( function_exists( 'get_transient' ) ) {
+			$cache = get_transient( self::GLOBAL_POLL_CACHE );
+			if ( is_array( $cache ) && ! empty( $cache['at'] )
+				&& ( time() - (int) $cache['at'] ) < self::GLOBAL_POLL_INTERVAL
+				&& ! empty( $cache['polled'] ) ) {
+				$cache['cached'] = true;
+				return $cache;
+			}
+		}
+
 		$oldest_clicked = $wpdb->get_var( $wpdb->prepare(
 			"SELECT MIN(clicked_at) FROM {$sessions_table} WHERE state = %s AND clicked_at IS NOT NULL",
 			'WAITING_BOT'
@@ -47,12 +76,59 @@ class STI_GS_Bot_Candidate_Collector {
 		$since = max( $since, time() - self::MAX_LOOKBACK_SEC );
 
 		$mt = STI_MTProto::instance();
-		$docs = $mt->find_recent_documents( $since, min( self::MAX_LOOKBACK_SEC, time() - $since + 60 ) );
+
+		/**
+		 * ۱۰.۸.۳ — Deadline: اسکن گسترده‌ی getHistory نباید هرگز Worker را
+		 * برای همیشه معلق کند. بعد از GLOBAL_POLL_TIMEOUT ثانیه:
+		 *   - pcntl → STI_GS_Deadline_Exception (کنترل‌شده)
+		 *   - غیر pcntl → مرگ کران‌دار درخواست + Stale-Lock Recovery
+		 */
+		if ( class_exists( 'STI_GS_Deadline' ) ) {
+			try {
+				$docs = STI_GS_Deadline::guard( function () use ( $mt, $since ) {
+					return $mt->find_recent_documents( $since, min( self::MAX_LOOKBACK_SEC, time() - $since + 60 ) );
+				}, self::GLOBAL_POLL_TIMEOUT, 'global_poll' );
+			} catch ( \STI_GS_Deadline_Exception $e ) {
+				return array( 'polled' => false, 'error' => $e->getMessage(), 'deadline' => true );
+			} catch ( \Throwable $e ) {
+				/* ۱۰.۸.۳ — flood داخل اسکن: به poll برمی‌گردد تا next_retry_at بگیرد. */
+				$flood = class_exists( 'STI_MTProto' ) ? STI_MTProto::flood_error( $e ) : null;
+				if ( $flood ) {
+					$next_retry = STI_GS_Retry::flood_wait_until( $flood->get_error_message() );
+					return array( 'polled' => false, 'error' => $flood->get_error_message(), 'next_retry_at' => $next_retry );
+				}
+				return array( 'polled' => false, 'error' => $e->getMessage(), 'exception' => true );
+			}
+		} else {
+			try {
+				$docs = $mt->find_recent_documents( $since, min( self::MAX_LOOKBACK_SEC, time() - $since + 60 ) );
+			} catch ( \Throwable $e ) {
+				$flood = class_exists( 'STI_MTProto' ) ? STI_MTProto::flood_error( $e ) : null;
+				if ( $flood ) {
+					$next_retry = STI_GS_Retry::flood_wait_until( $flood->get_error_message() );
+					return array( 'polled' => false, 'error' => $flood->get_error_message(), 'next_retry_at' => $next_retry );
+				}
+				return array( 'polled' => false, 'error' => $e->getMessage(), 'exception' => true );
+			}
+		}
 
 		if ( is_wp_error( $docs ) ) {
 			$next_retry = STI_GS_Retry::flood_wait_until( $docs->get_error_message() );
 			return array( 'polled' => false, 'error' => $docs->get_error_message(), 'next_retry_at' => $next_retry );
 		}
+
+		/**
+		 * ۱۰.۸.۳ — Shared Observation cache: نتیجه‌ی اسکن سنگین برای
+		 * GLOBAL_POLL_INTERVAL ثانیه کش می‌شود تا بقیه‌ی Sessionها/تیک‌ها
+		 * دوباره کل ربات‌ها را اسکن نکنند.
+		 */
+		$cache_result = function ( $result ) {
+			if ( function_exists( 'set_transient' ) ) {
+				$result['at'] = time();
+				set_transient( self::GLOBAL_POLL_CACHE, $result, self::GLOBAL_POLL_INTERVAL + 60 );
+			}
+			return $result;
+		};
 
 		/**
 		 * اگر STI_Bot_Inbox بارگذاری نشده باشد، هیچ فایلی ثبت نمی‌شود و
@@ -71,19 +147,19 @@ class STI_GS_Bot_Candidate_Collector {
 			STI_Logger::error( 'گلدن اسکن: ' . $reason . ' — ' . count( (array) $docs )
 				. ' فایل از ربات دیده شد ولی هیچ‌کدام ثبت نشد چون صندوق ورودی در دسترس نیست.' );
 
-			return array(
+			return $cache_result( array(
 				'polled'        => true,
 				'since'         => $since,
 				'docs_seen'     => count( (array) $docs ),
 				'docs_recorded' => 0,
 				'blocked'       => $reason,
 				'hint'          => 'حالت ایمن افزونه را از نوار بالای پنل خاموش کنید.',
-			);
+			) );
 		}
 
 		if ( method_exists( 'STI_Bot_Inbox', 'record_many_verbose' ) ) {
 			$report = STI_Bot_Inbox::record_many_verbose( $docs );
-			return array_merge( array( 'polled' => true, 'since' => $since ), $report );
+			return $cache_result( array_merge( array( 'polled' => true, 'since' => $since ), $report ) );
 		}
 
 		// نسخه‌ی بدون گزارش تفصیلی: دست‌کم دلیل هر فایل را خودمان بسازیم.
@@ -103,13 +179,13 @@ class STI_GS_Bot_Candidate_Collector {
 			);
 		}
 
-		return array(
+		return $cache_result( array(
 			'polled'        => true,
 			'since'         => $since,
 			'docs_seen'     => count( (array) $docs ),
 			'docs_recorded' => $recorded,
 			'items'         => $items,
-		);
+		) );
 	}
 
 	/** فاز ۲: برای یک Session مشخص، ردیف‌های تازه‌ی inbox را candidate می‌کند. */

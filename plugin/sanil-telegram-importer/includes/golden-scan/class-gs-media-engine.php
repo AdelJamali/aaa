@@ -166,16 +166,32 @@ class STI_GS_Media_Engine {
 			return null;
 		}
 		try {
-			$h = $mad->messages->getHistory( array(
-				'peer'        => $peer,
-				'offset_id'   => $target_msg_id + $window + 1,
-				'offset_date' => 0,
-				'add_offset'  => 0,
-				'limit'       => max( 3, $window * 2 + 4 ),
-				'max_id'      => 0,
-				'min_id'      => max( 0, $target_msg_id - $window - 1 ),
-				'hash'        => 0,
-			) );
+			/* ۱۰.۸.۳ — Deadline: جست‌وجوی عکس نباید مرحله‌ی مدیا را معلق کند. */
+			if ( class_exists( 'STI_GS_Deadline' ) ) {
+				$h = STI_GS_Deadline::guard( function () use ( $mad, $peer, $target_msg_id, $window ) {
+					return $mad->messages->getHistory( array(
+						'peer'        => $peer,
+						'offset_id'   => $target_msg_id + $window + 1,
+						'offset_date' => 0,
+						'add_offset'  => 0,
+						'limit'       => max( 3, $window * 2 + 4 ),
+						'max_id'      => 0,
+						'min_id'      => max( 0, $target_msg_id - $window - 1 ),
+						'hash'        => 0,
+					) );
+				}, 20, 'media_photo_near' );
+			} else {
+				$h = $mad->messages->getHistory( array(
+					'peer'        => $peer,
+					'offset_id'   => $target_msg_id + $window + 1,
+					'offset_date' => 0,
+					'add_offset'  => 0,
+					'limit'       => max( 3, $window * 2 + 4 ),
+					'max_id'      => 0,
+					'min_id'      => max( 0, $target_msg_id - $window - 1 ),
+					'hash'        => 0,
+				) );
+			}
 		} catch ( \Throwable $e ) {
 			return null;
 		}

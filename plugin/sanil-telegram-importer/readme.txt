@@ -1,3 +1,14 @@
+== 10.8.3 ==
+* ARCH Bot Handoff stability: no Telegram/MTProto operation may hang the worker or pipeline forever.
+* NEW STI_GS_Deadline guard (class-gs-deadline.php): pcntl SIGALRM → controlled STI_GS_Deadline_Exception (finally runs, lock released); no-pcntl fallback → bounded set_time_limit + stale-lock recovery via lock TTL. Honest per-mode behavior, no fake timeouts.
+* FIX harden_runtime() no longer sets set_time_limit(0): every MTProto request is capped at MAX_PHP_SECONDS=590; install_engine / download_media_robust / download_media / File_Hunter::download are all bounded (previously unlimited → Session 68 hang).
+* FIX FLOOD_WAIT is non-blocking: RPC flood timeout configured (method_exists-guarded) so MadelineProto throws instead of sleeping; flood detection extended (FLOOD_WAIT_n / "flood wait: n" / FloodWait exception props) → next_retry_at + WAITING return without consuming attempts.
+* FIX Global Poll decoupled (Shared Observation): result cached 60s (transient) so one session's poll no longer triggers a full multi-bot getHistory scan for every tick/session; heavy scan deadline-bounded (45s).
+* NEW Poll observability breadcrumbs: chain_poll_started / chain_step_started / chain_retry_scheduled artifacts pinpoint exactly where any hang occurs; step status running→waiting mapping (HandoffStep = source of truth; STATUS_RUNNING added, latest_done covers done+waiting).
+* NEW Worker tick budget (240s): heavy sessions no longer starve the rest of the batch.
+* DB: idempotent unique index (session_id, step_no) on handoff_steps (migrate_v24) — no destructive changes.
+* Timeout levels: step exec 60s (lock 90s), global poll 45s, peer poll 25s, chat_info 15s, media photo search 20s, executor press/start_bot 80s (lock 90s), file download 560s (lock 600s).
+
 == 10.8.2 ==
 * FIX State machine invariant: WAITING_BOT ≠ BUTTON_FOUND. Converting state is only done by explicit recovery paths (requeue_click / timeout_recovery), never by a user click on Execute Action; clicked_at is treated as evidence ("was an action dispatched?"), never as the sole decision for recovery.
 * FIX next_stage routes by the session's own chain_mode (D6): SCANNED + chain_mode ∈ {auto, chain} → Chain Init; SCANNED + NULL → Legacy Resolver always. The global UI mode never changes the meaning of an old NULL session — only recover() can explicitly migrate it with evidence.

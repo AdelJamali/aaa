@@ -262,6 +262,7 @@ class STI_GS_Session_Ajax {
 	 * کلیک دستی بدتر عمل می‌کرد.
 	 */
 	public static function poll_bot_stage( $session_id ) {
+		/* ۱۰.۸.۳ — global_poll کران‌دار (Shared Observation + Deadline). */
 		$global = STI_GS_Bot_Candidate_Collector::global_poll();
 		STI_GS_Artifact::log( $session_id, 'global_poll', $global );
 		return STI_GS_Bot_Candidate_Collector::build_for_session( (int) $session_id );

@@ -366,6 +366,7 @@ class STI_GS_DB {
 			self::migrate_v2_columns();
 			self::migrate_v22_columns();
 			self::migrate_v23_columns();
+			self::migrate_v24_columns();
 			self::migrate_v2_indexes();
 			self::backfill_v2();
 
@@ -871,6 +872,19 @@ class STI_GS_DB {
 		self::ensure_column( self::pipeline_items_table(), 'chain_current_step', 'INT UNSIGNED NOT NULL DEFAULT 0' );
 		self::ensure_index( self::handoff_steps_table(), 'session_status', '(session_id, status)' );
 		self::ensure_index( self::handoff_steps_table(), 'session_bot', '(session_id, bot_username)' );
+	}
+
+	/**
+	 * ستون‌های نسخه‌ی ۱۰.۸.۳ — یکتاسازی (session_id, step_no).
+	 *
+	 * append() فقط زیر قفل Session (claim) اجرا می‌شود و step_no را
+	 * MAX(step_no)+1 می‌گیرد؛ معماری هرگز دو رکورد برای یک step_no
+	 * نمی‌سازد — این ایندکس همان قرارداد را در سطح DB تضمین می‌کند
+	 * (جلوی هم‌زمانی/خطای آینده). Idempotent: ensure_index اگر ایندکس
+	 * باشد دست نمی‌زند. هیچ داده‌ای تغییر نمی‌کند.
+	 */
+	protected static function migrate_v24_columns() {
+		self::ensure_index( self::handoff_steps_table(), 'session_step', '(session_id, step_no)', true );
 	}
 
 	protected static function migrate_v2_indexes() {

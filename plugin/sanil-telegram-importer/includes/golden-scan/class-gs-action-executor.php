@@ -97,7 +97,18 @@ class STI_GS_Action_Executor {
 
 		$request = array( 'peer' => $peer, 'msg_id' => $msg_id, 'data' => $data );
 		$t0 = microtime( true );
-		$answer = STI_MTProto::instance()->press_button( $peer, $msg_id, $data );
+		/* ۱۰.۸.۳ — Deadline: تماس تلگرام نباید Worker را معلق کند (قفل ۹۰s). */
+		if ( class_exists( 'STI_GS_Deadline' ) ) {
+			try {
+				$answer = STI_GS_Deadline::guard( function () use ( $peer, $msg_id, $data ) {
+					return STI_MTProto::instance()->press_button( $peer, $msg_id, $data );
+				}, 80, 'executor_press' );
+			} catch ( \STI_GS_Deadline_Exception $e ) {
+				$answer = new WP_Error( 'sti_gs_tg_deadline', $e->getMessage() );
+			}
+		} else {
+			$answer = STI_MTProto::instance()->press_button( $peer, $msg_id, $data );
+		}
 		$elapsed_ms = (int) round( ( microtime( true ) - $t0 ) * 1000 );
 
 		$ok = false;
@@ -173,7 +184,18 @@ class STI_GS_Action_Executor {
 		$request = array( 'bot_username' => $bot_username, 'payload' => $payload );
 		$t0 = microtime( true );
 		/* ۱۰.۸: messages.startBot رسمی با fallback به /start — نه فقط متن */
-		$result = STI_MTProto::instance()->start_bot( $bot_username, $payload );
+		/* ۱۰.۸.۳ — Deadline: تماس تلگرام نباید Worker را معلق کند (قفل ۹۰s). */
+		if ( class_exists( 'STI_GS_Deadline' ) ) {
+			try {
+				$result = STI_GS_Deadline::guard( function () use ( $bot_username, $payload ) {
+					return STI_MTProto::instance()->start_bot( $bot_username, $payload );
+				}, 80, 'executor_start_bot' );
+			} catch ( \STI_GS_Deadline_Exception $e ) {
+				$result = new WP_Error( 'sti_gs_tg_deadline', $e->getMessage() );
+			}
+		} else {
+			$result = STI_MTProto::instance()->start_bot( $bot_username, $payload );
+		}
 		$elapsed_ms = (int) round( ( microtime( true ) - $t0 ) * 1000 );
 
 		if ( is_wp_error( $result ) ) {

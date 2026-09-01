@@ -37,6 +37,13 @@ class STI_GS_Auto_Worker {
 	const MAX_ATTEMPTS  = 5;
 
 	/**
+	 * ۱۰.۸.۳ — بودجه‌ی هر تیک (ثانیه): اگر یک Session سنگین شد، بقیه‌ی
+	 * صف در تیک بعدی. کمتر از interval_seconds پیش‌فرض (۳۰۰) است تا
+	 * تیک‌ها روی هم تلنبار نشوند.
+	 */
+	const TICK_BUDGET_SEC = 240;
+
+	/**
 	 * پس از این مدت، Sessionهایی که به سقف تلاش خورده‌اند دوباره فرصت
 	 * می‌گیرند.
 	 *
@@ -161,7 +168,14 @@ class STI_GS_Auto_Worker {
 		$report = array( 'advanced' => 0, 'waiting' => 0, 'failed' => 0, 'completed' => 0 );
 		$bot_used = false;
 
+		/* ۱۰.۸.۳ — بودجه‌ی تیک: مابقی Sessionها به تیک بعدی موکول می‌شوند. */
+		$tick_started = time();
+
 		foreach ( $sessions as $session ) {
+			if ( ( time() - $tick_started ) >= self::TICK_BUDGET_SEC ) {
+				break;
+			}
+
 			$state = (string) $session['state'];
 
 			// فقط یک Session در هر تیک اجازه‌ی گفت‌وگو با ربات دارد.

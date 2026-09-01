@@ -43,6 +43,16 @@ class STI_GS_Chain_Engine {
 	const BOT_TIMEOUT_SEC   = 900;  // هماهنگ با Bot Candidate Collector
 
 	/**
+	 * ۱۰.۸.۳ — مهلت‌های عملیات (ثانیه). هر تماس Telegram باید کران‌دار
+	 * باشد (STI_GS_Deadline::guard) — هیچ عملیاتی نباید Worker را برای
+	 * همیشه معلق کند (Audit §۹-P1).
+	 */
+	const STEP_EXEC_TIMEOUT   = 60;   // اکشن یک گام (قفل گام ۹۰s است)
+	const POLL_GLOBAL_TIMEOUT = 45;   // global_poll (هماهنگ با Collector)
+	const POLL_PEER_TIMEOUT   = 25;   // recent_peer_messages
+	const WAIT_STAGE_TIMEOUT  = 60;   // poll_bot_stage قدیم (waiting)
+
+	/**
 	 * سقف تلاش دوباره برای **همان گام** (per-hop retry bound).
 	 *
 	 * قرارداد ۱۰.۸.۳: retry همان hop فقط از HandoffStep.attempts شمارش
@@ -226,6 +236,16 @@ class STI_GS_Chain_Engine {
 			STI_GS_Event::log( $session_id, 'chain_engine', 'retry',
 				'WAITING_BOT داخل پنجره‌ی پاسخ ربات — Poll ادامه می‌دهد (action dispatched).' );
 			if ( class_exists( 'STI_GS_Session_Ajax' ) ) {
+				/* ۱۰.۸.۳ — Deadline: poll قدیم هم نباید معلق کند. */
+				if ( class_exists( 'STI_GS_Deadline' ) ) {
+					try {
+						return STI_GS_Deadline::guard( function () use ( $session_id ) {
+							return STI_GS_Session_Ajax::poll_bot_stage( $session_id );
+						}, self::WAIT_STAGE_TIMEOUT, 'chain_wait_stage' );
+					} catch ( \STI_GS_Deadline_Exception $e ) {
+						return new WP_Error( 'sti_gs_tg_deadline', $e->getMessage() );
+					}
+				}
 				return STI_GS_Session_Ajax::poll_bot_stage( $session_id );
 			}
 			return array( 'state' => 'WAITING_BOT', 'waiting' => true );
@@ -566,12 +586,42 @@ class STI_GS_Chain_Engine {
 				) );
 				STI_GS_Event::log( $session_id, 'chain_engine', 'retry',
 					'تلاش دوباره برای گام ' . (int) $step['step_no'] . ' (' . STI_GS_Node::type_label( $node->type ) . ') — تلاش ' . $step_attempts . '/' . self::STEP_ATTEMPTS_MAX . '.' );
+				STI_GS_Artifact::log( $session_id, 'chain_retry_scheduled', array(
+					'step_no' => (int) $step['step_no'],
+					'node_type' => $node->type,
+					'attempt' => $step_attempts,
+					'max'     => self::STEP_ATTEMPTS_MAX,
+				) );
 			}
 
 			self::human_delay( 1.5, 4.0 );
 
+			/* ۱۰.۸.۳ — وضعیت running + breadcrumb قبل از اکشن (مشاهده‌پذیری mid-flight). */
+			$run_attempt = (int) ( $step['attempts'] ?? 0 ); // 0 = اجرای اولیه، n = retry #n
+			STI_GS_Handoff_Steps::mark( (int) $step['id'], STI_GS_Handoff_Steps::STATUS_RUNNING, array(
+				'run_started_at' => current_time( 'mysql' ),
+			) );
+			STI_GS_Artifact::log( $session_id, 'chain_step_started', array(
+				'step_no'   => (int) $step['step_no'],
+				'node_type' => $node->type,
+				'attempt'   => $run_attempt,
+			) );
+
 			$t0 = microtime( true );
-			$result = STI_GS_Node_Processor::process( $node );
+
+			/* ۱۰.۸.۳ — Deadline: اکشن تلگرام نباید هرگز Worker را معلق کند. */
+			if ( class_exists( 'STI_GS_Deadline' ) ) {
+				try {
+					$result = STI_GS_Deadline::guard( function () use ( $node ) {
+						return STI_GS_Node_Processor::process( $node );
+					}, self::STEP_EXEC_TIMEOUT, 'chain_step_exec' );
+				} catch ( \STI_GS_Deadline_Exception $e ) {
+					$result = new WP_Error( 'sti_gs_tg_deadline', $e->getMessage() );
+				}
+			} else {
+				$result = STI_GS_Node_Processor::process( $node );
+			}
+
 			$elapsed_ms = (int) round( ( microtime( true ) - $t0 ) * 1000 );
 
 			if ( is_wp_error( $result ) ) {
@@ -614,7 +664,17 @@ class STI_GS_Chain_Engine {
 			if ( '' !== $bot_username && ! $bot_chat_id && class_exists( 'STI_MTProto' ) ) {
 				try {
 					// شناسه‌ی عددی ربات برای poll مطمئن‌تر است.
-					$info = STI_MTProto::instance()->chat_info( $bot_username );
+					if ( class_exists( 'STI_GS_Deadline' ) ) {
+						try {
+							$info = STI_GS_Deadline::guard( function () use ( $bot_username ) {
+								return STI_MTProto::instance()->chat_info( $bot_username );
+							}, 15, 'chain_chat_info' );
+						} catch ( \STI_GS_Deadline_Exception $e ) {
+							$info = new WP_Error( 'sti_gs_tg_deadline', $e->getMessage() );
+						}
+					} else {
+						$info = STI_MTProto::instance()->chat_info( $bot_username );
+					}
 					if ( ! is_wp_error( $info ) && ! empty( $info['id'] ) ) {
 						$bot_chat_id = (int) $info['id'];
 					}
@@ -714,12 +774,48 @@ class STI_GS_Chain_Engine {
 				$peer = (string) $node->peer;
 			}
 
+			/**
+			 * ۱۰.۸.۳ — Breadcrumb: اگر هر تماس تلگرامی قفل شود، این
+			 * Artifact دقیقاً نشان می‌دهد poll تا کجا پیش رفته (Audit §۹-P4).
+			 */
+			STI_GS_Artifact::log( $session_id, 'chain_poll_started', array(
+				'step_no'   => (int) $step['step_no'],
+				'node_type' => (string) $step['node_type'],
+				'peer'      => $peer,
+				'clicked_at'=> (string) $session['clicked_at'],
+				'timeout'   => $timeout,
+			) );
+
 			/* ۱) poll سراسری — فایل‌های همه‌ی ربات‌های شناخته‌شده در inbox ثبت می‌شوند */
 			$global = array( 'polled' => false );
 			if ( class_exists( 'STI_GS_Bot_Candidate_Collector' ) ) {
-				$global = STI_GS_Bot_Candidate_Collector::global_poll();
+				if ( class_exists( 'STI_GS_Deadline' ) ) {
+					try {
+						$global = STI_GS_Deadline::guard( function () {
+							return STI_GS_Bot_Candidate_Collector::global_poll();
+						}, self::POLL_GLOBAL_TIMEOUT, 'chain_poll_global' );
+					} catch ( \STI_GS_Deadline_Exception $e ) {
+						$global = array( 'polled' => false, 'error' => $e->getMessage(), 'deadline' => true );
+					}
+				} else {
+					$global = STI_GS_Bot_Candidate_Collector::global_poll();
+				}
 			}
 			STI_GS_Artifact::log( $session_id, 'chain_global_poll', is_array( $global ) ? $global : array() );
+
+			/**
+			 * ۱۰.۸.۳ — FLOOD_WAIT در global poll: منتظر نمی‌مانیم؛
+			 * next_retry_at تنظیم و بدون مصرف attempts برمی‌گردیم.
+			 */
+			if ( is_array( $global ) && ! empty( $global['error'] ) ) {
+				$fw = STI_GS_Retry::flood_wait_until( (string) $global['error'] );
+				if ( null !== $fw ) {
+					STI_GS_Session::update( $session_id, array( 'next_retry_at' => $fw ) );
+					STI_GS_Event::log( $session_id, 'chain_engine', 'retry',
+						'FLOOD_WAIT در poll سراسری — تلاش بعدی پس از ' . $fw . ' (بدون مصرف attempts).' );
+					return array( 'state' => 'CHAIN_WAITING', 'waiting' => true, 'flood_wait' => $fw );
+				}
+			}
 
 			/* ۲) خواندن پیام‌های تازه‌ی ربات جاری (برای گره‌های میانی) */
 			$new_messages = array();
@@ -728,8 +824,26 @@ class STI_GS_Chain_Engine {
 			$last_msg_id  = (int) ( $step_meta['last_msg_id'] ?? 0 );
 
 			if ( '' !== $peer && class_exists( 'STI_MTProto' ) ) {
-				$msgs = STI_MTProto::instance()->recent_peer_messages( $peer, 30, $since_ts );
+				if ( class_exists( 'STI_GS_Deadline' ) ) {
+					try {
+						$msgs = STI_GS_Deadline::guard( function () use ( $peer, $since_ts ) {
+							return STI_MTProto::instance()->recent_peer_messages( $peer, 30, $since_ts );
+						}, self::POLL_PEER_TIMEOUT, 'chain_poll_peer' );
+					} catch ( \STI_GS_Deadline_Exception $e ) {
+						$msgs = new WP_Error( 'sti_gs_tg_deadline', $e->getMessage() );
+					}
+				} else {
+					$msgs = STI_MTProto::instance()->recent_peer_messages( $peer, 30, $since_ts );
+				}
 				if ( is_wp_error( $msgs ) ) {
+					/* ۱۰.۸.۳ — flood: retry با next_retry_at، بدون مصرف attempts */
+					$fw = STI_GS_Retry::flood_wait_until( $msgs->get_error_message() );
+					if ( null !== $fw ) {
+						STI_GS_Session::update( $session_id, array( 'next_retry_at' => $fw ) );
+						STI_GS_Event::log( $session_id, 'chain_engine', 'retry',
+							'FLOOD_WAIT از ' . $peer . ' — تلاش بعدی پس از ' . $fw . ' (بدون مصرف attempts).' );
+						return array( 'state' => 'CHAIN_WAITING', 'waiting' => true, 'flood_wait' => $fw );
+					}
 					STI_GS_Event::log( $session_id, 'chain_engine', 'error',
 						'خواندن تاریخچه‌ی ' . $peer . ' ناموفق: ' . $msgs->get_error_message() );
 					$msgs = array();
@@ -893,6 +1007,10 @@ class STI_GS_Chain_Engine {
 
 			STI_GS_Event::log( $session_id, 'chain_engine', 'retry',
 				'هنوز پاسخ تازه‌ای از ربات نرسیده؛ Poll بعدی ادامه می‌دهد.' );
+
+			/* ۱۰.۸.۳ — وضعیت «منتظر پاسخ ربات» (mapping رسمی: done→waiting). */
+			STI_GS_Handoff_Steps::mark( (int) $step['id'], STI_GS_Handoff_Steps::STATUS_WAITING, array() );
+
 			return array( 'state' => 'CHAIN_WAITING', 'waiting' => true );
 		} finally {
 			STI_GS_Session::release( $session_id, $worker_id );
