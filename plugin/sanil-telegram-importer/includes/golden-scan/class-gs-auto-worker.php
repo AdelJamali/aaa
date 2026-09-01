@@ -53,7 +53,7 @@ class STI_GS_Auto_Worker {
 	const IN_PROGRESS = array( 'DOWNLOADING', 'MEDIA_BUILDING', 'PRODUCT_BUILDING' );
 
 	/** حالت‌هایی که کار تمام است و Worker نباید دستشان بزند. */
-	const TERMINAL = array( 'REVIEW_READY', 'PUBLISHED', 'SKIPPED' );
+	const TERMINAL = array( 'REVIEW_READY', 'PUBLISHED', 'SKIPPED', 'NEEDS_REVIEW' );
 
 	/** حالت‌هایی که یعنی «منتظر ربات» — شمارنده‌ی تلاش بالا نمی‌رود. */
 	const WAITING = array( 'WAITING_BOT', 'ERROR_BOT_TIMEOUT', 'CHAIN_WAITING' );
@@ -271,74 +271,14 @@ class STI_GS_Auto_Worker {
 		}
 
 		/**
-		 * حالت‌هایی که باید دوباره کلیک شوند، اول باید به BUTTON_FOUND
-		 * برگردند.
+		 * کلیک دوباره / بازیابی — فقط از طریق next_stage.
 		 *
-		 * نگاشت مرحله در ۱۰.۵.۴ ERROR_BOT_TIMEOUT و ERROR_MATCH را به
-		 * Execute Action فرستاد، ولی گارد آن موتور فقط BUTTON_FOUND و
-		 * ERROR_CLICK را می‌پذیرد — نتیجه‌اش INVALID_STATE بود، همان دو
-		 * خطای Session #36.
+		 * ۱۰.۸.۲: این بلوک‌ها (ERROR_BOT_TIMEOUT/ERROR_MATCH → BUTTON_FOUND و
+		 * WAITING_BOT → BUTTON_FOUND) حذف شدند. تصمیم‌گیری درباره‌ی requeue،
+		 * waiting (Poll داخل پنجره / recover خارج پنجره) و match recovery
+		 * فقط در STI_GS_Session_Ajax::next_stage انجام می‌شود تا مسیر دستی و
+		 * خودکار یک رفتار داشته باشند (WAITING_BOT ≠ BUTTON_FOUND).
 		 */
-		// از ERROR_BOT_TIMEOUT یا ERROR_MATCH برای کلیک دوباره باید حتماً
-		// به BUTTON_FOUND برگردیم؛ گارد Action Executor فقط BUTTON_FOUND و
-		// ERROR_CLICK را می‌پذیرد. ERROR_MATCH مستقیم = INVALID_STATE.
-		if ( in_array( $state, array( 'ERROR_BOT_TIMEOUT', 'ERROR_MATCH' ), true ) ) {
-
-			/**
-			 * بدون payload، کلیک دوباره ممکن نیست.
-			 *
-			 * نسخه‌ی قبل در این حالت شرط را رد می‌کرد و Session مستقیم به
-			 * Execute Action می‌رفت که گاردش ردش می‌کرد — حلقه‌ی بی‌پایان
-			 * INVALID_STATE، همان سه خطای Session #36.
-			 *
-			 * وقتی راهی برای تلاش دوباره نیست، کنار گذاشتن صادقانه‌تر از
-			 * تکرار بی‌نتیجه است.
-			 */
-			if ( empty( $session['button_payload'] ) ) {
-				self::skip( $session_id, 'برای کلیک دوباره payload دکمه لازم است و این Session ندارد.' );
-				return 'skipped';
-			}
-
-			STI_GS_Session::update( $session_id, array(
-				'state'        => 'BUTTON_FOUND',
-				'stage'        => 'auto_worker',
-				'error_reason' => null,
-			) );
-			STI_GS_Event::log( $session_id, 'auto_worker', 'ok',
-				'برای کلیک دوباره به BUTTON_FOUND برگردانده شد (از ' . $state . ').' );
-			$state = 'BUTTON_FOUND';
-		}
-
-		// WAITING_BOT بعد از مهلت هم برای کلیک دوباره باید BUTTON_FOUND شود
-		// (نه ERROR_CLICK) — تا گارد Action Executor همیشه راضی بماند.
-		// این دقیقاً همان مسیر ۱۰.۵.۴ است که در گزارش به‌صورت
-		// «Execute Action — INVALID_STATE» دیده شد.
-		if ( 'WAITING_BOT' === $state ) {
-			$clicked = ! empty( $session['clicked_at'] ) ? strtotime( $session['clicked_at'] ) : 0;
-			$timeout = class_exists( 'STI_GS_Bot_Candidate_Collector' )
-				? STI_GS_Bot_Candidate_Collector::BOT_TIMEOUT_SEC
-				: 900;
-
-			if ( $clicked && ( time() - $clicked ) > $timeout ) {
-				if ( empty( $session['button_payload'] ) ) {
-					// بدون payload دکمه، کلیک دوباره ممکن نیست.
-					STI_GS_Event::log( $session_id, 'auto_worker', 'ok',
-						'WAITING_BOT بدون payload — برای کلیک دوباره کنار گذاشته شد.' );
-					self::skip( $session_id, 'WAITING_BOT بدون payload دکمه — کلیک دوباره ممکن نیست.' );
-					return 'skipped';
-				}
-				STI_GS_Session::update( $session_id, array(
-					'state'        => 'BUTTON_FOUND',
-					'stage'        => 'auto_worker',
-					'error_reason' => null,
-				) );
-				STI_GS_Event::log( $session_id, 'auto_worker', 'ok', sprintf(
-					'پس از %d ثانیه انتظار بی‌نتیجه، دوباره روی دکمه کلیک می‌شود (BUTTON_FOUND).',
-					time() - $clicked
-				) );
-				$state = 'BUTTON_FOUND';
-			}
-		}
 
 		$next = STI_GS_Session_Ajax::next_stage( $state, $session_id );
 		if ( ! $next ) {
@@ -550,6 +490,11 @@ class STI_GS_Auto_Worker {
 			array_merge( array( self::MAX_ATTEMPTS ), $terminal )
 		) );
 
+		// NEEDS_REVIEW — نیاز به بررسی انسانی (واقعی، نه فقط برچسب).
+		$review = (int) $wpdb->get_var( $wpdb->prepare(
+			"SELECT COUNT(*) FROM {$table} WHERE state = 'NEEDS_REVIEW'"
+		) );
+
 		$today = get_option( self::STATS_KEY, array() );
 
 		return array(
@@ -558,6 +503,7 @@ class STI_GS_Auto_Worker {
 			'batch'      => self::batch_size(),
 			'pending'    => $pending,
 			'stuck'      => $stuck,
+			'review'     => $review,
 			'today'      => is_array( $today ) ? $today : array(),
 			'failures'   => self::recent_failures(),
 			'next_tick'  => wp_next_scheduled( self::HOOK ),

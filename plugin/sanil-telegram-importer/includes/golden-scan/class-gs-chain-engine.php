@@ -42,6 +42,17 @@ class STI_GS_Chain_Engine {
 	const POLL_LOCK_SECONDS = 45;   // poll — فقط خواندن
 	const BOT_TIMEOUT_SEC   = 900;  // هماهنگ با Bot Candidate Collector
 
+	/**
+	 * سقف تلاش دوباره برای **همان گام** (per-hop retry bound).
+	 *
+	 * قرارداد ۱۰.۸.۳: retry همان hop فقط از HandoffStep.attempts شمارش
+	 * می‌شود — Session.attempts متعلق به failure سطح Session است و اینجا
+	 * استفاده نمی‌شود. موفقیت Action به‌تنهایی step.attempts را صفر
+	 * نمی‌کند (موفقیت فقط یعنی «Action dispatch شد»؛ پاسخ معتبر Bot در
+	 * poll() مشخص می‌شود). رسیدن به سقف → NEEDS_REVIEW.
+	 */
+	const STEP_ATTEMPTS_MAX = 3;
+
 	/* ═══════════════ Feature Flag: gs_chain_mode ═══════════════ */
 
 	/**
@@ -128,7 +139,7 @@ class STI_GS_Chain_Engine {
 			) );
 
 			// فقط گره‌های قابل اجرا وارد زنجیره می‌شوند؛ ASSET/UNKNOWN/متن ساده → legacy.
-			if ( ! $node->is_actionable() ) {
+			if ( ! $node->is_executable() ) {
 				self::fallback_to_legacy( $session_id, 'گره‌ی مبدأ قابل اجرا نیست (' . STI_GS_Node::type_label( $node->type ) . ').' );
 				return array( 'state' => 'SCANNED', 'skipped' => true, 'no_progress' => true, 'decision' => 'legacy' );
 			}
@@ -170,47 +181,98 @@ class STI_GS_Chain_Engine {
 		}
 	}
 
-	/* ═══════════════ گام ۰.۵: recover — انتقال Sessionهای قدیمی به زنجیره ═══════════════ */
+	/* ═══════════════ گام ۰.۵: waiting / recover — مسیر قدیم به زنجیره ═══════════════ */
 
 	/**
-	 * Sessionهایی که در مسیر قدیم گیر کرده‌اند (WAITING_BOT / BUTTON_FOUND /
-	 * ERROR_CLICK / ERROR_BOT_TIMEOUT / ERROR_MATCH) و هنوز هیچ گامی در
-	 * زنجیره ندارند را به زنجیره منتقل می‌کند.
+	 * دیسپچر WAITING_BOT برای Sessionهای زنجیره‌ای (بدون گام).
 	 *
-	 * این همان «موتور اصلی» است که وقتی حالت chain فعال می‌شود، Sessionهای
-	 * از قبل موجود را هم از مسیر قدیم (Resolver → Executor) برمی‌دارد:
+	 * WAITING_BOT ≠ BUTTON_FOUND. اینجا فقط تصمیم گرفته می‌شود؛ هیچ‌وقت
+	 * state به‌خاطر کلیک کاربر یا clicked_at=NULL عوض نمی‌شود:
 	 *
-	 *   ۱) اگر button_payload یک deep link باشد → گام DEEP_LINK ساخته می‌شود
-	 *   ۲) اگر bot_username داشته باشد → گام BOT ساخته می‌شود
-	 *   ۳) در غیر این صورت → پیام مبدأ مثل init طبقه‌بندی می‌شود
+	 *   • action dispatched (clicked_at موجود) + داخل پنجره → POLL
+	 *   • action dispatched + timeout                      → recover() (Retry طبق evidence)
+	 *   • action dispatched نشده (clicked_at=NULL)         → recover() فقط اگر evidence کافی
+	 *   • بدون evidence                                     → NEEDS_REVIEW (داخل recover)
 	 *
-	 * بعد از این، Session وارد چرخه‌ی عادی زنجیره می‌شود (CHAIN_STEP → …
-	 * → CHAIN_WAITING → poll → …) و Chain Engine بقیه‌ی راه را می‌رود.
+	 * clicked_at=NULL به‌تنهایی دلیل Recovery نیست — فقط یکی از ورودی‌های
+	 * تصمیم است («ابتدا مشخص کن چرا Session در WAITING_BOT است»).
 	 *
 	 * @return array|WP_Error
 	 */
-	public static function recover( $session_id ) {
+	public static function waiting( $session_id ) {
 		$session_id = (int) $session_id;
 		$session    = STI_GS_Session::get( $session_id );
 		if ( ! $session ) {
 			return new WP_Error( 'sti_gs_no_session', 'Session پیدا نشد.' );
 		}
+		if ( 'WAITING_BOT' !== (string) $session['state'] ) {
+			return array( 'state' => $session['state'], 'skipped' => true, 'no_progress' => true );
+		}
+		// گام دارد = مسیر Asset زنجیره (بعد از ASSET) — همان poll قدیم درست است.
+		if ( STI_GS_Handoff_Steps::depth( $session_id ) > 0 ) {
+			return array( 'state' => 'WAITING_BOT', 'skipped' => true, 'no_progress' => true );
+		}
+		if ( STI_GS_Node::MODE_LEGACY === STI_GS_Node::string_code( $session['chain_mode'] ?? '' ) ) {
+			return array( 'state' => 'WAITING_BOT', 'skipped' => true, 'no_progress' => true, 'decision' => 'legacy' );
+		}
 
+		$clicked = self::to_ts( $session['clicked_at'] );
+		$timeout = class_exists( 'STI_GS_Bot_Candidate_Collector' )
+			? STI_GS_Bot_Candidate_Collector::BOT_TIMEOUT_SEC
+			: self::BOT_TIMEOUT_SEC;
+
+		// action واقعاً dispatch شده و هنوز داخل پنجره → poll واقعی (همان «Poll Bot» دستی).
+		if ( $clicked && ( time() - $clicked ) < $timeout ) {
+			STI_GS_Event::log( $session_id, 'chain_engine', 'retry',
+				'WAITING_BOT داخل پنجره‌ی پاسخ ربات — Poll ادامه می‌دهد (action dispatched).' );
+			if ( class_exists( 'STI_GS_Session_Ajax' ) ) {
+				return STI_GS_Session_Ajax::poll_bot_stage( $session_id );
+			}
+			return array( 'state' => 'WAITING_BOT', 'waiting' => true );
+		}
+
+		// timeout شده یا اصلاً action اجرا نشده → recover با evidence.
+		// recover() خودش بدون evidence → NEEDS_REVIEW می‌کند.
+		STI_GS_Event::log( $session_id, 'chain_engine', 'retry',
+			'WAITING_BOT خارج از پنجره یا بدون action dispatched — بررسی evidence برای انتقال به زنجیره.' );
+		return self::recover( $session_id );
+	}
+
+	/**
+	 * انتقال یک Session قدیمی به زنجیره — فقط با evidence کافی.
+	 *
+	 * قانون: هیچ‌وقت حدس نمی‌زنیم. ترتیب evidence:
+	 *
+	 *   A) deep_link/start_param واقعی در button_payload (bot_start → DEEP_LINK،
+	 *      bot_webapp → WEBAPP، invite → CHAT_INVITE)
+	 *   B) bot_username + شاهد مستقل (file_code / clicked_at / button_url /
+	 *      button_resolution_method) → BOT
+	 *   C) پیام مبدأ قابل decode + طبقه‌بندی executable → همان گره
+	 *
+	 * TEXT به‌تنهایی evidence نیست. UNKNOWN هم نیست. اگر هیچ‌کدام نبود →
+	 * NEEDS_REVIEW (نه CHAIN_STEP، نه fallback بی‌صدا).
+	 *
+	 * @return array|WP_Error
+	 */
+	public static function recover( $session_id ) {
+		$session_id = (int) $session_id;
+
+		// پیش‌بررسی سبک (بدون قفل): آیا اصلاً کاندید است؟
+		$session = STI_GS_Session::get( $session_id );
+		if ( ! $session ) {
+			return new WP_Error( 'sti_gs_no_session', 'Session پیدا نشد.' );
+		}
 		$state = (string) $session['state'];
 		if ( ! in_array( $state, array(
 			'WAITING_BOT', 'BUTTON_FOUND', 'ERROR_CLICK', 'ERROR_BOT_TIMEOUT', 'ERROR_MATCH',
 		), true ) ) {
 			return array( 'state' => $state, 'skipped' => true, 'no_progress' => true );
 		}
-
-		// اگر خودِ زنجیره قبلاً این Session را legacy کرده، دوباره تلاش نکن
-		// (حلقه‌ی recover → fallback → recover). به مسیر قدیم برمی‌گردد.
+		// اگر خودِ زنجیره قبلاً این Session را legacy کرده، دوباره تلاش نکن.
 		if ( STI_GS_Node::MODE_LEGACY === STI_GS_Node::string_code( $session['chain_mode'] ?? '' ) ) {
 			return array( 'state' => $state, 'skipped' => true, 'no_progress' => true, 'decision' => 'legacy' );
 		}
-
-		// اگر گام دارد، یعنی خودِ زنجیره این Session را (بعد از ASSET) به
-		// WAITING_BOT فرستاده — آنجا مسیر قدیم Asset درست است، نه recover.
+		// اگر گام دارد = مسیر Asset زنجیره — recover مربوط به اینجا نیست.
 		if ( STI_GS_Handoff_Steps::depth( $session_id ) > 0 ) {
 			return array( 'state' => $state, 'skipped' => true, 'no_progress' => true );
 		}
@@ -221,51 +283,104 @@ class STI_GS_Chain_Engine {
 		}
 
 		try {
-			/* ۱) deep link ذخیره‌شده روی خود Session (button_payload قدیمی) */
-			$node  = null;
+			/* بعد از قفل، Session را دوباره می‌خوانیم (TOCTOU) و وضعیت را دوباره validate می‌کنیم. */
+			$session = STI_GS_Session::get( $session_id );
+			if ( ! $session ) {
+				return new WP_Error( 'sti_gs_no_session', 'Session پیدا نشد.' );
+			}
+			$state = (string) $session['state'];
+			if ( ! in_array( $state, array(
+				'WAITING_BOT', 'BUTTON_FOUND', 'ERROR_CLICK', 'ERROR_BOT_TIMEOUT', 'ERROR_MATCH',
+			), true ) ) {
+				return array( 'state' => $state, 'skipped' => true, 'no_progress' => true );
+			}
+			if ( STI_GS_Node::MODE_LEGACY === STI_GS_Node::string_code( $session['chain_mode'] ?? '' ) ) {
+				return array( 'state' => $state, 'skipped' => true, 'no_progress' => true, 'decision' => 'legacy' );
+			}
+			if ( STI_GS_Handoff_Steps::depth( $session_id ) > 0 ) {
+				return array( 'state' => $state, 'skipped' => true, 'no_progress' => true );
+			}
+
+			$evidence = array();
+			$node     = null;
+
+			/* ── A) معتبرترین: deep link واقعی در button_payload ── */
 			$button = json_decode( (string) ( $session['button_payload'] ?? '' ), true );
 			$url    = is_array( $button ) ? (string) ( $button['url'] ?? '' ) : '';
 			if ( '' !== $url ) {
 				$parsed = STI_GS_Deep_Link_Parser::parse( $url );
-				if ( ! is_wp_error( $parsed ) && 'bot_start' === (string) ( $parsed['kind'] ?? '' ) ) {
+				$kind   = is_wp_error( $parsed ) ? '' : (string) ( $parsed['kind'] ?? '' );
+				if ( 'bot_start' === $kind ) {
 					$node = new STI_GS_Node( STI_GS_Node::NODE_DEEP_LINK );
 					$node->bot_username = (string) $parsed['bot_username'];
 					$node->set_payload( (string) $parsed['start_param'] ); // string-only
 					$node->url          = $url;
 					$node->confidence   = 90;
+					$evidence[] = 'deep_link';
+				} elseif ( 'bot_webapp' === $kind ) {
+					$node = new STI_GS_Node( STI_GS_Node::NODE_WEBAPP );
+					$node->bot_username = (string) $parsed['bot_username'];
+					$node->set_payload( (string) ( $parsed['app_name'] ?? '' ) );
+					$node->url          = $url;
+					$node->confidence   = 85;
+					$evidence[] = 'webapp_link';
+				} elseif ( 'invite' === $kind ) {
+					$node = new STI_GS_Node( STI_GS_Node::NODE_CHAT_INVITE );
+					$node->set_payload( (string) ( $parsed['invite_hash'] ?? '' ) );
+					$node->url          = $url;
+					$node->confidence   = 85;
+					$evidence[] = 'invite_link';
 				}
 			}
 
-			/* ۲) ربات ذخیره‌شده روی Session */
-			if ( ! $node && '' !== STI_GS_Node::string_code( $session['bot_username'] ?? '' ) ) {
-				$node = new STI_GS_Node( STI_GS_Node::NODE_BOT );
-				$node->bot_username = STI_GS_Node::string_code( $session['bot_username'] );
-				$node->confidence   = 80;
+			/* ── B) bot_username + شاهد مستقل ── */
+			if ( ! $node ) {
+				$bot = STI_GS_Node::string_code( $session['bot_username'] ?? '' );
+				if ( '' !== $bot ) {
+					$witness = '';
+					if ( '' !== STI_GS_Node::string_code( $session['file_code'] ?? '' ) ) {
+						$witness = 'file_code';
+					} elseif ( ! empty( $session['clicked_at'] ) ) {
+						$witness = 'clicked_at';
+					} elseif ( '' !== $url ) {
+						$witness = 'button_url';
+					} elseif ( ! empty( $session['button_resolution_method'] ) ) {
+						$witness = 'button_method';
+					}
+					if ( '' !== $witness ) {
+						$node = new STI_GS_Node( STI_GS_Node::NODE_BOT );
+						$node->bot_username = $bot;
+						$node->confidence   = 80;
+						$evidence[] = 'bot_username+' . $witness;
+					}
+				}
 			}
 
-			/* ۳) طبقه‌بندی پیام مبدأ (مثل init) */
+			/* ── C) پیام مبدأ قابل decode + طبقه‌بندی executable ── */
 			if ( ! $node ) {
 				$message = self::load_message( (int) $session['message_pk'] );
 				if ( $message ) {
 					$raw = json_decode( (string) ( $message['raw_json'] ?? '' ), true );
 					if ( is_array( $raw ) ) {
 						$classified = STI_GS_Node_Classifier::classify( $raw );
-						if ( $classified->is_actionable() ) {
+						if ( $classified->is_executable() ) {
 							$channel = STI_GS_Channel::get( (int) $session['channel_id'] );
 							if ( $channel && (int) $channel['chat_id'] ) {
 								$classified->peer   = (int) $channel['chat_id'];
 								$classified->msg_id = (int) $message['message_id'];
 							}
 							$node = $classified;
+							$evidence[] = 'source_message:' . $node->type;
 						}
 					}
 				}
 			}
 
 			if ( ! $node ) {
-				// چیزی برای ادامه نیست — به مسیر قدیم برگرد تا Resolver/Skip تصمیم بگیرد.
-				self::fallback_to_legacy( $session_id, 'گره‌ی قابل اجرایی برای انتقال به زنجیره یافت نشد (recover).' );
-				return array( 'state' => $state, 'skipped' => true, 'no_progress' => true, 'decision' => 'legacy' );
+				// بدون evidence → NEEDS_REVIEW (نه CHAIN_STEP، نه fallback بی‌صدا).
+				self::needs_review( $session_id, 'CHAIN_RECOVER_NO_EVIDENCE',
+					'برای انتقال به زنجیره evidence کافی نیست (deep_link / bot+شاهد / پیام مبدأ هیچ‌کدام قابل استفاده نبودند).' );
+				return array( 'state' => 'NEEDS_REVIEW', 'no_progress' => true, 'review' => true, 'from_state' => $state );
 			}
 
 			// گیت: اگر ربات کد می‌خواهد، کد همین Session را بفرست.
@@ -279,6 +394,7 @@ class STI_GS_Chain_Engine {
 				return new WP_Error( 'sti_gs_chain_recover_failed', $step_id->get_error_message() );
 			}
 
+			/* مهاجرت صریح: chain_mode روی خود Session ثبت می‌شود (D6). */
 			STI_GS_Session::update( $session_id, array(
 				'state'             => 'CHAIN_STEP',
 				'stage'             => 'chain_engine',
@@ -288,18 +404,74 @@ class STI_GS_Chain_Engine {
 			) );
 
 			STI_GS_Event::log( $session_id, 'chain_engine', 'ok',
-				'Session از مسیر قدیم (' . $state . ') به زنجیره منتقل شد — گام ۱ = '
+				'Session از مسیر قدیم (' . $state . ') با evidence [' . implode( ', ', $evidence ) . '] به زنجیره منتقل شد — گام ۱ = '
 				. STI_GS_Node::type_label( $node->type )
 				. ( '' !== $node->bot_username ? ' → ' . $node->bot_username : '' ) . '.',
-				array( 'from_state' => $state, 'node' => $node->to_array() ) );
+				array( 'from_state' => $state, 'evidence' => $evidence, 'node' => $node->to_array() ) );
 
-			return array( 'state' => 'CHAIN_STEP', 'step_no' => 1, 'node_type' => $node->type, 'recovered' => true, 'from_state' => $state );
+			return array( 'state' => 'CHAIN_STEP', 'step_no' => 1, 'node_type' => $node->type, 'recovered' => true, 'from_state' => $state, 'evidence' => $evidence );
 		} finally {
 			STI_GS_Session::release( $session_id, $worker_id );
 			if ( class_exists( 'STI_MTProto' ) ) {
 				STI_MTProto::stop_client();
 			}
 		}
+	}
+
+	/**
+	 * ERROR_BOT_TIMEOUT برای Session زنجیره‌ایِ دارای گام (مسیر Asset قدیمی).
+	 *
+	 * پنجره بسته شده. Recovery = کلیک دوباره فقط اگر button_payload موجود
+	 * باشد (اثبات اینکه همان action قابل تکرار است)؛ در غیر این صورت
+	 * NEEDS_REVIEW — هیچ‌وقت state به‌خاطر کلیک کاربر عوض نمی‌شود.
+	 *
+	 * @return array|WP_Error
+	 */
+	public static function timeout_recovery( $session_id ) {
+		$session_id = (int) $session_id;
+		$session    = STI_GS_Session::get( $session_id );
+		if ( ! $session ) {
+			return new WP_Error( 'sti_gs_no_session', 'Session پیدا نشد.' );
+		}
+		if ( 'ERROR_BOT_TIMEOUT' !== (string) $session['state'] ) {
+			return array( 'state' => $session['state'], 'skipped' => true, 'no_progress' => true );
+		}
+
+		if ( ! empty( $session['button_payload'] ) ) {
+			STI_GS_Session::update( $session_id, array(
+				'state'        => 'BUTTON_FOUND',
+				'stage'        => 'chain_engine',
+				'error_reason' => null,
+			) );
+			STI_GS_Event::log( $session_id, 'chain_engine', 'ok',
+				'بعد از timeout پنجره، کلیک دوباره (BUTTON_FOUND) — بازیابی صریح با button_payload موجود.' );
+
+			/**
+			 * WP_Error عمدی (backoff) — ضدحلقه.
+			 *
+			 * اگر success برگردد، advance_one attempts را ریست می‌کند و چرخه‌ی
+			 * بی‌پایان می‌شود: ERROR_BOT_TIMEOUT → BUTTON_FOUND → Execute
+			 * Action (Bot Action) → WAITING_BOT → poll → ERROR_BOT_TIMEOUT → …
+			 * با WP_Error → handle_failure → attempts+1 + backoff نمایی →
+			 * بعد از MAX_ATTEMPTS: ۶ ساعت صبر (یک Bot Action در هر ۶ ساعت).
+			 */
+			return new WP_Error( 'sti_gs_requeue_backoff', 'کلیک دوباره زمان‌بندی شد (timeout) — تلاش بعدی با backoff (ضدحلقه).' );
+		}
+
+		self::needs_review( $session_id, 'CHAIN_TIMEOUT_NO_ACTION',
+			'پنجره‌ی پاسخ ربات بسته شد و button_payload برای کلیک دوباره موجود نیست.' );
+		return array( 'state' => 'NEEDS_REVIEW', 'no_progress' => true, 'review' => true );
+	}
+
+	/** ثبت NEEDS_REVIEW — state واقعی «نیاز به بررسی انسانی» (نه فقط برچسب JS). */
+	protected static function needs_review( $session_id, $code, $reason ) {
+		STI_GS_Session::update( (int) $session_id, array(
+			'state'        => 'NEEDS_REVIEW',
+			'stage'        => 'chain_engine',
+			'error_reason' => mb_substr( $code . ': ' . $reason, 0, 250 ),
+		) );
+		STI_GS_Event::log( (int) $session_id, 'chain_engine', 'error', $code . ': ' . $reason );
+		STI_GS_Artifact::log( (int) $session_id, 'chain_needs_review', array( 'code' => $code, 'reason' => $reason ) );
 	}
 
 	/* ═══════════════ گام ۱: advance — اجرای دقیقاً یک گام ═══════════════ */
@@ -353,16 +525,47 @@ class STI_GS_Chain_Engine {
 				return new WP_Error( 'sti_gs_chain_loop', 'حلقه‌ی ربات شناسایی شد.' );
 			}
 
-			/* تلاش دوباره‌ی یک گامِ شکست‌خورده */
+			/* ── Per-hop retry bound (۱۰.۸.۳) ─────────────────────────────
+			 * چرخه‌ی ممنوع:
+			 *   CHAIN_WAITING → timeout → CHAIN_FAILED → advance → Bot Action
+			 *   → CHAIN_WAITING → timeout → … (برای همیشه)
+			 *
+			 * قرارداد: retry همان گام فقط از HandoffStep.attempts شمارش
+			 * می‌شود (Session.attempts = failure سطح Session؛ دست نمی‌خورد):
+			 *
+			 *   گام جدید       → step.attempts = 0   (append)
+			 *   retry همان گام → step.attempts++     (سقف STEP_ATTEMPTS_MAX)
+			 *   رسیدن به سقف   → NEEDS_REVIEW
+			 *
+			 * موفقیت Action به‌تنهایی step.attempts را صفر نمی‌کند — موفقیت
+			 * فقط یعنی «Action dispatch شد»؛ پاسخ معتبر Bot در poll() مشخص
+			 * می‌شود و timeout یعنی همان گام هنوز retry محسوب می‌شود.
+			 *
+			 * این بلوک هم مسیر process-failure (step.status=failed) و هم
+			 * مسیر poll-timeout (step.status=done ولی state=CHAIN_FAILED)
+			 * را پوشش می‌دهد: ورود از CHAIN_FAILED = retry، صرف‌نظر از
+			 * status فعلی گام. (قبلاً فقط status=failed بررسی می‌شد و مسیر
+			 * timeout هرگز شمارش نمی‌شد — همان حلقه‌ی کران‌ناشده.)
+			 */
 			$step_attempts = (int) ( $step['attempts'] ?? 0 ) + 1;
-			if ( STI_GS_Handoff_Steps::STATUS_FAILED === (string) $step['status'] ) {
+			if ( 'CHAIN_FAILED' === (string) $session['state'] ) {
+				if ( $step_attempts > self::STEP_ATTEMPTS_MAX ) {
+					STI_GS_Handoff_Steps::mark_failed( (int) $step['id'],
+						'CHAIN_STEP_RETRY_EXHAUSTED: گام ' . (int) $step['step_no'] . ' (' . STI_GS_Node::type_label( $node->type ) . ') بعد از ' . self::STEP_ATTEMPTS_MAX . ' تلاش دوباره پاسخ معتبری نگرفت.',
+						array( 'attempts' => $step_attempts ) );
+					self::needs_review( $session_id, 'CHAIN_STEP_RETRY_EXHAUSTED',
+						'گام ' . (int) $step['step_no'] . ' (' . STI_GS_Node::type_label( $node->type ) . ') به سقف تلاش دوباره (' . self::STEP_ATTEMPTS_MAX . ') رسید.' );
+					return array( 'state' => 'NEEDS_REVIEW', 'no_progress' => true, 'review' => true );
+				}
+
+				// retry مجاز: گام (حتی done) به pending برمی‌گردد با attempts++
 				STI_GS_Handoff_Steps::mark( (int) $step['id'], STI_GS_Handoff_Steps::STATUS_PENDING, array(
 					'attempts'    => $step_attempts,
 					'retry_at'    => current_time( 'mysql' ),
 					'error_reason'=> null,
 				) );
 				STI_GS_Event::log( $session_id, 'chain_engine', 'retry',
-					'تلاش دوباره برای گام ' . (int) $step['step_no'] . ' (' . STI_GS_Node::type_label( $node->type ) . ').' );
+					'تلاش دوباره برای گام ' . (int) $step['step_no'] . ' (' . STI_GS_Node::type_label( $node->type ) . ') — تلاش ' . $step_attempts . '/' . self::STEP_ATTEMPTS_MAX . '.' );
 			}
 
 			self::human_delay( 1.5, 4.0 );
@@ -373,8 +576,13 @@ class STI_GS_Chain_Engine {
 
 			if ( is_wp_error( $result ) ) {
 				$err_msg = $result->get_error_message();
+				// قرارداد ۱۰.۸.۳: mark_failed فقط status/error را ثبت می‌کند و
+				// attempts را افزایش نمی‌دهد. افزایش HandoffStep.attempts فقط
+				// و فقط در retry gate (ورود از CHAIN_FAILED) انجام می‌شود —
+				// تا «attempts = تعداد retry پس از اجرای اولیه» دقیق بماند
+				// و مسیر timeout و process-failure هر دو initial=1 / retry=3
+				// بدهند (در غیر این صورت شکست process یک retry را می‌خورد).
 				STI_GS_Handoff_Steps::mark_failed( (int) $step['id'], $err_msg, array(
-					'attempts'   => $step_attempts,
 					'elapsed_ms'=> $elapsed_ms,
 				) );
 				$next_retry = STI_GS_Retry::flood_wait_until( $err_msg );
@@ -565,7 +773,7 @@ class STI_GS_Chain_Engine {
 					continue;
 				}
 
-				if ( $incoming->is_actionable() ) {
+				if ( $incoming->is_executable() ) {
 					/* حفاظت حلقه‌ی ربات‌ها */
 					if ( '' !== $incoming->bot_username
 						&& STI_GS_Handoff_Steps::has_bot_loop( $session_id, $incoming->bot_username ) ) {

@@ -113,8 +113,14 @@ class STI_GS_Node {
 		return $this;
 	}
 
-	/** آیا این گره «قابل اجرا» است (یعنی Processor کاری برایش دارد)؟ */
-	public function is_actionable() {
+	/**
+	 * آیا این گره «قابل اجرا» است (یعنی Processor کاری برایش دارد)؟
+	 *
+	 * ⚠️ NODE_TEXT عمداً اینجا نیست: متن اطلاعاتی («لطفاً صبر کنید…») یک
+	 * اکشن نیست و نباید به send_text برگردد (پینگ‌پانگ). متن‌ها در
+	 * poll() به‌عنوان informational sink ثبت می‌شوند، نه گام اجرایی.
+	 */
+	public function is_executable() {
 		return in_array( $this->type, array(
 			self::NODE_BUTTON,
 			self::NODE_DEEP_LINK,
@@ -122,8 +128,15 @@ class STI_GS_Node {
 			self::NODE_WEBAPP,
 			self::NODE_CHAT_INVITE,
 			self::NODE_GATE,
-			self::NODE_TEXT,
 		), true );
+	}
+
+	/**
+	 * نام قدیمی — فقط سازگاری. منطق جدید از is_executable() استفاده می‌کند
+	 * (TEXT دیگر executable نیست).
+	 */
+	public function is_actionable() {
+		return $this->is_executable();
 	}
 
 	public function to_array() {

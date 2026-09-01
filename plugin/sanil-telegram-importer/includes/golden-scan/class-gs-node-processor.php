@@ -54,8 +54,13 @@ class STI_GS_Node_Processor {
 				return self::join_invite( $node );
 
 			case STI_GS_Node::NODE_GATE:
-			case STI_GS_Node::NODE_TEXT:
 				return self::send_text( $node );
+
+			case STI_GS_Node::NODE_TEXT:
+				// متن اطلاعاتی اکشن نیست — نباید به خود ربات برگردد (پینگ‌پانگ).
+				// در poll() به‌عنوان informational sink ثبت می‌شود، نه گام اجرایی.
+				return new WP_Error( 'sti_gs_text_not_executable',
+					'TEXT یک گره‌ی اطلاعاتی است و نباید اجرا شود (informational sink).' );
 
 			case STI_GS_Node::NODE_ASSET:
 				return new WP_Error( 'sti_gs_asset_not_processable',

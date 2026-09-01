@@ -152,6 +152,18 @@ class STI_GS_Handoff_Steps {
 			'updated_at' => current_time( 'mysql' ),
 		);
 		if ( is_array( $meta ) && ! empty( $meta ) ) {
+			/**
+			 * attempts یک ستون واقعی است، نه بخشی از meta.
+			 *
+			 * قبلاً 'attempts' داخل meta JSON می‌رفت و ستون `attempts` هرگز
+			 * آپدیت نمی‌شد — یعنی HandoffStep.attempts همیشه ۰ می‌ماند و
+			 * سقف per-hop retry عملاً غیرممکن بود. حالا اگر در آرایه آمد،
+			 * ستون آپدیت و از meta حذف می‌شود (per-hop retry bound).
+			 */
+			if ( array_key_exists( 'attempts', $meta ) ) {
+				$data['attempts'] = (int) $meta['attempts'];
+				unset( $meta['attempts'] );
+			}
 			$old = json_decode( (string) $wpdb->get_var( $wpdb->prepare(
 				'SELECT meta FROM ' . self::table() . ' WHERE id = %d', (int) $step_id
 			) ), true );

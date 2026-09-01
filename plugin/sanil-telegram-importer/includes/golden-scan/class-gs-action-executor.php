@@ -44,21 +44,9 @@ class STI_GS_Action_Executor {
 			// فقط از BUTTON_FOUND (اولین تلاش) یا ERROR_CLICK (تلاش دوباره) وارد شو —
 			// از WAITING_BOT/DONE عمداً رد می‌شویم تا دکمه هرگز دوبار زده نشود.
 			//
-			// ۱۰.۸.۱: اگر کاربر/worker از WAITING_BOT یا ERROR_BOT_TIMEOUT یا
-			// ERROR_MATCH «ادامه پردازش» یا «Execute Action» را بزند، به‌جای
-			// INVALID_STATE خودش را به BUTTON_FOUND برمی‌گرداند و کلیک را انجام
-			// می‌دهد (کلیک دوباره = همان مسیر بازیابی timeout که قبلاً دستی بود).
-			if ( in_array( (string) $session['state'], array( 'WAITING_BOT', 'ERROR_BOT_TIMEOUT', 'ERROR_MATCH' ), true )
-				&& ! empty( $session['button_payload'] ) ) {
-				STI_GS_Session::update( $session_id, array(
-					'state'        => 'BUTTON_FOUND',
-					'stage'        => 'action_executor',
-					'error_reason' => null,
-				) );
-				STI_GS_Event::log( $session_id, 'action_executor', 'ok',
-					'کلیک دوباره: از ' . $session['state'] . ' به BUTTON_FOUND برگشت.' );
-				$session = STI_GS_Session::get( $session_id );
-			}
+			// Invariant (۱۰.۸.۲): WAITING_BOT ≠ BUTTON_FOUND. تبدیل state فقط
+			// از مسیرهای صریح recovery (requeue_click / timeout_recovery) انجام
+			// می‌شود، نه صرفاً با کلیک کاربر روی «Execute Action».
 			if ( ! in_array( (string) $session['state'], array( 'BUTTON_FOUND', 'ERROR_CLICK' ), true ) ) {
 				$reason = 'INVALID_STATE: Session باید BUTTON_FOUND یا ERROR_CLICK باشد (الان: ' . $session['state'] . ').';
 				STI_GS_Event::log( $session_id, 'action_executor', 'error', $reason );

@@ -22,8 +22,8 @@ $today = $stats['today'] ?? array();
 			<div>در انتظار پردازش</div>
 		</div>
 		<div style="flex:1;min-width:130px;padding:14px;border-radius:8px;background:<?php echo $stats['stuck'] > 0 ? '#ffebee' : '#f5f5f5'; ?>;border:1px solid #ccc;">
-			<div style="font-size:26px;font-weight:700;" id="gs-w-stuck"><?php echo (int) $stats['stuck']; ?></div>
-			<div>نیازمند بازبینی</div>
+			<div style="font-size:26px;font-weight:700;" id="gs-w-stuck"><?php echo (int) ( $stats['stuck'] + ( $stats['review'] ?? 0 ) ); ?></div>
+			<div>نیازمند بازبینی (شامل NEEDS_REVIEW)</div>
 		</div>
 	</div>
 
@@ -231,7 +231,7 @@ $today = $stats['today'] ?? array();
 		function paint(d){
 			if (!d) return;
 			document.getElementById('gs-w-pending').textContent = d.pending;
-			document.getElementById('gs-w-stuck').textContent   = d.stuck;
+			document.getElementById('gs-w-stuck').textContent   = d.stuck + (d.review || 0);
 			var t = d.today || {};
 			var rows = document.querySelectorAll('#gs-w-today tbody tr td:last-child');
 			[t.advanced||0, t.waiting||0, t.completed||0, t.failed||0, t.ticks||0]

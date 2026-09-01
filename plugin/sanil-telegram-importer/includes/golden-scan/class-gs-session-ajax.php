@@ -220,6 +220,19 @@ class STI_GS_Session_Ajax {
 		$waiting = in_array( $after_state, array( 'WAITING_BOT', 'ERROR_BOT_TIMEOUT', 'CHAIN_WAITING' ), true )
 			&& ( ! $moved || 'WAITING_BOT' === $after_state || 'CHAIN_WAITING' === $after_state );
 
+		// NEEDS_REVIEW = توقف قطعی برای بررسی انسانی (نه خطای موقت، نه waiting).
+		if ( 'NEEDS_REVIEW' === $after_state ) {
+			wp_send_json_success( array(
+				'done'    => true,
+				'waiting' => false,
+				'stage'   => $next['label'],
+				'from'    => $state,
+				'to'      => 'NEEDS_REVIEW',
+				'message' => 'نیاز به بررسی انسانی: ' . ( $after['error_reason'] ?? 'evidence کافی برای ادامه یافت نشد' ) . ' — از «👁 جزئیات» وضعیت را ببینید.',
+				'session' => $after,
+			) );
+		}
+
 		wp_send_json_success( array(
 			'done'        => ! $waiting && ! $moved,
 			'waiting'     => $waiting,
@@ -271,7 +284,15 @@ class STI_GS_Session_Ajax {
 			return array( 'state' => $session['state'], 'skipped' => true, 'no_progress' => true );
 		}
 		if ( empty( $session['button_payload'] ) ) {
-			return new WP_Error( 'sti_gs_no_payload', 'برای کلیک دوباره payload دکمه لازم است.' );
+			// بدون payload، action هرگز قابل تکرار نیست → بررسی انسانی (نه backoff بی‌پایان).
+			STI_GS_Session::update( (int) $session_id, array(
+				'state'        => 'NEEDS_REVIEW',
+				'stage'        => 'session_ajax',
+				'error_reason' => 'CHAIN_REQUEUE_NO_PAYLOAD: پنجره‌ی پاسخ بسته شد و button_payload برای کلیک دوباره موجود نیست.',
+			) );
+			STI_GS_Event::log( (int) $session_id, 'session_ajax', 'error',
+				'CHAIN_REQUEUE_NO_PAYLOAD — به NEEDS_REVIEW رفت.' );
+			return array( 'state' => 'NEEDS_REVIEW', 'no_progress' => true, 'review' => true );
 		}
 		STI_GS_Session::update( (int) $session_id, array(
 			'state'        => 'BUTTON_FOUND',
@@ -280,7 +301,75 @@ class STI_GS_Session_Ajax {
 		) );
 		STI_GS_Event::log( (int) $session_id, 'session_ajax', 'ok',
 			'برای کلیک دوباره به BUTTON_FOUND برگردانده شد (از ' . $session['state'] . ').' );
-		return array( 'state' => 'BUTTON_FOUND' );
+
+		/**
+		 * WP_Error عمدی (backoff) — ضدحلقه.
+		 *
+		 * اگر success برگردانده شود، advance_one شمارنده‌ی attempts را ریست
+		 * می‌کند (چون state تغییر کرده) و چرخه‌ی بی‌پایان می‌شود:
+		 *
+		 *   ERROR_BOT_TIMEOUT → BUTTON_FOUND → Execute Action (Bot Action)
+		 *   → WAITING_BOT → poll → (۹۰۰s) → ERROR_BOT_TIMEOUT → …
+		 *
+		 * با WP_Error، worker آن را failure می‌شمارد → attempts+1 + backoff
+		 * نمایی (۵→۱۰→۲۰→۴۰→۸۰ دقیقه) → بعد از MAX_ATTEMPTS: ۶ ساعت صبر.
+		 * یعنی حداکثر یک Bot Action در هر ۶ ساعت برای یک Session بی‌پاسخ.
+		 */
+		return new WP_Error( 'sti_gs_requeue_backoff', 'کلیک دوباره زمان‌بندی شد — تلاش بعدی با backoff (ضدحلقه).' );
+	}
+
+	/**
+	 * ERROR_MATCH — ابتدا نوع شکست مشخص می‌شود؛ هیچ‌وقت کورکورانه به
+	 * Execute Action برنمی‌گردد (WAITING_BOT ≠ BUTTON_FOUND):
+	 *
+	 *   • ALL_CANDIDATES_CLAIMED / claim (رقابت یا فایل هنوز نرسیده)
+	 *     → Match Retry: WAITING_BOT + poll تازه. با WP_Error برمی‌گردد تا
+	 *       Auto Worker backoff/سقف تلاش خودش را اعمال کند (محدود).
+	 *   • NO_IDENTIFIABLE_FILE / هویت → NEEDS_REVIEW (بررسی انسانی).
+	 *   • سایر → NEEDS_REVIEW (تصمیم ناامن).
+	 *
+	 * خطاهای موقت تلگرام (timeout/network/rate-limit) اینجا نمی‌آیند —
+	 * آن‌ها در مسیرهای خودشان retry/backoff دارند.
+	 *
+	 * @return array|WP_Error
+	 */
+	public static function match_recovery( $session_id ) {
+		$session = STI_GS_Session::get( (int) $session_id );
+		if ( ! $session ) {
+			return new WP_Error( 'sti_gs_no_session', 'Session پیدا نشد.' );
+		}
+		if ( 'ERROR_MATCH' !== (string) $session['state'] ) {
+			return array( 'state' => $session['state'], 'skipped' => true, 'no_progress' => true );
+		}
+
+		$reason = (string) ( $session['error_reason'] ?? '' );
+		$low    = mb_strtolower( $reason );
+
+		/* شکست از نوع رقابت claim — فایلِ خودِ Session معمولاً چند لحظه بعد می‌رسد */
+		if ( false !== strpos( $low, 'claim' ) || false !== strpos( $low, 'all_candidates' ) ) {
+			STI_GS_Session::update( (int) $session_id, array(
+				'state'        => 'WAITING_BOT',
+				'stage'        => 'session_ajax',
+				'error_reason' => null,
+			) );
+			STI_GS_Event::log( (int) $session_id, 'session_ajax', 'ok',
+				'Match Retry: ' . $reason . ' — به WAITING_BOT برگشت تا poll تازه فایلِ خودِ Session را بیاورد.' );
+			// WP_Error عمدی: worker آن را failure می‌شمارد → attempts+1 و backoff (محدود).
+			return new WP_Error( 'sti_gs_match_retry', 'رقابت claim — poll دوباره با backoff.' );
+		}
+
+		/* هویت نامشخص یا هر شکست غیرقابل‌تشخیص → بررسی انسانی */
+		$code = 'CHAIN_MATCH_AMBIGUOUS';
+		if ( false !== strpos( $low, 'identifiable' ) || false !== strpos( $low, 'no_identity' ) ) {
+			$code = 'CHAIN_MATCH_NO_IDENTITY';
+		}
+		STI_GS_Session::update( (int) $session_id, array(
+			'state'        => 'NEEDS_REVIEW',
+			'stage'        => 'session_ajax',
+			'error_reason' => mb_substr( $code . ': ' . $reason, 0, 250 ),
+		) );
+		STI_GS_Event::log( (int) $session_id, 'session_ajax', 'error', $code . ': ' . $reason );
+		return array( 'state' => 'NEEDS_REVIEW', 'no_progress' => true, 'review' => true );
 	}
 
 	/** نگاشت State فعلی به موتوری که باید اجرا شود. */
@@ -320,7 +409,7 @@ class STI_GS_Session_Ajax {
 			'ERROR_BOT_TIMEOUT'  => array( 'Execute Action (کلیک دوباره)', array( __CLASS__, 'requeue_click' ) ),
 			'BOT_RESPONSE'       => array( 'Match File', array( 'STI_GS_File_Matcher', 'match' ) ),
 			// همان استدلال: بدون فایل تازه، تطبیق دوباره نتیجه‌ی یکسان می‌دهد.
-			'ERROR_MATCH'        => array( 'Execute Action (کلیک دوباره)', array( __CLASS__, 'requeue_click' ) ),
+			'ERROR_MATCH'        => array( 'Match Recovery', array( __CLASS__, 'match_recovery' ) ),
 			'FILE_MATCHED'       => array( 'Download', array( 'STI_GS_Download_Engine', 'download' ) ),
 			'DOWNLOAD_PENDING'   => array( 'Download', array( 'STI_GS_Download_Engine', 'download' ) ),
 			'DOWNLOADING'        => array( 'Download', array( 'STI_GS_Download_Engine', 'download' ) ),
@@ -335,7 +424,7 @@ class STI_GS_Session_Ajax {
 			'PRODUCT_READY'      => array( 'Validate', array( 'STI_GS_Product_Validator', 'validate' ) ),
 		);
 
-		/* ═══════════ معماری زنجیره‌ای (۱۰.۸) ═══════════ */
+		/* ═══════════ معماری زنجیره‌ای (۱۰.۸) — مسیریابی بر اساس chain_mode خود Session ═══════════ */
 		$global_mode = class_exists( 'STI_GS_Chain_Engine' ) ? STI_GS_Chain_Engine::mode() : STI_GS_Node::MODE_LEGACY;
 		if ( STI_GS_Node::MODE_LEGACY !== $global_mode ) {
 
@@ -352,45 +441,47 @@ class STI_GS_Session_Ajax {
 				}
 			}
 
-			if ( STI_GS_Node::MODE_CHAIN === $global_mode ) {
-				/**
-				 * حالت chain = «همه‌چیز از زنجیره».
-				 *
-				 * حتی Sessionهای قدیمی (chain_mode NULL) هم وارد زنجیره
-				 * می‌شوند — مگر اینکه خودِ زنجیره قبلاً تصمیم legacy گرفته
-				 * باشد (fallback_to_legacy روی خود Session ثبت می‌کند).
-				 */
-				if ( STI_GS_Node::MODE_LEGACY !== $session_chain ) {
-					$map['SCANNED'] = array( 'Chain Init', array( 'STI_GS_Chain_Engine', 'init' ) );
-				}
+			$is_chain_session = in_array( $session_chain, array( STI_GS_Node::MODE_AUTO, STI_GS_Node::MODE_CHAIN ), true );
 
-				/**
-				 * Sessionهای گیرکرده در مسیر قدیم (WAITING_BOT / BUTTON_FOUND /
-				 * ERROR_CLICK / ERROR_BOT_TIMEOUT / ERROR_MATCH) که هنوز هیچ
-				 * گامی در زنجیره ندارند، با recover() به زنجیره منتقل می‌شوند.
-				 *
-				 * اگر گام دارند (یعنی خودِ زنجیره آن‌ها را بعد از ASSET به
-				 * WAITING_BOT فرستاده)، همان مسیر قدیم Asset (Collector →
-				 * Matcher) درست است و دست نمی‌خورند.
-				 */
-				$has_steps = $session_id && class_exists( 'STI_GS_Handoff_Steps' )
-					&& STI_GS_Handoff_Steps::depth( (int) $session_id ) > 0;
-				// Sessionهایی که خودِ زنجیره قبلاً legacy کرده (fallback) دوباره
-				// recover نمی‌شوند — به مسیر قدیم برمی‌گردند تا حلقه نیفتد.
-				if ( ! $has_steps && STI_GS_Node::MODE_LEGACY !== $session_chain ) {
-					$map['WAITING_BOT']       = array( 'Chain Recover', array( 'STI_GS_Chain_Engine', 'recover' ) );
-					$map['BUTTON_FOUND']      = array( 'Chain Recover', array( 'STI_GS_Chain_Engine', 'recover' ) );
-					$map['ERROR_CLICK']       = array( 'Chain Recover', array( 'STI_GS_Chain_Engine', 'recover' ) );
-					$map['ERROR_BOT_TIMEOUT'] = array( 'Chain Recover', array( 'STI_GS_Chain_Engine', 'recover' ) );
-					$map['ERROR_MATCH']       = array( 'Chain Recover', array( 'STI_GS_Chain_Engine', 'recover' ) );
-				}
+			/**
+			 * D6 — invariant قطعی:
+			 *   SCANNED + chain_mode ∈ {auto, chain} → Chain Init
+			 *   SCANNED + chain_mode = NULL          → Legacy Resolver
+			 * Global UI mode هرگز معنای Session قدیمی NULL را تغییر نمی‌دهد.
+			 * فقط recover() می‌تواند با evidence صریح یک Session قدیمی را migrate کند
+			 * (و آن هم فقط از حالت‌های «گیرکرده»، نه از SCANNED).
+			 */
+			if ( $is_chain_session ) {
+				$map['SCANNED'] = array( 'Chain Init', array( 'STI_GS_Chain_Engine', 'init' ) );
+			}
+
+			/**
+			 * NULL + global chain → فقط کاندید recover (evidence-gated).
+			 * recover() بدون evidence → NEEDS_REVIEW، نه CHAIN_STEP و نه fallback بی‌صدا.
+			 */
+			$is_null_candidate = ( '' === $session_chain && STI_GS_Node::MODE_CHAIN === $global_mode );
+			$chain_candidate   = $is_chain_session || $is_null_candidate;
+
+			$has_steps = $session_id && class_exists( 'STI_GS_Handoff_Steps' )
+				&& STI_GS_Handoff_Steps::depth( (int) $session_id ) > 0;
+
+			if ( $chain_candidate && ! $has_steps && STI_GS_Node::MODE_LEGACY !== $session_chain ) {
+				// بدون گام = مسیر قدیم گیرکرده → انتقال با evidence.
+				// WAITING_BOT از دیسپچر waiting() می‌گذرد (Poll داخل پنجره / recover خارج پنجره).
+				$map['WAITING_BOT']       = array( 'Chain Waiting', array( 'STI_GS_Chain_Engine', 'waiting' ) );
+				$map['BUTTON_FOUND']      = array( 'Chain Recover', array( 'STI_GS_Chain_Engine', 'recover' ) );
+				$map['ERROR_CLICK']       = array( 'Chain Recover', array( 'STI_GS_Chain_Engine', 'recover' ) );
+				$map['ERROR_BOT_TIMEOUT'] = array( 'Chain Recover', array( 'STI_GS_Chain_Engine', 'recover' ) );
+				$map['ERROR_MATCH']       = array( 'Chain Recover', array( 'STI_GS_Chain_Engine', 'recover' ) );
+			} elseif ( $chain_candidate && $has_steps ) {
+				// با گام = مسیر Asset زنجیره (بعد از ASSET): WAITING_BOT → Poll قدیم درست است.
+				// timeout → بازیابی صریح فقط با button_payload؛ ERROR_MATCH → match retry / review.
+				$map['ERROR_BOT_TIMEOUT'] = array( 'Chain Timeout Recovery', array( 'STI_GS_Chain_Engine', 'timeout_recovery' ) );
+				$map['ERROR_MATCH']       = array( 'Match Recovery', array( __CLASS__, 'match_recovery' ) );
 			} else {
-				// auto: تصمیم SCANNED بر اساس chain_mode ثبت‌شده روی Session.
-				//   auto/chain → Chain Init (تصمیم نهایی را خودش می‌گیرد)
-				//   legacy/بدون مقدار → Resolver قدیمی (سازگاری کامل با قبل)
-				if ( in_array( $session_chain, array( STI_GS_Node::MODE_AUTO, STI_GS_Node::MODE_CHAIN ), true ) ) {
-					$map['SCANNED'] = array( 'Chain Init', array( 'STI_GS_Chain_Engine', 'init' ) );
-				}
+				// legacy: ERROR_BOT_TIMEOUT → requeue_click (بازیابی صریح timeout، از قبل در map).
+				// ERROR_MATCH دیگر کورکورانه به Execute Action نمی‌رود → match_recovery.
+				$map['ERROR_MATCH'] = array( 'Match Recovery', array( __CLASS__, 'match_recovery' ) );
 			}
 		}
 
