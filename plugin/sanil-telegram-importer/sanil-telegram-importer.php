@@ -3,7 +3,7 @@
  * Plugin Name:       Golden Importer
  * Plugin URI:        https://goldenfile.ir
  * Description:       Telegram to WooCommerce importer with Agent Bridge for large files
- * Version:           10.8.5
+ * Version:           10.9.2
  * Author:            Golden File Team
  * Text Domain:       flavor-flavor
  * Domain Path:       /languages
@@ -14,7 +14,7 @@
 if ( ! defined( 'ABSPATH' ) ) {
 exit;
 }
-define( 'STI_VERSION', '10.8.5' );
+define( 'STI_VERSION', '10.9.2' );
 define( 'STI_FILE', __FILE__ );
 define( 'STI_PATH', plugin_dir_path( __FILE__ ) );
 define( 'STI_URL', plugin_dir_url( __FILE__ ) );
@@ -195,6 +195,9 @@ require_once STI_PATH . 'includes/golden-scan/class-gs-artifact.php';
 require_once STI_PATH . 'includes/golden-scan/class-gs-event.php';
 require_once STI_PATH . 'includes/golden-scan/class-gs-button-resolver.php';
 require_once STI_PATH . 'includes/golden-scan/class-gs-retry.php';
+require_once STI_PATH . 'includes/golden-scan/class-gs-flags.php';
+require_once STI_PATH . 'includes/golden-scan/class-gs-recovery.php';
+require_once STI_PATH . 'includes/golden-scan/class-gs-channel-watcher.php';
 require_once STI_PATH . 'includes/golden-scan/class-gs-deadline.php';
 /* ═══ معماری زنجیره‌ای ۱۰.۸ — Node Classifier / Processor / Chain Engine ═══ */
 require_once STI_PATH . 'includes/golden-scan/class-gs-node.php';
@@ -339,8 +342,15 @@ if ( class_exists( 'STI_GS_DB' ) ) { STI_GS_DB::install(); }
 if ( class_exists( 'STI_GS_DB' ) ) { STI_GS_DB::init_admin_notices(); }
 if ( class_exists( 'STI_AI' ) && method_exists( 'STI_AI', 'repair_provider_ids' ) && ! get_option( 'sti_ai_ids_repaired' ) ) { STI_AI::repair_provider_ids(); update_option( 'sti_ai_ids_repaired', 1, false ); }
 if ( class_exists( 'STI_GS_Test_Wizard' ) ) { new STI_GS_Test_Wizard(); }
+/**
+ * بازه‌های کران باید پیش از هر init ثبت شوند، وگرنه wp_schedule_event
+ * آن‌ها را نمی‌شناسد و بی‌صدا به hourly سقوط می‌کند.
+ */
+if ( class_exists( 'STI_GS_Flags' ) ) { STI_GS_Flags::register_intervals(); }
 if ( class_exists( 'STI_GS_Publish_Queue' ) ) { STI_GS_Publish_Queue::init(); }
 if ( class_exists( 'STI_GS_Auto_Worker' ) ) { STI_GS_Auto_Worker::init(); }
+if ( class_exists( 'STI_GS_Recovery' ) ) { STI_GS_Recovery::init(); }
+if ( class_exists( 'STI_GS_Channel_Watcher' ) ) { STI_GS_Channel_Watcher::init(); }
 if ( class_exists( 'STI_GS_Scanner' ) ) { STI_GS_Scanner::instance(); }
 if ( class_exists( 'STI_GS_Profile_Ajax' ) ) { STI_GS_Profile_Ajax::instance(); }
 if ( class_exists( 'STI_GS_Session_Ajax' ) ) { STI_GS_Session_Ajax::instance(); }

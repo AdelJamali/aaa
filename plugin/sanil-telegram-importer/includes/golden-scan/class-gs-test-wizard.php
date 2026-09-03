@@ -24,6 +24,11 @@ class STI_GS_Test_Wizard {
 
 	public function __construct() {
 		add_action( 'wp_ajax_sti_gs_wizard_step', array( $this, 'ajax_step' ) );
+		add_action( 'wp_ajax_sti_gs_flag_toggle', array( $this, 'ajax_flag_toggle' ) );
+		add_action( 'wp_ajax_sti_gs_watcher_toggle', array( $this, 'ajax_watcher_toggle' ) );
+		add_action( 'wp_ajax_sti_gs_watcher_run', array( $this, 'ajax_watcher_run' ) );
+		add_action( 'wp_ajax_sti_gs_watchdog_run', array( $this, 'ajax_watchdog_run' ) );
+		add_action( 'wp_ajax_sti_gs_revive_dead', array( $this, 'ajax_revive_dead' ) );
 		add_action( 'wp_ajax_sti_gs_wizard_state', array( $this, 'ajax_state' ) );
 		add_action( 'wp_ajax_sti_gs_wizard_reset', array( $this, 'ajax_reset' ) );
 		add_action( 'wp_ajax_sti_gs_wizard_close_run', array( $this, 'ajax_close_run' ) );
@@ -50,6 +55,61 @@ class STI_GS_Test_Wizard {
 	}
 
 	/* ============================ Auto Worker ============================ */
+
+	/* ================= زیرساخت خودترمیمی (بدون منطق Chain) ================= */
+
+	/* ===================== Channel Watcher ===================== */
+
+	public function ajax_watcher_toggle() {
+		$this->check_ajax();
+		if ( ! class_exists( 'STI_GS_Channel_Watcher' ) ) {
+			wp_send_json_error( array( 'message' => 'ماژول Watcher بارگذاری نشده.' ) );
+		}
+		STI_GS_Channel_Watcher::set_enabled( ! empty( $_POST['enabled'] ) );
+		wp_send_json_success( STI_GS_Channel_Watcher::stats() );
+	}
+
+	/** اجرای فوری یک چرخه — بدون انتظار کران. */
+	public function ajax_watcher_run() {
+		$this->check_ajax();
+		if ( ! class_exists( 'STI_GS_Channel_Watcher' ) ) {
+			wp_send_json_error( array( 'message' => 'ماژول Watcher بارگذاری نشده.' ) );
+		}
+		$report = STI_GS_Channel_Watcher::run();
+		wp_send_json_success( array_merge( STI_GS_Channel_Watcher::stats(), array(
+			'message' => '' !== $report['skipped']
+				? $report['skipped']
+				: sprintf(
+					'%d کانال اسکن شد، %d پروفایل تازه شد، %d Session ساخته شد.',
+					$report['scanned'], $report['profiles'], $report['created']
+				),
+		) ) );
+	}
+
+	public function ajax_flag_toggle() {
+		$this->check_ajax();
+		$key = sanitize_key( $_POST['flag'] ?? '' );
+		if ( ! class_exists( 'STI_GS_Flags' ) || ! STI_GS_Flags::set( $key, ! empty( $_POST['enabled'] ) ) ) {
+			wp_send_json_error( array( 'message' => 'کلید نامعتبر است.' ) );
+		}
+		wp_send_json_success( STI_GS_Flags::all() );
+	}
+
+	public function ajax_watchdog_run() {
+		$this->check_ajax();
+		if ( ! class_exists( 'STI_GS_Recovery' ) ) {
+			wp_send_json_error( array( 'message' => 'ماژول بازیابی بارگذاری نشده.' ) );
+		}
+		STI_GS_Recovery::tick();
+		wp_send_json_success( STI_GS_Recovery::stats() );
+	}
+
+	public function ajax_revive_dead() {
+		$this->check_ajax();
+		$n = STI_GS_Recovery::revive_all();
+		wp_send_json_success( array_merge( STI_GS_Recovery::stats(),
+			array( 'message' => $n . ' مورد از صف مرده برگردانده شد.' ) ) );
+	}
 
 	public function ajax_worker_toggle() {
 		$this->check_ajax();

@@ -45,7 +45,15 @@ class STI_GS_Download_Engine {
 				return array( 'state' => $session['state'], 'skipped' => true, 'public_url' => $session['storage_url'] );
 			}
 			// از FILE_MATCHED (مسیر عادی) یا DOWNLOAD_FAILED (تلاش دوباره) وارد می‌شویم.
-			if ( ! in_array( $session['state'], array( 'FILE_MATCHED', 'DOWNLOAD_FAILED' ), true ) ) {
+			/**
+			 * DOWNLOAD_PENDING هم پذیرفته می‌شود.
+			 *
+			 * خودِ همین موتور Session را به DOWNLOAD_PENDING می‌برد (خط ۹۱)
+			 * ولی گارد ورودی آن را نمی‌شناخت. نتیجه: هر تلاش دوباره — چه
+			 * دستی، چه Worker، چه Watchdog — به INVALID_STATE می‌خورد و
+			 * Session برای همیشه در همان حالت می‌ماند.
+			 */
+			if ( ! in_array( $session['state'], array( 'FILE_MATCHED', 'DOWNLOAD_FAILED', 'DOWNLOAD_PENDING' ), true ) ) {
 				$reason = 'INVALID_STATE: Session باید FILE_MATCHED یا DOWNLOAD_FAILED باشد (الان: ' . $session['state'] . ').';
 				STI_GS_Event::log( $session_id, 'download_engine', 'error', $reason );
 				return new WP_Error( 'sti_gs_invalid_state', $reason );

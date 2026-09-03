@@ -29,6 +29,22 @@ class STI_GS_Publish_Queue {
 	public static function init() {
 		add_action( self::HOOK, array( __CLASS__, 'tick' ) );
 
+		/**
+		 * زمان‌بندی فقط در admin یا کران بررسی می‌شود.
+		 *
+		 * `init()` روی **هر درخواست** اجرا می‌شود — از جمله بازدید هر
+		 * بازدیدکننده‌ی سایت. چهار ماژول × دو فراخوانی
+		 * (`wp_next_scheduled` + `get_option`) یعنی هشت پرس‌وجوی اضافه روی
+		 * هر بارگذاری صفحه، حتی وقتی همه‌ی قابلیت‌ها خاموش‌اند.
+		 *
+		 * هوک همیشه ثبت می‌شود (ارزان است و کران به آن نیاز دارد)، ولی
+		 * بررسی زمان‌بندی فقط جایی انجام می‌شود که واقعاً لازم است.
+		 */
+		if ( ! is_admin() && ! ( defined( 'DOING_CRON' ) && DOING_CRON ) ) {
+			return;
+		}
+
+
 		// ترمیم یک‌باره‌ی آیتم‌هایی که به‌خاطر باگ whitelist زمان نگرفتند.
 		if ( ! get_option( 'sti_gs_queue_schedule_repaired_v2' ) ) {
 			update_option( 'sti_gs_queue_schedule_repaired_v2', 1, false );
@@ -57,8 +73,18 @@ class STI_GS_Publish_Queue {
 		// («sti_every_minute»). با نام ناموجود، wp_schedule_event بی‌صدا
 		// شکست می‌خورد و صف هرگز اجرا نمی‌شد.
 		if ( ! wp_next_scheduled( self::HOOK ) ) {
+			/**
+			 * بازه‌ی واقعی، نه «هر دقیقه».
+			 *
+			 * WP-Cron روی هاست اشتراکی کران واقعی نیست؛ روی بارگذاری صفحه
+			 * اجرا می‌شود. پنج کران دقیقه‌ای یعنی هر بازدیدکننده ممکن است
+			 * یکی از آن‌ها را راه بیندازد — و همان چیزی است که سایت را
+			 * چند دقیقه از دسترس خارج می‌کرد.
+			 *
+			 * این کران هر ۵ دقیقه کافی است.
+			 */
 			$schedules = wp_get_schedules();
-			$every     = isset( $schedules['sti_every_minute'] ) ? 'sti_every_minute' : 'hourly';
+			$every     = isset( $schedules['sti_gs_5min'] ) ? 'sti_gs_5min' : 'hourly';
 			wp_schedule_event( time() + 60, $every, self::HOOK );
 		}
 	}

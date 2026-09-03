@@ -175,8 +175,18 @@ class STI_GS_Profile {
 			return new WP_Error( 'sti_gs_filter_failed', $e->getMessage() );
 		}
 
+		/**
+		 * شمارش فقط Candidateهای پردازش‌نشده.
+		 *
+		 * پیش از این همه‌ی ردیف‌ها شمرده می‌شدند، از جمله آن‌هایی که
+		 * `queued` شده و Session دارند. برای همین فهرست پروفایل فایل‌هایی
+		 * را «دوباره می‌آورد» که قبلاً پردازش شده بودند.
+		 *
+		 * داده حذف نمی‌شود — فقط شمارش و نمایش واقعیت را نشان می‌دهند.
+		 */
 		$count = (int) $wpdb->get_var( $wpdb->prepare(
-			'SELECT COUNT(*) FROM ' . $items_table . ' WHERE profile_id = %d', (int) $profile_id
+			'SELECT COUNT(*) FROM ' . $items_table . ' WHERE profile_id = %d AND status = %s',
+			(int) $profile_id, 'available'
 		) );
 
 		self::update( $profile_id, array( 'status' => self::STATUS_DONE, 'matched_count' => $count ) );
@@ -193,10 +203,10 @@ class STI_GS_Profile {
 			"SELECT pi.id AS profile_item_id, pi.matched_keyword, pi.status, m.message_id, m.text_raw, m.button_summary, m.file_code, m.file_name, m.media_type
 			 FROM {$items_table} pi
 			 INNER JOIN {$messages_table} m ON m.id = pi.message_pk
-			 WHERE pi.profile_id = %d
+			 WHERE pi.profile_id = %d AND pi.status = %s
 			 ORDER BY m.message_id DESC
 			 LIMIT %d",
-			(int) $profile_id, max( 1, (int) $limit )
+			(int) $profile_id, 'available', max( 1, (int) $limit )
 		), ARRAY_A );
 	}
 

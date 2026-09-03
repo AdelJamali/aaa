@@ -60,7 +60,7 @@ class STI_GS_Auto_Worker {
 	const IN_PROGRESS = array( 'DOWNLOADING', 'MEDIA_BUILDING', 'PRODUCT_BUILDING' );
 
 	/** حالت‌هایی که کار تمام است و Worker نباید دستشان بزند. */
-	const TERMINAL = array( 'REVIEW_READY', 'PUBLISHED', 'SKIPPED', 'NEEDS_REVIEW', 'ERROR_FILE_NOT_FOUND' );
+	const TERMINAL = array( 'REVIEW_READY', 'PUBLISHED', 'SKIPPED', 'NEEDS_REVIEW', 'ERROR_FILE_NOT_FOUND', 'DEAD_LETTER' );
 
 	/** حالت‌هایی که یعنی «منتظر ربات» — شمارنده‌ی تلاش بالا نمی‌رود. */
 	const WAITING = array( 'WAITING_BOT', 'ERROR_BOT_TIMEOUT', 'CHAIN_WAITING' );
@@ -86,6 +86,22 @@ class STI_GS_Auto_Worker {
 		add_action( self::HOOK, array( __CLASS__, 'tick' ) );
 
 		/**
+		 * زمان‌بندی فقط در admin یا کران بررسی می‌شود.
+		 *
+		 * `init()` روی **هر درخواست** اجرا می‌شود — از جمله بازدید هر
+		 * بازدیدکننده‌ی سایت. چهار ماژول × دو فراخوانی
+		 * (`wp_next_scheduled` + `get_option`) یعنی هشت پرس‌وجوی اضافه روی
+		 * هر بارگذاری صفحه، حتی وقتی همه‌ی قابلیت‌ها خاموش‌اند.
+		 *
+		 * هوک همیشه ثبت می‌شود (ارزان است و کران به آن نیاز دارد)، ولی
+		 * بررسی زمان‌بندی فقط جایی انجام می‌شود که واقعاً لازم است.
+		 */
+		if ( ! is_admin() && ! ( defined( 'DOING_CRON' ) && DOING_CRON ) ) {
+			return;
+		}
+
+
+		/**
 		 * پاک‌سازی یک‌باره.
 		 *
 		 * نسخه‌ی اول Worker به‌خاطر برخورد قفل، Sessionهای کاملاً سالم را
@@ -109,8 +125,18 @@ class STI_GS_Auto_Worker {
 		}
 
 		if ( ! wp_next_scheduled( self::HOOK ) ) {
+			/**
+			 * بازه‌ی واقعی، نه «هر دقیقه».
+			 *
+			 * WP-Cron روی هاست اشتراکی کران واقعی نیست؛ روی بارگذاری صفحه
+			 * اجرا می‌شود. پنج کران دقیقه‌ای یعنی هر بازدیدکننده ممکن است
+			 * یکی از آن‌ها را راه بیندازد — و همان چیزی است که سایت را
+			 * چند دقیقه از دسترس خارج می‌کرد.
+			 *
+			 * این کران هر ۵ دقیقه کافی است.
+			 */
 			$schedules = wp_get_schedules();
-			$every     = isset( $schedules['sti_every_minute'] ) ? 'sti_every_minute' : 'hourly';
+			$every     = isset( $schedules['sti_gs_5min'] ) ? 'sti_gs_5min' : 'hourly';
 			wp_schedule_event( time() + 120, $every, self::HOOK );
 		}
 	}
@@ -383,6 +409,39 @@ class STI_GS_Auto_Worker {
 		$session  = STI_GS_Session::get( $session_id );
 		$attempts = (int) ( $session['attempts'] ?? 0 ) + 1;
 
+		/**
+		 * دسته‌بندی خطا فقط **زمان‌بندی تلاش دوباره** را تعیین می‌کند.
+		 *
+		 * هیچ تصمیمی درباره‌ی مسیر زنجیره یا State بعدی گرفته نمی‌شود —
+		 * آن مال Chain Engine است. اینجا فقط پاسخ این سؤال داده می‌شود:
+		 * «چقدر دیگر دوباره امتحان کنیم، یا اصلاً امتحان نکنیم؟»
+		 */
+		if ( class_exists( 'STI_GS_Recovery' ) && class_exists( 'STI_GS_Flags' )
+			&& STI_GS_Flags::on( 'error_classification' ) ) {
+
+			$class = STI_GS_Recovery::classify( $message, $state );
+
+			if ( STI_GS_Recovery::PERMANENT === $class ) {
+				STI_GS_Recovery::to_dead_letter( $session_id, $stage, $message );
+				self::remember_failure( $session_id, $state, $stage, 'دائمی: ' . $message );
+				return 'failed';
+			}
+
+			$delay = STI_GS_Recovery::backoff_seconds( $class, $attempts );
+			if ( $attempts >= self::MAX_ATTEMPTS ) {
+				$delay = max( $delay, self::RETRY_AFTER_GIVEUP );
+			}
+
+			STI_GS_Session::update( $session_id, array(
+				'attempts'      => $attempts,
+				'next_retry_at' => self::mysql_time( time() + $delay ),
+				'error_reason'  => mb_substr( '[' . $class . '] ' . $stage . ': ' . $message, 0, 250 ),
+			) );
+
+			self::remember_failure( $session_id, $state, $stage, '[' . $class . '] ' . $message );
+			return 'failed';
+		}
+
 		if ( $attempts >= self::MAX_ATTEMPTS ) {
 			// «کنار گذاشته شد» یعنی «شش ساعت دیگر دوباره»، نه «هرگز».
 			STI_GS_Session::update( $session_id, array(
@@ -505,9 +564,20 @@ class STI_GS_Auto_Worker {
 		) );
 
 		// NEEDS_REVIEW / ERROR_FILE_NOT_FOUND — نیاز به بررسی انسانی (۱۰.۸.۵).
-		$review = (int) $wpdb->get_var( $wpdb->prepare(
+		/**
+		 * بدون prepare — این کوئری هیچ ورودی متغیری ندارد.
+		 *
+		 * از وردپرس ۶.۲، `prepare()` بدون placeholder یک
+		 * `_doing_it_wrong()` صادر می‌کند. با WP_DEBUG روشن آن Notice
+		 * **داخل خروجی AJAX چاپ می‌شود** و JSON را خراب می‌کند — همان
+		 * «پاسخ نامعتبر از سرور» که هنگام «اجرای فوری یک دور» می‌دیدید.
+		 *
+		 * پیشوند \danog\MadelineProto\Exception گمراه‌کننده بود؛
+		 * MadelineProto فقط خروجی آلوده را بسته‌بندی کرده بود.
+		 */
+		$review = (int) $wpdb->get_var(
 			"SELECT COUNT(*) FROM {$table} WHERE state IN ('NEEDS_REVIEW','ERROR_FILE_NOT_FOUND')"
-		) );
+		);
 
 		$today = get_option( self::STATS_KEY, array() );
 

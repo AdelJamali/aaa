@@ -413,6 +413,7 @@ class STI_GS_Session_Ajax {
 			'ERROR_MATCH'        => array( 'Match Recovery', array( __CLASS__, 'match_recovery' ) ),
 			'FILE_MATCHED'       => array( 'Download', array( 'STI_GS_Download_Engine', 'download' ) ),
 			'DOWNLOAD_PENDING'   => array( 'Download', array( 'STI_GS_Download_Engine', 'download' ) ),
+			'MEDIA_PENDING'      => array( 'Build Media', array( 'STI_GS_Media_Engine', 'build' ) ),
 			'DOWNLOADING'        => array( 'Download', array( 'STI_GS_Download_Engine', 'download' ) ),
 			'DOWNLOAD_FAILED'    => array( 'Download', array( 'STI_GS_Download_Engine', 'download' ) ),
 			'DOWNLOADED'         => array( 'Build Media', array( 'STI_GS_Media_Engine', 'build' ) ),

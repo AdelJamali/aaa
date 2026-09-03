@@ -25,7 +25,44 @@ class STI_GS_Deadline {
 
 	/** آیا timeout واقعی (سیگنال) ممکن است؟ */
 	public static function real_timeout_available() {
-		return function_exists( 'pcntl_alarm' ) && function_exists( 'pcntl_signal' );
+		return function_exists( 'pcntl_alarm' )
+			&& function_exists( 'pcntl_signal' )
+			&& function_exists( 'pcntl_async_signals' );
+	}
+
+	/**
+	 * تحویل ناهمگام سیگنال — بدون این، SIGALRM هرگز به کد PHP نمی‌رسد.
+	 *
+	 * از PHP 7.1 به بعد، سیگنال‌ها فقط وقتی تحویل داده می‌شوند که یا
+	 * `pcntl_async_signals(true)` فعال باشد یا `declare(ticks=1)` وجود
+	 * داشته باشد. هیچ‌کدام در این کلاس نبود.
+	 *
+	 * نتیجه: `pcntl_alarm()` تنظیم می‌شد، مهلت می‌گذشت، و handler **اجرا
+	 * نمی‌شد** — دقیقاً وقتی PHP داخل یک تماس شبکه‌ی مسدودکننده بود، یعنی
+	 * همان لحظه‌ای که به آن نیاز داشتیم.
+	 *
+	 * عملاً حالت pcntl بی‌صدا به مسیر set_time_limit سقوط می‌کرد: درخواست
+	 * کشته می‌شد ولی `finally` اجرا نمی‌شد، پس قفل تا انقضای TTL می‌ماند —
+	 * دقیقاً برخلاف ادعای «خطای کنترل‌شده با آزادسازی قفل».
+	 *
+	 * تنها جایی که فعال می‌شد `STI_MTProto` بود، آن هم با گارد
+	 * `static $done` و فقط اگر آن مسیر پیش‌تر اجرا شده بود.
+	 */
+	protected static function enable_async_signals() {
+		static $enabled = null;
+		if ( null !== $enabled ) {
+			return $enabled;
+		}
+		$enabled = false;
+		if ( function_exists( 'pcntl_async_signals' ) ) {
+			try {
+				pcntl_async_signals( true );
+				$enabled = true;
+			} catch ( \Throwable $e ) {
+				$enabled = false;
+			}
+		}
+		return $enabled;
 	}
 
 	/**
@@ -58,6 +95,11 @@ class STI_GS_Deadline {
 		$prev_handler = null;
 		if ( function_exists( 'pcntl_signal_get_handler' ) ) {
 			$prev_handler = pcntl_signal_get_handler( SIGALRM );
+		}
+
+		// بدون تحویل ناهمگام، alarm بی‌اثر است — پس به مسیر امن سقوط می‌کنیم.
+		if ( ! self::enable_async_signals() ) {
+			return self::guard_time_limit( $fn, $timeout_sec, $label );
 		}
 
 		$prev_limit = ini_get( 'max_execution_time' );

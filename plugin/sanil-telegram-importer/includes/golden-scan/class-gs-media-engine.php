@@ -42,7 +42,8 @@ class STI_GS_Media_Engine {
 				);
 				return array( 'state' => $session['state'], 'skipped' => true, 'image_url' => $session['image_url'] );
 			}
-			if ( ! in_array( $session['state'], array( 'STORED', 'MEDIA_FAILED' ), true ) ) {
+			// MEDIA_PENDING: نیمه‌کاره ماند، نه تازه رسید.
+			if ( ! in_array( $session['state'], array( 'STORED', 'MEDIA_FAILED', 'MEDIA_PENDING' ), true ) ) {
 				$reason = 'INVALID_STATE: Session باید STORED یا MEDIA_FAILED باشد (الان: ' . $session['state'] . ').';
 				STI_GS_Event::log( $session_id, 'media_engine', 'error', $reason );
 				return new WP_Error( 'sti_gs_invalid_state', $reason );

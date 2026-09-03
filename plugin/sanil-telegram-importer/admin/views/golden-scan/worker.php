@@ -210,6 +210,135 @@ $today = $stats['today'] ?? array();
 	</p>
 	<div id="gs-rb-result"></div>
 
+	<?php $wt = class_exists( 'STI_GS_Channel_Watcher' ) ? STI_GS_Channel_Watcher::stats() : null; ?>
+	<?php if ( $wt ) : ?>
+		<h2 style="margin-top:26px;">🛰 پایش کانال (خودکارسازی کامل)</h2>
+		<p style="color:#666;">این حلقه‌ی گمشده بود: اسکن کانال، اجرای پروفایل‌ها و ساخت Session
+		تا امروز دستی بودند. با روشن بودن این، مسیر «کانال → محصول منتشرشده» بدون کلیک کامل می‌شود.</p>
+
+		<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;">
+			<div style="flex:1;min-width:130px;padding:12px;border-radius:8px;background:<?php echo $wt['enabled'] ? '#e8f5e9' : '#f5f5f5'; ?>;border:1px solid #ccc;">
+				<div style="font-size:20px;font-weight:700;"><?php echo $wt['enabled'] ? '🟢 روشن' : '⚪ خاموش'; ?></div>
+				<div>وضعیت Watcher</div>
+			</div>
+			<div style="flex:1;min-width:130px;padding:12px;border-radius:8px;background:#e3f2fd;border:1px solid #90caf9;">
+				<div style="font-size:22px;font-weight:700;"><?php echo number_format_i18n( $wt['ready'] ); ?></div>
+				<div>آماده‌ی ساخت Session</div>
+			</div>
+			<div style="flex:1;min-width:130px;padding:12px;border-radius:8px;background:<?php echo $wt['backlog'] >= $wt['backlog_limit'] ? '#ffebee' : '#f5f5f5'; ?>;border:1px solid #ccc;">
+				<div style="font-size:22px;font-weight:700;"><?php echo (int) $wt['backlog']; ?> / <?php echo (int) $wt['backlog_limit']; ?></div>
+				<div>صف ناتمام (فشار معکوس)</div>
+			</div>
+			<div style="flex:1;min-width:130px;padding:12px;border-radius:8px;background:#f5f5f5;border:1px solid #ccc;">
+				<div style="font-size:22px;font-weight:700;"><?php echo (int) $wt['created_today']; ?><?php echo $wt['daily_cap'] ? ' / ' . (int) $wt['daily_cap'] : ''; ?></div>
+				<div>ساخته‌شده امروز</div>
+			</div>
+			<div style="flex:1;min-width:130px;padding:12px;border-radius:8px;background:<?php echo $wt['no_category'] ? '#fff8e1' : '#f5f5f5'; ?>;border:1px solid #ccc;">
+				<div style="font-size:22px;font-weight:700;"><?php echo number_format_i18n( $wt['no_category'] ); ?></div>
+				<div>بدون دسته (نادیده)</div>
+			</div>
+		</div>
+
+		<?php if ( $wt['no_category'] > 0 ) : ?>
+			<div class="notice notice-warning" style="margin:0 0 12px;">
+				<p><?php echo number_format_i18n( $wt['no_category'] ); ?> Candidate به پروفایلی تعلق دارند که
+				<strong>دسته‌ی پیش‌فرض ندارد</strong>. Watcher عمداً از آن‌ها Session نمی‌سازد — وگرنه
+				محصول بی‌دسته و بی‌قیمت تولید می‌شود که بعداً باید بازسازی شود.
+				در تب «پروفایل‌ها» برایشان دسته تعیین کنید.</p>
+			</div>
+		<?php endif; ?>
+
+		<?php if ( ! empty( $wt['note'] ) ) : ?>
+			<p style="color:#666;">آخرین اجرا: <?php echo esc_html( $wt['note'] ); ?></p>
+		<?php endif; ?>
+
+		<p>
+			<button class="button button-primary" id="gs-wt-toggle" data-on="<?php echo $wt['enabled'] ? '1' : '0'; ?>">
+				<?php echo $wt['enabled'] ? '⏸ توقف پایش' : '▶ شروع پایش'; ?>
+			</button>
+			<button class="button" id="gs-wt-run">🔄 اجرای فوری یک چرخه</button>
+			<span style="color:#666;margin-inline-start:8px;">
+				هر <?php echo (int) $wt['interval_min']; ?> دقیقه، حداکثر <?php echo (int) $wt['batch']; ?> Session
+			</span>
+		</p>
+	<?php endif; ?>
+
+	<?php $rec = class_exists( 'STI_GS_Recovery' ) ? STI_GS_Recovery::stats() : null; ?>
+	<?php if ( $rec ) : ?>
+		<h2 style="margin-top:26px;">🩹 خودترمیمی زیرساخت</h2>
+		<p style="color:#666;">این لایه فقط قفل‌های رهاشده را آزاد می‌کند.
+		تصمیم درباره‌ی مسیر زنجیره با Chain Engine است.</p>
+
+		<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;">
+			<div style="flex:1;min-width:130px;padding:12px;border-radius:8px;background:<?php echo $rec['stale_locks'] ? '#fff8e1' : '#e8f5e9'; ?>;border:1px solid #ccc;">
+				<div style="font-size:22px;font-weight:700;"><?php echo (int) $rec['stale_locks']; ?></div>
+				<div>قفل رهاشده (Chain)</div>
+			</div>
+			<div style="flex:1;min-width:130px;padding:12px;border-radius:8px;background:<?php echo $rec['orphans'] ? '#ffebee' : '#e8f5e9'; ?>;border:1px solid #ccc;">
+				<div style="font-size:22px;font-weight:700;"><?php echo (int) $rec['orphans']; ?></div>
+				<div>یتیم (دانلود/مدیا)</div>
+			</div>
+			<div style="flex:1;min-width:130px;padding:12px;border-radius:8px;background:#e8f5e9;border:1px solid #ccc;">
+				<div style="font-size:22px;font-weight:700;"><?php echo (int) $rec['recovered_today']; ?></div>
+				<div>ترمیم‌شده امروز</div>
+			</div>
+			<div style="flex:1;min-width:130px;padding:12px;border-radius:8px;background:<?php echo $rec['dead'] ? '#fff8e1' : '#f5f5f5'; ?>;border:1px solid #ccc;">
+				<div style="font-size:22px;font-weight:700;"><?php echo (int) $rec['dead']; ?></div>
+				<div>صف مرده</div>
+			</div>
+			<div style="flex:1;min-width:130px;padding:12px;border-radius:8px;background:#f5f5f5;border:1px solid #ccc;">
+				<div style="font-size:22px;font-weight:700;"><?php echo (int) $rec['retry_queue']; ?></div>
+				<div>در صف تلاش دوباره</div>
+			</div>
+		</div>
+
+		<p style="color:#666;">حالت مهلت‌گذاری:
+			<?php if ( 'signal' === $rec['deadline_mode'] ) : ?>
+				<strong>🟢 سیگنال</strong> — تماس قفل‌شده با خطای کنترل‌شده متوقف می‌شود و قفل بلافاصله آزاد می‌گردد.
+			<?php else : ?>
+				<strong>🟡 محدودیت زمان</strong> — این هاست <code>pcntl</code> ندارد؛ درخواست کشته می‌شود
+				و قفل تا انقضای TTL می‌ماند. Watchdog همان‌ها را آزاد می‌کند.
+			<?php endif; ?>
+		</p>
+
+		<p>
+			<button class="button" id="gs-wd-run">🩹 اجرای فوری Watchdog</button>
+			<?php if ( $rec['dead'] > 0 ) : ?>
+				<button class="button" id="gs-wd-revive">↩ بازگرداندن صف مرده</button>
+			<?php endif; ?>
+		</p>
+
+		<?php $dl = STI_GS_Recovery::dead_letters( 10 ); if ( $dl ) : ?>
+			<details style="margin-bottom:14px;">
+				<summary style="cursor:pointer;">صف مرده (<?php echo count( $dl ); ?> مورد اخیر)</summary>
+				<table class="widefat striped" style="margin-top:8px;">
+					<thead><tr><th style="width:70px;">Session</th><th style="width:110px;">کد فایل</th><th style="width:120px;">مرحله</th><th>دلیل</th></tr></thead>
+					<tbody>
+					<?php foreach ( $dl as $d ) : ?>
+						<tr><td>#<?php echo (int) $d['id']; ?></td>
+							<td dir="ltr"><?php echo esc_html( $d['file_code'] ?: '—' ); ?></td>
+							<td><?php echo esc_html( $d['stage'] ); ?></td>
+							<td style="font-size:12px;"><?php echo esc_html( $d['error_reason'] ); ?></td></tr>
+					<?php endforeach; ?>
+					</tbody>
+				</table>
+			</details>
+		<?php endif; ?>
+
+		<?php if ( class_exists( 'STI_GS_Flags' ) ) : ?>
+			<h3>کلیدهای قابلیت</h3>
+			<table class="widefat striped"><tbody>
+			<?php foreach ( STI_GS_Flags::definitions() as $key => $def ) : ?>
+				<tr>
+					<td style="width:60px;"><input type="checkbox" class="gs-flag" data-flag="<?php echo esc_attr( $key ); ?>" <?php checked( STI_GS_Flags::on( $key ) ); ?>></td>
+					<td><strong><?php echo esc_html( $def['label'] ); ?></strong><br>
+						<span style="color:#666;font-size:12px;"><?php echo esc_html( $def['note'] ); ?></span></td>
+				</tr>
+			<?php endforeach; ?>
+			</tbody></table>
+		<?php endif; ?>
+	<?php endif; ?>
+
 	<div class="notice notice-info" style="margin-top:20px;">
 		<p><strong>ترتیب درست روشن کردن:</strong> اول Worker را روشن کنید و بگذارید
 		چند دور بچرخد و محصولات ساخته شوند. وقتی از کیفیت عنوان، دسته و قیمت
@@ -354,4 +483,48 @@ $today = $stats['today'] ?? array();
 		setInterval(refresh, 20000);
 	})();
 	</script>
+
+	<script>
+	(function(){
+		function post(a, x){
+			var b=new URLSearchParams(Object.assign({action:a,nonce:STI.nonce}, x||{}));
+			return fetch(STI.ajaxUrl||ajaxurl,{method:'POST',credentials:'same-origin',body:b})
+				.then(function(r){return r.text();})
+				.then(function(t){try{return JSON.parse(t);}catch(e){throw new Error(t.slice(0,300));}});
+		}
+		function bind(id,fn){var e=document.getElementById(id); if(e) e.addEventListener('click',fn);}
+
+
+		bind('gs-wt-toggle', function(){
+			var on = this.dataset.on === '1';
+			post('sti_gs_watcher_toggle', { enabled: on ? '' : '1' })
+				.then(function(){ location.reload(); });
+		});
+		bind('gs-wt-run', function(){
+			var b=this; b.disabled=true; b.textContent='در حال اجرا...';
+			post('sti_gs_watcher_run').then(function(r){
+				b.disabled=false; b.textContent='🔄 اجرای فوری یک چرخه';
+				alert((r.data && r.data.message) || 'انجام شد');
+				location.reload();
+			}).catch(function(e){ b.disabled=false; b.textContent='🔄 اجرای فوری یک چرخه'; alert(e.message); });
+		});
+		bind('gs-wd-run', function(){
+			var b=this; b.disabled=true; b.textContent='در حال بررسی...';
+			post('sti_gs_watchdog_run').then(function(){location.reload();})
+				.catch(function(e){b.disabled=false;b.textContent='🩹 اجرای فوری Watchdog';alert(e.message);});
+		});
+		bind('gs-wd-revive', function(){
+			if(!confirm('همه‌ی موارد صف مرده به چرخه برگردند؟'))return;
+			post('sti_gs_revive_dead').then(function(r){
+				alert((r.data&&r.data.message)||'انجام شد'); location.reload();});
+		});
+		document.querySelectorAll('.gs-flag').forEach(function(cb){
+			cb.addEventListener('change', function(){
+				post('sti_gs_flag_toggle',{flag:cb.dataset.flag,enabled:cb.checked?'1':''})
+					.then(function(r){ if(!r.success){alert('خطا'); cb.checked=!cb.checked;} });
+			});
+		});
+	})();
+	</script>
+
 </div>

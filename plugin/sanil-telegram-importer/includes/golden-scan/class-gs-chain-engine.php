@@ -915,9 +915,58 @@ class STI_GS_Chain_Engine {
 							'FLOOD_WAIT از ' . $peer . ' — تلاش بعدی پس از ' . $fw . ' (بدون مصرف attempts).' );
 						return array( 'state' => 'CHAIN_WAITING', 'waiting' => true, 'flood_wait' => $fw );
 					}
+					/**
+					 * ═══ اصلاح ریشه‌ای: شکست خواندن ≠ نبود پاسخ ═══
+					 *
+					 * پیش از این، شکست خواندن تاریخچه به `$msgs = array()`
+					 * تبدیل می‌شد. یعنی «نتوانستیم بخوانیم» دقیقاً مثل
+					 * «ربات چیزی نفرستاده» رفتار می‌کرد و Session به سمت
+					 * CHAIN_BOT_TIMEOUT می‌رفت.
+					 *
+					 * در لاگ Sessionهای ۴۹ و ۵۰ همین دیده شد:
+					 *   chain_global_poll  docs_recorded > 0   ← فایل در Inbox هست
+					 *   Bot Candidates     هیچ                  ← ساخته نشد
+					 *   CHAIN_BOT_TIMEOUT                       ← تایم‌اوت کاذب
+					 *
+					 * ربات مهلت نداشت؛ ما نتوانستیم بخوانیم. این دو باید
+					 * جدا باشند، چون درمانشان فرق دارد: یکی انتظار
+					 * می‌خواهد، دیگری تلاش دوباره.
+					 *
+					 * از این پس، پیش از هر نتیجه‌گیری، Inbox بررسی می‌شود —
+					 * که Source of Truth است و `global_poll` چند خط بالاتر
+					 * پرش کرده.
+					 */
+					$read_error = $msgs->get_error_message();
+
 					STI_GS_Event::log( $session_id, 'chain_engine', 'error',
-						'خواندن تاریخچه‌ی ' . $peer . ' ناموفق: ' . $msgs->get_error_message() );
-					$msgs = array();
+						'خواندن تاریخچه‌ی ' . $peer . ' ناموفق: ' . $read_error );
+
+					$msgs = self::messages_from_inbox( $session_id, $anchor_peer ?: $peer, $anchor_action_ts, $last_msg_id );
+
+					STI_GS_Artifact::log( $session_id, 'chain_history_read_failed', array(
+						'peer'            => $peer,
+						'error'           => mb_substr( $read_error, 0, 200 ),
+						'inbox_fallback'  => count( $msgs ),
+					) );
+
+					if ( empty( $msgs ) ) {
+						/**
+						 * نه تاریخچه خوانده شد، نه Inbox چیزی داشت.
+						 *
+						 * این یک خطای Runtime است، نه پایان مهلت ربات —
+						 * پس Session با وضعیت مستقل برمی‌گردد و دوباره
+						 * تلاش می‌شود، بدون اینکه به تایم‌اوت شمرده شود.
+						 */
+						STI_GS_Session::update( $session_id, array(
+							'error_reason' => mb_substr( 'CHAIN_HISTORY_READ_FAILED: ' . $read_error, 0, 250 ),
+						) );
+						return array(
+							'state'        => 'CHAIN_WAITING',
+							'waiting'      => true,
+							'read_failed'  => true,
+							'reason'       => 'CHAIN_HISTORY_READ_FAILED',
+						);
+					}
 				}
 				$scan_max_id = $last_msg_id; // برای پیشروی msg_id حتی روی پیام‌های ردشده
 				foreach ( (array) $msgs as $m ) {
@@ -1233,6 +1282,42 @@ class STI_GS_Chain_Engine {
 
 			/* ۵) مهلت پاسخ ربات تمام شد؟ → CHAIN_FAILED (worker دوباره تلاش می‌کند) */
 			if ( $clicked_ts && ( time() - $clicked_ts ) > $timeout ) {
+
+				/**
+				 * آخرین فرصت: شاید فایل در Inbox باشد.
+				 *
+				 * تاریخچه ممکن است چیزی برنگردانده باشد (یا شکست خورده،
+				 * یا پیام از پنجره‌ی ۳۰تایی بیرون افتاده) در حالی که
+				 * `global_poll` همان فایل را ثبت کرده.
+				 *
+				 * اعلام تایم‌اوت در حالی که فایل موجود است، بدترین حالت
+				 * ممکن است: Session کشته می‌شود و فایلی که دریافت شده
+				 * بی‌استفاده می‌ماند.
+				 */
+				$rescue = self::messages_from_inbox( $session_id, $anchor_peer ?: $peer, $anchor_action_ts, $last_msg_id );
+
+				if ( ! empty( $rescue ) ) {
+					STI_GS_Artifact::log( $session_id, 'chain_timeout_rescued', array(
+						'step_no' => (int) $step['step_no'],
+						'found'   => count( $rescue ),
+						'waited'  => time() - $clicked_ts,
+					) );
+					STI_GS_Event::log( $session_id, 'chain_engine', 'ok', sprintf(
+						'مهلت تمام شده بود ولی %d پاسخ در صندوق ورودی پیدا شد — تایم‌اوت لغو شد.',
+						count( $rescue )
+					) );
+
+					// گام را در وضعیت انتظار نگه می‌داریم تا Poll بعدی
+					// همین ردیف‌های Inbox را پردازش کند.
+					STI_GS_Session::update( $session_id, array(
+						'clicked_at'   => current_time( 'mysql' ),
+						'error_reason' => null,
+					) );
+					STI_GS_Handoff_Steps::mark( (int) $step['id'], STI_GS_Handoff_Steps::STATUS_WAITING, array() );
+
+					return array( 'state' => 'CHAIN_WAITING', 'waiting' => true, 'rescued' => count( $rescue ) );
+				}
+
 				self::fail_chain( $session_id, 'CHAIN_BOT_TIMEOUT',
 					sprintf( 'پاسخی از ربات طی %d ثانیه نیامد (گام %d).', $timeout, (int) $step['step_no'] ) );
 				return new WP_Error( 'sti_gs_chain_timeout', 'مهلت پاسخ ربات تمام شد.' );
@@ -1308,6 +1393,85 @@ class STI_GS_Chain_Engine {
 	}
 
 	/** نام خودکار تلگرام (photo_12345 / image-987 / img_1 / file_3) — همان فلسفه‌ی Identity Engine. */
+	/**
+	 * ساخت پیام‌های شبه‌تلگرامی از روی Bot Inbox.
+	 *
+	 * ═══ چرا Inbox باید Source of Truth باشد ═══
+	 *
+	 * `global_poll()` چند خط بالاتر همین تابع، پاسخ ربات را از تلگرام
+	 * می‌گیرد و در `sti_bot_inbox` ثبت می‌کند. سپس Chain دوباره سراغ
+	 * `recent_peer_messages()` می‌رفت تا **همان پاسخ** را بار دوم بخواند.
+	 *
+	 * دو خواندن برای یک داده، و مسیر دوم شکننده‌تر است: `getHistory` روی
+	 * Fiber/Amp اجرا می‌شود و همان‌جاست که خطاهای
+	 * «Must call resume() or throw()» رخ می‌دهند.
+	 *
+	 * وقتی فایل از قبل در Inbox ثبت شده، نیازی به خواندن دوباره نیست.
+	 * این تابع همان ردیف‌ها را به شکلی برمی‌گرداند که حلقه‌ی correlation
+	 * موجود بدون تغییر بتواند مصرفشان کند.
+	 *
+	 * قواعد anchor عیناً رعایت می‌شوند: فقط پیام‌های پس از اکشن، فقط از
+	 * همان peer، فقط msg_idهای مصرف‌نشده.
+	 *
+	 * @return array پیام‌های نرمال‌شده، به ترتیب msg_id
+	 */
+	protected static function messages_from_inbox( $session_id, $peer, $action_at_ts, $last_msg_id ) {
+		if ( ! class_exists( 'STI_Bot_Inbox' ) ) {
+			return array();
+		}
+
+		global $wpdb;
+		$table = STI_Bot_Inbox::table();
+		$peer  = ltrim( trim( (string) $peer ), '@' );
+
+		if ( '' === $peer ) {
+			return array();
+		}
+
+		// tolerance ۱۰ ثانیه، مثل قاعده‌ی anchor در مسیر تاریخچه
+		$since = max( 0, (int) $action_at_ts - 10 );
+
+		$rows = (array) $wpdb->get_results( $wpdb->prepare(
+			"SELECT * FROM {$table}
+			 WHERE LOWER(peer) = LOWER(%s)
+			   AND msg_id > %d
+			   AND date_ts >= %d
+			 ORDER BY msg_id ASC
+			 LIMIT 30",
+			$peer, (int) $last_msg_id, $since
+		), ARRAY_A );
+
+		if ( ! $rows ) {
+			return array();
+		}
+
+		$out = array();
+		foreach ( $rows as $r ) {
+			$out[] = array(
+				'id'         => (int) $r['msg_id'],
+				'date'       => (int) $r['date_ts'],
+				'out'        => false, // ردیف‌های Inbox همیشه ورودی‌اند
+				'text'       => (string) ( $r['caption'] ?? $r['text'] ?? '' ),
+				'file_name'  => (string) ( $r['file_name'] ?? '' ),
+				'media_type' => 'document',
+				'peer'       => $peer,
+				'telegram_document_id' => (int) ( $r['telegram_document_id'] ?? 0 ),
+				'_from_inbox'          => true,
+				'_inbox_id'            => (int) $r['id'],
+			);
+		}
+
+		STI_GS_Artifact::log( $session_id, 'chain_inbox_fallback', array(
+			'peer'      => $peer,
+			'since_ts'  => $since,
+			'after_msg' => (int) $last_msg_id,
+			'found'     => count( $out ),
+			'files'     => array_slice( wp_list_pluck( $out, 'file_name' ), 0, 5 ),
+		) );
+
+		return $out;
+	}
+
 	public static function is_auto_named( $file_name ) {
 		$base = preg_replace( '~\.[A-Za-z0-9]{1,5}$~', '', trim( (string) $file_name ) );
 		if ( '' === $base ) {
