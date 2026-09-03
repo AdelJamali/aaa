@@ -1,31 +1,94 @@
 <?php
 if ( ! defined( 'ABSPATH' ) ) { exit; }
-$gs_current = ( isset( $_GET['gs_view'] ) && in_array( $_GET['gs_view'], array( 'profiles', 'sessions', 'system-check', 'test-wizard', 'logs', 'worker', 'insight', 'automation', 'review', 'environment', 'automation-settings' ), true ) ) ? $_GET['gs_view'] : 'channels';
+
+/**
+ * ۱۰.۱۱ — ادغام IA: ۵ گروه به‌جای ۱۲ تب پراکنده.
+ *
+ * همه‌ی مقادیر gs_view دست‌نخورده‌اند → deep-link، AJAX و capability
+ * checks موجود هیچ‌کدام تغییر نکرده‌اند؛ فقط چیدمان دو‌سطحی شد:
+ *   ردیف اول: گروه | ردیف دوم: دیدهای همان گروه.
+ */
+$gs_all_views = array( 'profiles', 'sessions', 'system-check', 'test-wizard', 'logs', 'worker', 'insight', 'automation', 'review', 'environment', 'automation-settings' );
+$gs_current   = ( isset( $_GET['gs_view'] ) && in_array( $_GET['gs_view'], $gs_all_views, true ) ) ? $_GET['gs_view'] : 'channels';
+
+$gs_groups = array(
+	'channels' => array(
+		'label' => '📡 منابع',
+		'views' => array(
+			'channels' => 'کانال‌ها',
+			'insight'  => 'شناخت کانال',
+			'profiles' => 'پروفایل‌ها',
+		),
+	),
+	'automation' => array(
+		'label' => '🏭 خط تولید',
+		'views' => array(
+			'automation' => 'Live Pipeline',
+			'sessions'   => 'Session ها',
+			'worker'     => 'Queue / پردازش',
+			'review'     => 'Review',
+		),
+	),
+	'automation-settings' => array(
+		'label' => '⚙️ اتوماسیون',
+		'views' => array(
+			'automation-settings' => 'تنظیمات + Recovery/Retry',
+		),
+	),
+	'system-check' => array(
+		'label' => '🩺 سلامت سیستم',
+		'views' => array(
+			'system-check' => 'System Health',
+			'environment'  => 'Environment',
+			'test-wizard'  => 'Tests',
+		),
+	),
+	'logs' => array(
+		'label' => '📝 گزارش‌ها',
+		'views' => array(
+			'logs' => 'گزارش‌ها',
+		),
+	),
+);
+
+/* گروه فعال: گروهی که دید فعلی توش هست. */
+$gs_active_group = null;
+foreach ( $gs_groups as $gs_gkey => $gs_g ) {
+	if ( array_key_exists( $gs_current, $gs_g['views'] ) ) {
+		$gs_active_group = $gs_gkey;
+		break;
+	}
+}
 ?>
 <?php /* flex-wrap: بدون آن تب‌ها در یک ردیف از کادر بیرون می‌زنند. */ ?>
+<div class="sti-subnav" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px;">
+	<?php foreach ( $gs_groups as $gs_gkey => $gs_g ) :
+		$gs_gdefault = array_key_first( $gs_g['views'] );
+		$gs_gurl     = ( 'channels' === $gs_gdefault )
+			? admin_url( 'admin.php?page=sti-golden-scan' )
+			: admin_url( 'admin.php?page=sti-golden-scan&gs_view=' . $gs_gdefault );
+		$gs_gactive  = ( $gs_gkey === $gs_active_group );
+	?>
+		<a href="<?php echo esc_url( $gs_gurl ); ?>"
+		   class="sti-btn-sm <?php echo $gs_gactive ? '' : 'secondary'; ?>"
+		   style="<?php echo $gs_gactive ? 'font-weight:800;' : ''; ?>">
+			<?php echo esc_html( $gs_g['label'] ); ?>
+		</a>
+	<?php endforeach; ?>
+</div>
 <div class="sti-subnav" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px;">
-	<a href="<?php echo esc_url( admin_url( 'admin.php?page=sti-golden-scan' ) ); ?>"
-	   class="sti-btn-sm <?php echo 'channels' === $gs_current ? '' : 'secondary'; ?>">📡 کانال‌ها</a>
-	<a href="<?php echo esc_url( admin_url( 'admin.php?page=sti-golden-scan&gs_view=profiles' ) ); ?>"
-	   class="sti-btn-sm <?php echo 'profiles' === $gs_current ? '' : 'secondary'; ?>">🧩 پروفایل‌ها</a>
-	<a href="<?php echo esc_url( admin_url( 'admin.php?page=sti-golden-scan&gs_view=sessions' ) ); ?>"
-	   class="sti-btn-sm <?php echo 'sessions' === $gs_current ? '' : 'secondary'; ?>">🗂 Session ها</a>
-	<a href="<?php echo esc_url( admin_url( 'admin.php?page=sti-golden-scan&gs_view=worker' ) ); ?>"
-	   class="sti-btn-sm <?php echo 'worker' === $gs_current ? '' : 'secondary'; ?>">🤖 پردازش خودکار</a>
-	<a href="<?php echo esc_url( admin_url( 'admin.php?page=sti-golden-scan&gs_view=automation' ) ); ?>"
-	   class="sti-btn-sm <?php echo 'automation' === $gs_current ? '' : 'secondary'; ?>">🏭 خط تولید</a>
-	<a href="<?php echo esc_url( admin_url( 'admin.php?page=sti-golden-scan&gs_view=review' ) ); ?>"
-	   class="sti-btn-sm <?php echo 'review' === $gs_current ? '' : 'secondary'; ?>">🔎 Review Queue</a>
-	<a href="<?php echo esc_url( admin_url( 'admin.php?page=sti-golden-scan&gs_view=automation-settings' ) ); ?>"
-	   class="sti-btn-sm <?php echo 'automation-settings' === $gs_current ? '' : 'secondary'; ?>">⚙️ تنظیمات اتوماسیون</a>
-	<a href="<?php echo esc_url( admin_url( 'admin.php?page=sti-golden-scan&gs_view=insight' ) ); ?>"
-	   class="sti-btn-sm <?php echo 'insight' === $gs_current ? '' : 'secondary'; ?>">🔍 شناخت کانال</a>
-	<a href="<?php echo esc_url( admin_url( 'admin.php?page=sti-golden-scan&gs_view=system-check' ) ); ?>"
-	   class="sti-btn-sm <?php echo 'system-check' === $gs_current ? '' : 'secondary'; ?>">🩺 بررسی سیستم</a>
-	<a href="<?php echo esc_url( admin_url( 'admin.php?page=sti-golden-scan&gs_view=environment' ) ); ?>"
-	   class="sti-btn-sm <?php echo 'environment' === $gs_current ? '' : 'secondary'; ?>">🖥 Environment</a>
-	<a href="<?php echo esc_url( admin_url( 'admin.php?page=sti-golden-scan&gs_view=test-wizard' ) ); ?>"
-	   class="sti-btn-sm <?php echo 'test-wizard' === $gs_current ? '' : 'secondary'; ?>">🧪 تست خودکار</a>
-	<a href="<?php echo esc_url( admin_url( 'admin.php?page=sti-golden-scan&gs_view=logs' ) ); ?>"
-	   class="sti-btn-sm <?php echo 'logs' === $gs_current ? '' : 'secondary'; ?>">📝 گزارش‌ها</a>
+	<?php foreach ( $gs_groups as $gs_gkey => $gs_g ) :
+		if ( $gs_gkey !== $gs_active_group ) {
+			continue;
+		}
+		foreach ( $gs_g['views'] as $gs_v => $gs_vlabel ) :
+	?>
+		<a href="<?php echo esc_url( ( 'channels' === $gs_v ) ? admin_url( 'admin.php?page=sti-golden-scan' ) : admin_url( 'admin.php?page=sti-golden-scan&gs_view=' . $gs_v ) ); ?>"
+		   class="sti-btn-sm <?php echo $gs_current === $gs_v ? '' : 'secondary'; ?>">
+			<?php echo esc_html( $gs_vlabel ); ?>
+		</a>
+	<?php
+		endforeach;
+	endforeach;
+	?>
 </div>

@@ -110,6 +110,19 @@ class STI_GS_Governor {
 			$reasons[] = 'انباشت صف ' . $backlog . ' (آستانه ' . (int) $signals['thresholds']['backlog'] . ')';
 		}
 
+		/*
+		 * ۱۰.۱۱ — بازتاب در وضعیت خط (CAS اتمیک — بدون TOCTOU):
+		 *   EMERGENCY → DEGRADED؛ غیر از آن → بازگشت از DEGRADED.
+		 *   (THROTTLE وضعیت خط نیست — فقط batch را خفه می‌کند.)
+		 */
+		if ( class_exists( 'STI_GS_Line' ) ) {
+			if ( self::LEVEL_EMERGENCY === $level ) {
+				STI_GS_Line::mark_degraded();
+			} else {
+				STI_GS_Line::recover_from_degraded();
+			}
+		}
+
 		$out = array(
 			'level'   => $level,
 			'factor'  => self::FACTORS[ $level ],

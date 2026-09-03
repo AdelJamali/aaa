@@ -44,6 +44,11 @@ class STI_GS_Automation {
 			'gov_load_per_core'  => array( 2.0, 'Governor: آستانه‌ی Load بر هر Core', 'float', 0.5, 10 ),
 			'gov_backlog'        => array( 100, 'Governor: آستانه‌ی انباشت صف', 'int', 0, 100000 ),
 			'gov_ipc_faults'     => array( 3,   'Governor: خرابی IPC در ۳۰ دقیقه', 'int', 0, 100 ),
+
+			/* ۱۰.۱۱ — Worker و مانیتور */
+			'worker_interval'      => array( 300, 'فاصله‌ی تیک Worker (ثانیه — ۱ تا ۶۰ دقیقه)', 'int', 60, 3600 ),
+			'backoff_base_minutes' => array( 5,   'Backoff پایه‌ی شکست (دقیقه — با هر شکست دو برابر می‌شود)', 'int', 1, 60 ),
+			'poll_interval'        => array( 4,   'به‌روزرسانی مانیتور زنده (ثانیه — ۲ تا ۳۰)', 'int', 2, 30 ),
 		);
 	}
 

@@ -1,159 +1,391 @@
 <?php
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-/* ── داده‌ها ─────────────────────────────────────────────── */
 global $wpdb;
-$tbl     = STI_GS_DB::pipeline_items_table();
-$rows    = (array) $wpdb->get_results( "SELECT state, COUNT(*) AS n FROM `{$tbl}` GROUP BY state", ARRAY_A );
-$summary = STI_GS_Stage::summarize( $rows );
 
-$gov    = class_exists( 'STI_GS_Governor' ) ? STI_GS_Governor::status() : array();
-$runs   = class_exists( 'STI_GS_Run_Log' ) ? STI_GS_Run_Log::summary() : array();
-$stats  = STI_GS_Auto_Worker::stats();
-$ipc    = class_exists( 'STI_MTProto' ) ? STI_MTProto::ipc_diagnostic() : array();
-$cfg    = STI_GS_Automation::all();
+/* ۱۰.۱۱ — مرکز عملیات زنده: داده‌ی اولیه سمت سرور (بدون JS هم کامل است). */
+$data = class_exists( 'STI_GS_Line' ) ? STI_GS_Line::monitor() : array(
+	'line' => array( 'state' => 'STOPPED' ), 'request' => array(), 'summary' => null,
+	'current' => null, 'sessions' => array(), 'events' => array(), 'ok' => false,
+);
 
-$stage_labels = array(
-	STI_GS_Stage::DISCOVER => 'کشف دکمه',
-	STI_GS_Stage::BOT      => 'ربات',
-	STI_GS_Stage::MATCH    => 'تطبیق',
-	STI_GS_Stage::DOWNLOAD => 'دانلود',
-	STI_GS_Stage::MEDIA    => 'مدیا',
-	STI_GS_Stage::PRODUCT  => 'محصول',
-	STI_GS_Stage::PUBLISH  => 'انتشار',
+$line     = isset( $data['line']['state'] ) ? $data['line']['state'] : 'STOPPED';
+$summary  = isset( $data['summary'] ) && is_array( $data['summary'] ) ? $data['summary'] : null;
+$cur      = isset( $data['current'] ) ? $data['current'] : null;
+$stages   = array( 'DISCOVER' => 'اسکن', 'BOT' => 'ربات', 'MATCH' => 'تطبیق', 'DOWNLOAD' => 'دانلود', 'MEDIA' => 'مدیا', 'PRODUCT' => 'محصول', 'PUBLISH' => 'انتشار' );
+$stage_ord = array( 'DISCOVER', 'BOT', 'MATCH', 'DOWNLOAD', 'MEDIA', 'PRODUCT', 'PUBLISH' );
+
+$line_styles = array(
+	'RUNNING'  => array( '🟢', '#e8f5e9', '#1e7e34', 'در حال کار' ),
+	'STOPPED'  => array( '⚫', '#eceff1', '#37474f', 'توقف کرده' ),
+	'PAUSING'  => array( '🟡', '#fff8e1', '#9a6b00', 'در حال توقف امن…' ),
+	'DEGRADED' => array( '🟠', '#fff3e0', '#b25e00', 'کاهش‌یافته (فشار منابع)' ),
+	'ERROR'    => array( '🔴', '#ffebee', '#c62828', 'خطا (خودترمیم در تیک بعدی)' ),
 );
-$gov_labels = array(
-	STI_GS_Governor::LEVEL_OK        => array( '🟢 عادی', '#e8f5e9', '#a5d6a7' ),
-	STI_GS_Governor::LEVEL_THROTTLE  => array( '🟡 خفه‌سازی', '#fff8e1', '#ffe082' ),
-	STI_GS_Governor::LEVEL_EMERGENCY => array( '🔴 اورژانس', '#ffebee', '#ef9a9a' ),
-);
-$gov_level = isset( $gov['level'] ) ? $gov['level'] : STI_GS_Governor::LEVEL_OK;
-$gov_ui    = isset( $gov_labels[ $gov_level ] ) ? $gov_labels[ $gov_level ] : $gov_labels[ STI_GS_Governor::LEVEL_OK ];
+$ls = isset( $line_styles[ $line ] ) ? $line_styles[ $line ] : $line_styles['STOPPED'];
+
+/** چیپ‌های Stage یک Session (از state — نه حدس). */
+function gs_line_stage_chips( $stage_idx, $stages, $stage_ord ) {
+	$html = '';
+	foreach ( $stage_ord as $i => $st ) {
+		if ( -1 === $stage_idx ) {
+			$cls = 'gs-chip gs-chip-wait';
+		} elseif ( $i < $stage_idx ) {
+			$cls = 'gs-chip gs-chip-done';
+		} elseif ( $i === $stage_idx ) {
+			$cls = 'gs-chip gs-chip-cur';
+		} else {
+			$cls = 'gs-chip gs-chip-wait';
+		}
+		$mark = ( -1 === $stage_idx ) ? '·' : ( $i < $stage_idx ? '✓' : ( $i === $stage_idx ? '⟳' : '·' ) );
+		$html .= '<span class="' . $cls . '" title="' . esc_attr( $stages[ $st ] ) . '">' . $mark . '</span>';
+	}
+	return $html;
+}
 ?>
+<style>
+.gs-chip{display:inline-block;min-width:26px;padding:2px 5px;margin:1px;border-radius:10px;font-size:11px;text-align:center;font-weight:700;}
+.gs-chip-done{background:#e8f5e9;color:#1e7e34;}
+.gs-chip-cur{background:#e3f2fd;color:#0d47a1;animation:gs-pulse 1.6s ease-in-out infinite;}
+.gs-chip-wait{background:#f5f5f5;color:#bbb;}
+@keyframes gs-pulse{0%,100%{opacity:1}50%{opacity:.45}}
+.gs-line-badge{display:inline-block;padding:10px 22px;border-radius:12px;font-size:20px;font-weight:800;}
+.gs-card{background:#fff;border:1px solid #e3e6ea;border-radius:10px;padding:14px 16px;box-shadow:0 1px 2px rgba(20,30,50,.04);}
+.gs-card h3{margin:0 0 10px;font-size:13px;color:#555;text-transform:none;}
+.gs-stat-row{display:flex;flex-wrap:wrap;gap:10px;}
+.gs-stat{flex:1;min-width:110px;background:#fff;border:1px solid #e3e6ea;border-radius:10px;padding:10px 12px;}
+.gs-stat .v{font-size:24px;font-weight:800;line-height:1.2;}
+.gs-stat .l{font-size:11px;color:#777;}
+.gs-ev{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px;line-height:1.9;border-bottom:1px dashed #eee;padding:3px 4px;}
+.gs-ev-err{color:#c62828;}
+.gs-ev-retry{color:#9a6b00;}
+.gs-ev-ok{color:#37474f;}
+</style>
 <div class="wrap sti-wrap">
-	<h1>گلدن اسکن — Automation Health (سلامت خط تولید)</h1>
+	<h1>گلدن اسکن — 🏭 خط تولید (Live Pipeline)</h1>
 	<?php include STI_PATH . 'admin/views/golden-scan/partial-subnav.php'; ?>
 
-	<div style="display:flex;gap:12px;margin:16px 0;flex-wrap:wrap;">
-		<div style="flex:1;min-width:130px;padding:14px;border-radius:8px;background:<?php echo $stats['enabled'] ? '#e8f5e9' : '#f5f5f5'; ?>;border:1px solid #ccc;">
-			<div style="font-size:22px;font-weight:700;"><?php echo $stats['enabled'] ? '🟢 خط تولید روشن' : '⚪ خط تولید خاموش'; ?></div>
-			<div>Worker (هر <?php echo (int) round( $stats['interval'] / 60 ); ?> دقیقه، <?php echo (int) $cfg['sessions_per_tick']; ?> Session در تیک)</div>
-		</div>
-		<div style="flex:1;min-width:130px;padding:14px;border-radius:8px;background:<?php echo $gov_ui[1]; ?>;border:1px solid <?php echo $gov_ui[2]; ?>;">
-			<div style="font-size:22px;font-weight:700;"><?php echo $gov_ui[0]; ?></div>
-			<div>Governor (ضریب <?php echo isset( $gov['factor'] ) ? $gov['factor'] : 1.0; ?>)</div>
-			<?php if ( ! empty( $gov['reasons'] ) ) : ?>
-				<div style="font-size:12px;color:#555;margin-top:4px;"><?php echo esc_html( implode( ' · ', (array) $gov['reasons'] ) ); ?></div>
+	<?php if ( ! empty( $data['ok'] ) ) : ?>
+
+	<!-- ══════════════ LINE STATUS ══════════════ -->
+	<div class="gs-card" style="margin-top:16px;">
+		<div style="display:flex;flex-wrap:wrap;align-items:center;gap:14px;">
+			<span class="gs-line-badge" id="gs-line-badge" style="background:<?php echo $ls[1]; ?>;color:<?php echo $ls[2]; ?>;border:1px solid <?php echo $ls[2]; ?>33;">
+				<?php echo $ls[0]; ?> <?php echo esc_html( $line ); ?> — <?php echo esc_html( $ls[3] ); ?>
+			</span>
+			<?php if ( 'RUNNING' === $line || 'DEGRADED' === $line ) : ?>
+				<button type="button" class="button button-secondary" id="gs-line-stop" style="font-size:13px;font-weight:700;">■ STOP LINE</button>
+			<?php else : ?>
+				<button type="button" class="button button-primary" id="gs-line-start" style="font-size:13px;font-weight:700;">▶ START LINE</button>
 			<?php endif; ?>
+			<span id="gs-line-msg" style="font-size:12px;color:#777;"></span>
 		</div>
-		<div style="flex:1;min-width:130px;padding:14px;border-radius:8px;background:#e8f5e9;border:1px solid #a5d6a7;">
-			<div style="font-size:26px;font-weight:700;"><?php echo number_format_i18n( $summary['final'][ STI_GS_Stage::FINAL_PUBLISHED ] ?? 0 ); ?></div>
-			<div>منتشرشده (PUBLISHED)</div>
-		</div>
-		<div style="flex:1;min-width:130px;padding:14px;border-radius:8px;background:#fff8e1;border:1px solid #ffe082;">
-			<div style="font-size:26px;font-weight:700;"><?php echo number_format_i18n( $summary['final'][ STI_GS_Stage::FINAL_REVIEW ] ?? 0 ); ?></div>
-			<div>در REVIEW (نیاز به شما)</div>
-		</div>
-		<div style="flex:1;min-width:130px;padding:14px;border-radius:8px;background:#f5f5f5;border:1px solid #ccc;">
-			<div style="font-size:26px;font-weight:700;"><?php echo number_format_i18n( $summary['final'][ STI_GS_Stage::FINAL_CANCELLED ] ?? 0 ); ?></div>
-			<div>لغوشده (CANCELLED)</div>
+		<?php
+		$g_level   = isset( $data['line']['level'] ) ? $data['line']['level'] : 'OK';
+		$g_factor  = isset( $data['line']['factor'] ) ? (float) $data['line']['factor'] : 1.0;
+		$g_reasons = isset( $data['line']['reasons'] ) ? (array) $data['line']['reasons'] : array();
+		?>
+		<div style="margin-top:10px;font-size:12px;color:#666;">
+			Governor:
+			<strong style="color:<?php echo 'EMERGENCY' === $g_level ? '#c62828' : ( 'THROTTLE' === $g_level ? '#9a6b00' : '#1e7e34' ); ?>"><?php echo esc_html( $g_level ); ?></strong>
+			(ضریب <?php echo number_format_i18n( $g_factor, 2 ); ?>)
+			<?php if ( $g_reasons ) : ?> — <?php echo esc_html( implode( ' · ', array_map( 'mb_substr', $g_reasons, array_fill( 0, count( $g_reasons ), 80 ) ) ) ); ?><?php endif; ?>
+			<?php if ( 'STOPPED' === $line ) : ?>
+				<br><span style="color:#888;">STOP امن است: Sessionهای در حال اجرا Stage خود را تا انتها می‌رانند، هیچ process kill نمی‌شود و هیچ داده‌ای حذف نمی‌شود. START ادامه‌ی واقعی از همان جاست.</span>
+			<?php endif; ?>
+			<?php if ( 'PAUSING' === $line ) : ?>
+				<br><span style="color:#9a6b00;">در حال انتظار تا Stageهای در حال اجرا تمام شوند…</span>
+			<?php endif; ?>
 		</div>
 	</div>
 
+	<!-- ══════════════ LIVE SUMMARY ══════════════ -->
+	<div class="gs-stat-row" style="margin-top:12px;">
+		<?php
+		$cards = array(
+			'Total requested' => array( isset( $summary['requested'] ) ? $summary['requested'] : null, '#37474f' ),
+			'Created'         => array( isset( $summary['created'] ) ? $summary['created'] : null, '#37474f' ),
+			'Processing'      => array( isset( $summary['processing'] ) ? $summary['processing'] : null, '#0d47a1' ),
+			'Waiting'         => array( isset( $summary['waiting'] ) ? $summary['waiting'] : null, '#9a6b00' ),
+			'Failed (retry)'  => array( isset( $summary['failed'] ) ? $summary['failed'] : null, '#c62828' ),
+			'Published'       => array( isset( $summary['published'] ) ? $summary['published'] : null, '#1e7e34' ),
+			'Review'          => array( isset( $summary['review'] ) ? $summary['review'] : null, '#6a1b9a' ),
+			'Cancelled'       => array( isset( $summary['cancelled'] ) ? $summary['cancelled'] : null, '#78909c' ),
+		);
+		foreach ( $cards as $label => $c ) : ?>
+			<div class="gs-stat"><div class="v" style="color:<?php echo $c[1]; ?>"><?php echo null === $c[0] ? 'نامشخص' : number_format_i18n( $c[0] ); ?></div><div class="l"><?php echo esc_html( $label ); ?></div></div>
+		<?php endforeach; ?>
+	</div>
+
 	<?php if ( ! empty( $summary['unknown'] ) ) : ?>
-		<div class="notice notice-error" style="margin:0 0 16px;">
-			<p><strong>State ناشناخته:</strong>
-			<?php foreach ( $summary['unknown'] as $st => $n ) : ?> «<?php echo esc_html( $st ); ?>» ×<?php echo (int) $n; ?>، <?php endforeach; ?>
-			— در نگاشت Stage ثبت نشده؛ بررسی کنید.</p>
+		<div class="notice notice-warning" style="margin-top:12px;font-size:12px;">
+			⚠ <?php echo number_format_i18n( $summary['unknown'] ); ?> Session با state ناشناخته — Supervisor آن‌ها را anomaly ثبت کرده است.
 		</div>
 	<?php endif; ?>
 
-	<h2 style="margin-top:24px;">صف به تفکیک Stage</h2>
-	<table class="widefat striped" style="max-width:900px;">
-		<thead>
-			<tr><th>Stage</th><th>در صف</th><th>تجزیه (PENDING / RUNNING / WAITING / FAILED)</th></tr>
-		</thead>
-		<tbody>
-		<?php foreach ( STI_GS_Stage::STAGE_ORDER as $stage ) :
-			$ss = $summary['stage_status'][ $stage ];
-		?>
-			<tr>
-				<td><strong><?php echo $stage; ?></strong> — <?php echo $stage_labels[ $stage ]; ?></td>
-				<td><?php echo number_format_i18n( $summary['by_stage'][ $stage ] ); ?></td>
-				<td><?php echo esc_html( sprintf( '%d / %d / %d / %d', $ss[ STI_GS_Stage::PENDING ], $ss[ STI_GS_Stage::RUNNING ], $ss[ STI_GS_Stage::WAITING ], $ss[ STI_GS_Stage::FAILED ] ) ); ?></td>
-			</tr>
-		<?php endforeach; ?>
-		</tbody>
-	</table>
-
-	<h2 style="margin-top:24px;">IPC / Worker / منابع</h2>
-	<table class="widefat striped" style="max-width:900px;">
-		<tbody>
-		<?php if ( ! empty( $ipc ) ) : ?>
-			<tr>
-				<td>Workerهای madeline-ipc</td>
-				<td><?php
-					$w = (int) ( $ipc['worker_count'] ?? -1 );
-					echo ( $w < 0 ) ? '— (بدون shell)' : number_format_i18n( $w );
-					if ( $w > 1 ) { echo ' <span style="color:#c62828;">(انباشت — watchdog جمع می‌کند)</span>'; }
-				?></td>
-			</tr>
-			<tr><td>سوکت IPC</td><td><?php echo esc_html( (string) ( $ipc['socket'] ?? '—' ) ); ?> / callback: <?php echo esc_html( (string) ( $ipc['callback_socket'] ?? '—' ) ); ?></td></tr>
-			<tr>
-				<td>سازگاری phar ↔ PHP</td>
-				<td><?php echo ! empty( $ipc['php_ok'] ) ? '✅' : '🔴'; ?>
-				<?php echo esc_html( (string) ( $ipc['phar_required_php'] ?? '' ) ); ?> (نیاز) / <?php echo esc_html( (string) ( $ipc['php_version'] ?? PHP_VERSION ) ); ?> (هاست)</td>
-			</tr>
+	<!-- ══════════════ CURRENT ACTIVITY ══════════════ -->
+	<div class="gs-card" id="gs-current-card" style="margin-top:12px;">
+		<h3>⚡ CURRENT ACTIVITY (فعلاً چه می‌شود)</h3>
+		<?php if ( $cur ) : ?>
+			<table class="widefat striped" id="gs-cur-table" style="max-width:900px;">
+				<tbody>
+					<tr><td style="width:150px;"><strong>Session</strong></td>
+						<td id="gs-cur-session"><a href="<?php echo esc_url( admin_url( 'admin.php?page=sti-golden-scan&gs_view=sessions' ) ); ?>">#<?php echo (int) $cur['id']; ?></a>
+						<?php if ( ! empty( $cur['file'] ) ) : ?><span style="color:#888;font-size:11px;">— <?php echo esc_html( $cur['file'] ); ?></span><?php endif; ?></td></tr>
+					<tr><td><strong>Stage / Status</strong></td>
+						<td id="gs-cur-stage"><?php echo esc_html( (string) $cur['label'] ); ?>
+						<?php echo gs_line_stage_chips( (int) $cur['stage_idx'], $stages, $stage_ord ); ?></td></tr>
+					<tr><td><strong>Retry</strong></td>
+						<td id="gs-cur-retry"><?php echo number_format_i18n( (int) $cur['attempts'] ); ?> / <?php echo number_format_i18n( (int) $cur['retry_limit'] ); ?></td></tr>
+					<tr><td><strong>Worker</strong></td><td id="gs-cur-worker"><code dir="ltr"><?php echo esc_html( (string) $cur['worker_id'] ); ?></code></td></tr>
+					<tr><td><strong>آخرین فعالیت</strong></td><td id="gs-cur-updated"><?php echo esc_html( (string) $cur['updated_at'] ); ?></td></tr>
+					<tr><td><strong>در صف اجرا</strong></td><td id="gs-cur-queue"><?php echo number_format_i18n( (int) $cur['queue'] ); ?> Session دیگر</td></tr>
+				</tbody>
+			</table>
+			<p id="gs-cur-empty" style="display:none;margin:0;color:#888;font-size:13px;">فعلاً Sessionی در حال اجرا نیست — Worker در تیک بعدی نوبت می‌دهد.</p>
+		<?php else : ?>
+			<p id="gs-cur-empty" style="margin:0;color:#888;font-size:13px;">فعلاً Sessionی در حال اجرا نیست — Worker در تیک بعدی نوبت می‌دهد.
+			<?php if ( 'STOPPED' === $line ) : ?><br>خط تولید STOP است؛ برای ادامه ▶ START LINE بزنید.<?php endif; ?></p>
+			<table class="widefat striped" id="gs-cur-table" style="max-width:900px;display:none;">
+				<tbody>
+					<tr><td style="width:150px;"><strong>Session</strong></td><td id="gs-cur-session"></td></tr>
+					<tr><td><strong>Stage / Status</strong></td><td id="gs-cur-stage"></td></tr>
+					<tr><td><strong>Retry</strong></td><td id="gs-cur-retry"></td></tr>
+					<tr><td><strong>Worker</strong></td><td id="gs-cur-worker"></td></tr>
+					<tr><td><strong>آخرین فعالیت</strong></td><td id="gs-cur-updated"></td></tr>
+					<tr><td><strong>در صف اجرا</strong></td><td id="gs-cur-queue"></td></tr>
+				</tbody>
+			</table>
 		<?php endif; ?>
-		<?php if ( ! empty( $gov['signals'] ) ) : ?>
-			<tr>
-				<td>RAM هاست</td>
-				<td><?php
-					$r = $gov['signals']['ram_pct'];
-					echo ( null === $r ) ? '—' : number_format_i18n( $r ) . '٪ (آستانه ' . (int) $gov['signals']['thresholds']['ram'] . '٪)';
-				?></td>
-			</tr>
-			<tr>
-				<td>Load (بر Core)</td>
-				<td><?php
-					$l = $gov['signals']['load'];
-					echo ( null === $l ) ? '—' : number_format_i18n( $l, 2 ) . ' (آستانه ' . $gov['signals']['thresholds']['load'] . ')';
-				?></td>
-			</tr>
-			<tr><td>خرابی IPC (۳۰ دقیقه)</td><td><?php echo number_format_i18n( (int) ( $gov['signals']['ipc_faults'] ?? 0 ) ); ?></td></tr>
-			<tr><td>انباشت صف</td><td><?php echo number_format_i18n( (int) ( $gov['signals']['backlog'] ?? 0 ) ); ?></td></tr>
-		<?php endif; ?>
-			<tr>
-				<td>حافظه PHP</td>
-				<td>
-					<?php echo esc_html( (string) ini_get( 'memory_limit' ) ); ?>
-					— اوج این فرآیند: <?php echo number_format_i18n( round( memory_get_peak_usage( true ) / 1048576, 1 ) ); ?>M
-				</td>
-			</tr>
-		</tbody>
-	</table>
+	</div>
 
-	<h2 style="margin-top:24px;">شمارنده‌های خودترمیمی (کل)</h2>
-	<table class="widefat striped" style="max-width:900px;">
-		<thead><tr><th>اجرا</th><th>Retry</th><th>Recovery</th><th>IPC Heal</th><th>دانلود دوباره</th><th>انتشار دوباره</th></tr></thead>
-		<tbody>
-			<tr>
-				<td><?php echo number_format_i18n( (int) ( $runs['total_runs'] ?? 0 ) ); ?> Session / <?php echo number_format_i18n( (int) ( $runs['finished'] ?? 0 ) ); ?> خاتمه‌یافته</td>
-				<td><?php echo number_format_i18n( (int) ( $runs['retries'] ?? 0 ) ); ?></td>
-				<td><?php echo number_format_i18n( (int) ( $runs['recoveries'] ?? 0 ) ); ?></td>
-				<td><?php echo number_format_i18n( (int) ( $runs['ipc_heals'] ?? 0 ) ); ?></td>
-				<td><?php echo number_format_i18n( (int) ( $runs['download_retries'] ?? 0 ) ); ?></td>
-				<td><?php echo number_format_i18n( (int) ( $runs['publish_retries'] ?? 0 ) ); ?></td>
-			</tr>
-		</tbody>
-	</table>
+	<!-- ══════════════ SESSION PIPELINE ══════════════ -->
+	<div class="gs-card" style="margin-top:12px;">
+		<h3>📦 SESSION PIPELINE (Sessionهای فعال — نهایی‌ها در تب‌های جدا)</h3>
+		<table class="widefat striped">
+			<thead>
+				<tr>
+					<th>Session</th>
+					<th style="width:220px;">DISCOVER</th><th>BOT</th><th>MATCH</th>
+					<th>DOWNLOAD</th><th>MEDIA</th><th>PRODUCT</th><th>PUBLISH</th>
+					<th>تلاش</th><th>آخرین فعالیت</th>
+				</tr>
+			</thead>
+			<tbody id="gs-sessions-body">
+				<?php if ( empty( $data['sessions'] ) ) : ?>
+					<tr><td colspan="10" style="color:#888;">Session فعالی نیست — صف خالی است. 🎉</td></tr>
+				<?php else : ?>
+					<?php foreach ( $data['sessions'] as $it ) : ?>
+						<tr>
+							<td><strong>#<?php echo (int) $it['id']; ?></strong>
+								<?php if ( ! empty( $it['file'] ) ) : ?><br><span style="font-size:11px;color:#888;"><?php echo esc_html( $it['file'] ); ?></span><?php endif; ?>
+								<br><span style="font-size:10px;color:#aaa;" dir="ltr"><?php echo esc_html( (string) $it['label'] ); ?></span></td>
+							<td colspan="7"><?php echo gs_line_stage_chips( (int) $it['stage_idx'], $stages, $stage_ord ); ?></td>
+							<td><?php echo number_format_i18n( (int) $it['attempts'] ); ?></td>
+							<td style="white-space:nowrap;"><?php echo esc_html( (string) $it['updated_at'] ); ?></td>
+						</tr>
+					<?php endforeach; ?>
+				<?php endif; ?>
+			</tbody>
+		</table>
+	</div>
 
-	<h2 style="margin-top:24px;">Worker</h2>
-	<p>
-		آخرین تیک: <?php echo esc_html( (string) ( $stats['today']['last'] ?? 'هنوز تیکی نکرده' ) ); ?>
-		· نوبت بعدی: <?php echo $stats['next_tick'] ? date_i18n( 'H:i', $stats['next_tick'] ) : '—'; ?>
-		· امروز: <?php echo number_format_i18n( (int) ( $stats['today']['advanced'] ?? 0 ) ); ?> پیشرفت /
-		<?php echo number_format_i18n( (int) ( $stats['today']['failed'] ?? 0 ) ); ?> خطا /
-		<?php echo number_format_i18n( (int) ( $stats['today']['completed'] ?? 0 ) ); ?> تکمیل
-	</p>
+	<!-- ══════════════ LIVE EVENT STREAM ══════════════ -->
+	<div class="gs-card" style="margin-top:12px;">
+		<h3>📡 LIVE EVENT STREAM (آخرین ۳۰ رویداد — <span id="gs-ev-count"><?php echo count( $data['events'] ); ?></span>)</h3>
+		<div id="gs-events" style="max-height:340px;overflow-y:auto;">
+			<?php if ( empty( $data['events'] ) ) : ?>
+				<p style="margin:0;color:#888;font-size:12px;">هنوز رویدادی ثبت نشده است.</p>
+			<?php else : ?>
+				<?php foreach ( $data['events'] as $ev ) :
+					$cls = 'gs-ev gs-ev-' . ( in_array( $ev['r'], array( 'ok', 'retry', 'error' ), true ) ? $ev['r'] : 'ok' );
+				?>
+					<div class="<?php echo $cls; ?>">
+						<span dir="ltr"><?php echo esc_html( (string) $ev['t'] ); ?></span>
+						<?php if ( $ev['s'] > 0 ) : ?> Session <a href="<?php echo esc_url( admin_url( 'admin.php?page=sti-golden-scan&gs_view=sessions' ) ); ?>">#<?php echo (int) $ev['s']; ?></a><?php endif; ?>
+						→ <strong><?php echo esc_html( (string) $ev['k'] ); ?></strong> <?php echo esc_html( (string) $ev['m'] ); ?>
+					</div>
+				<?php endforeach; ?>
+			<?php endif; ?>
+		</div>
+	</div>
+
+	<?php else : ?>
+		<div class="notice notice-warning" style="margin-top:16px;">
+			⚠ مانیتور داده کامل برنگرداند (جداول مهاجرت‌نشده یا خطای گذرا) — صفحه بعد از چند ثانیه دوباره بررسی می‌کند.
+		</div>
+	<?php endif; ?>
 </div>
+
+<script>
+(function () {
+	if (typeof jQuery === 'undefined') { return; }
+	var A = window.STI || {};
+	var pollSec = <?php echo (int) ( class_exists( 'STI_GS_Automation' ) ? STI_GS_Automation::get( 'poll_interval' ) : 4 ); ?>;
+	var inFlight = false;
+	var lineState = '<?php echo esc_js( $line ); ?>';
+	var stages = <?php echo wp_json_encode( array( 'DISCOVER' => 'اسکن', 'BOT' => 'ربات', 'MATCH' => 'تطبیق', 'DOWNLOAD' => 'دانلود', 'MEDIA' => 'مدیا', 'PRODUCT' => 'محصول', 'PUBLISH' => 'انتشار' ), JSON_UNESCAPED_UNICODE ); ?>;
+	var stageOrd = <?php echo wp_json_encode( array( 'DISCOVER', 'BOT', 'MATCH', 'DOWNLOAD', 'MEDIA', 'PRODUCT', 'PUBLISH' ) ); ?>;
+	var lineStyles = {
+		RUNNING:  ['🟢', '#e8f5e9', '#1e7e34', 'در حال کار'],
+		STOPPED:  ['⚫', '#eceff1', '#37474f', 'توقف کرده'],
+		PAUSING:  ['🟡', '#fff8e1', '#9a6b00', 'در حال توقف امن…'],
+		DEGRADED: ['🟠', '#fff3e0', '#b25e00', 'کاهش‌یافته (فشار منابع)'],
+		ERROR:    ['🔴', '#ffebee', '#c62828', 'خطا (خودترمیم در تیک بعدی)']
+	};
+
+	function esc(s) {
+		return $('<div>').text(s == null ? '' : String(s)).html();
+	}
+	function num(v) {
+		return (v === null || v === undefined) ? 'نامشخص' : v;
+	}
+	function chips(idx) {
+		var h = '';
+		for (var i = 0; i < stageOrd.length; i++) {
+			var cls, mark;
+			if (idx === -1) { cls = 'gs-chip-wait'; mark = '·'; }
+			else if (i < idx) { cls = 'gs-chip-done'; mark = '✓'; }
+			else if (i === idx) { cls = 'gs-chip-cur'; mark = '⟳'; }
+			else { cls = 'gs-chip-wait'; mark = '·'; }
+			h += '<span class="gs-chip ' + cls + '" title="' + esc(stages[stageOrd[i]]) + '">' + mark + '</span>';
+		}
+		return h;
+	}
+	function setBadge(state) {
+		var ls = lineStyles[state] || lineStyles.STOPPED;
+		var $b = $('#gs-line-badge');
+		$b.css({ background: ls[1], color: ls[2], border: '1px solid ' + ls[2] + '33' })
+			.html(ls[0] + ' ' + esc(state) + ' — ' + esc(ls[3]));
+		/* دکمه‌ها */
+		if (state === 'RUNNING' || state === 'DEGRADED') {
+			$('#gs-line-stop').show(); $('#gs-line-start').hide();
+		} else {
+			$('#gs-line-stop').hide(); $('#gs-line-start').show();
+		}
+		/* اگر دکمه‌ای که render نشده را می‌خواهیم، بسازیم */
+		if (!$('#gs-line-stop').length && (state === 'RUNNING' || state === 'DEGRADED')) {
+			$('<button type="button" class="button button-secondary" id="gs-line-stop" style="font-size:13px;font-weight:700;">■ STOP LINE</button>').insertBefore('#gs-line-msg');
+			bindButtons();
+		}
+		if (!$('#gs-line-start').length && !(state === 'RUNNING' || state === 'DEGRADED')) {
+			$('<button type="button" class="button button-primary" id="gs-line-start" style="font-size:13px;font-weight:700;">▶ START LINE</button>').insertBefore('#gs-line-msg');
+			bindButtons();
+		}
+	}
+	function renderSummary(s) {
+		var map = {
+			'Total requested': 'requested', 'Created': 'created', 'Processing': 'processing',
+			'Waiting': 'waiting', 'Failed (retry)': 'failed', 'Published': 'published',
+			'Review': 'review', 'Cancelled': 'cancelled'
+		};
+		$('.gs-stat').each(function () {
+			var $v = $(this).find('.v');
+			var label = $(this).find('.l').text().trim();
+			var key = map[label];
+			if (key) { $v.text(num(s[key])); }
+		});
+	}
+	function renderCurrent(c) {
+		var $t = $('#gs-cur-table'), $e = $('#gs-cur-empty');
+		if (!c) {
+			$t.hide();
+			$e.show().text('فعلاً Sessionی در حال اجرا نیست — Worker در تیک بعدی نوبت می‌دهد.');
+			return;
+		}
+		$t.show(); $e.hide();
+		var url = '<?php echo esc_js( admin_url( 'admin.php?page=sti-golden-scan&gs_view=sessions' ) ); ?>';
+		$('#gs-cur-session').html('<a href="' + url + '">#' + c.id + '</a>' + (c.file ? ' <span style="color:#888;font-size:11px;">— ' + esc(c.file) + '</span>' : ''));
+		$('#gs-cur-stage').html(esc(c.label) + ' ' + chips(c.stage_idx));
+		$('#gs-cur-retry').text(c.attempts + ' / ' + c.retry_limit);
+		$('#gs-cur-worker').html(c.worker_id ? '<code dir="ltr">' + esc(c.worker_id) + '</code>' : '—');
+		$('#gs-cur-updated').text(c.updated_at);
+		$('#gs-cur-queue').text((c.queue > 0) ? c.queue + ' Session دیگر' : '—');
+	}
+	function renderSessions(items) {
+		var $tb = $('#gs-sessions-body');
+		if (!items || !items.length) {
+			$tb.html('<tr><td colspan="10" style="color:#888;">Session فعالی نیست — صف خالی است. 🎉</td></tr>');
+			return;
+		}
+		var html = '';
+		$.each(items, function (i, it) {
+			html += '<tr>'
+				+ '<td><strong>#' + it.id + '</strong>'
+				+ (it.file ? '<br><span style="font-size:11px;color:#888;">' + esc(it.file) + '</span>' : '')
+				+ '<br><span style="font-size:10px;color:#aaa;" dir="ltr">' + esc(it.label) + '</span></td>'
+				+ '<td colspan="7">' + chips(it.stage_idx) + '</td>'
+				+ '<td>' + it.attempts + '</td>'
+				+ '<td style="white-space:nowrap;">' + esc(it.updated_at) + '</td>'
+				+ '</tr>';
+		});
+		$tb.html(html);
+	}
+	function renderEvents(events) {
+		var $box = $('#gs-events');
+		if (!events || !events.length) {
+			$box.html('<p style="margin:0;color:#888;font-size:12px;">هنوز رویدادی ثبت نشده است.</p>');
+			return;
+		}
+		var html = '';
+		$.each(events, function (i, ev) {
+			var r = (ev.r === 'ok' || ev.r === 'retry' || ev.r === 'error') ? ev.r : 'ok';
+			html += '<div class="gs-ev gs-ev-' + r + '">'
+				+ '<span dir="ltr">' + esc(ev.t) + '</span>'
+				+ (ev.s > 0 ? ' Session #' + ev.s : '')
+				+ ' → <strong>' + esc(ev.k) + '</strong> ' + esc(ev.m)
+				+ '</div>';
+		});
+		$box.html(html);
+		$('#gs-ev-count').text(events.length);
+	}
+
+	/* poll سبک + single-flight + توقف هنگام پنهان بودن تب (no AJAX flood) */
+	function poll() {
+		if (inFlight) { return; }
+		if (document.hidden) { return; }
+		inFlight = true;
+		$.post(A.ajaxUrl, { action: 'sti_gs_pipeline_poll', nonce: A.nonce })
+			.done(function (res) {
+				if (!res || !res.success || !res.data) { return; }
+				var d = res.data;
+				lineState = d.line ? d.line.state : lineState;
+				setBadge(lineState);
+				if (d.summary) { renderSummary(d.summary); }
+				renderCurrent(d.current || null);
+				renderSessions(d.sessions);
+				renderEvents(d.events);
+			})
+			.always(function () { inFlight = false; });
+	}
+
+	function bindButtons() {
+		$('#gs-line-start').off('click').on('click', function () {
+			lineAction('sti_gs_line_start', 'در حال START…');
+		});
+		$('#gs-line-stop').off('click').on('click', function () {
+			lineAction('sti_gs_line_stop', 'در حال STOP امن…');
+		});
+	}
+	function lineAction(action, msg) {
+		var $m = $('#gs-line-msg');
+		$m.text(msg);
+		$.post(A.ajaxUrl, { action: action, nonce: A.nonce }).done(function (res) {
+			if (res && res.success && res.data) {
+				lineState = res.data.state;
+				setBadge(lineState);
+				$m.text(lineState === 'PAUSING' ? 'در حال توقف امن — Stage در حال اجرا تمام می‌شود…' : 'وضعیت: ' + lineState);
+			} else {
+				$m.text('❌ خطا در تغییر وضعیت');
+			}
+		}).fail(function () {
+			$m.text('❌ خطای ارتباط');
+		});
+	}
+
+	jQuery(function ($) {
+		bindButtons();
+		setInterval(poll, Math.max(2, pollSec) * 1000);
+	});
+})();
+</script>

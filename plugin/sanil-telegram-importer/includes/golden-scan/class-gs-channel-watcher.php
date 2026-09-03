@@ -431,6 +431,12 @@ class STI_GS_Channel_Watcher {
 			$worker_on = true;
 		}
 
+		/* ۱۰.۱۱ — خط تولید واقعاً START شود (نه فقط Worker). */
+		if ( class_exists( 'STI_GS_Line' ) ) {
+			STI_GS_Line::record_request( $count, $created );
+			STI_GS_Line::start();
+		}
+
 		/* تیک فوری — با کران (نه درون‌خطی) تا AJAX گلوگرفتگی نکند */
 		if ( $created > 0 && ! wp_next_scheduled( 'sti_gs_auto_worker' ) ) {
 			wp_schedule_single_event( time() - 1, 'sti_gs_auto_worker' );
@@ -441,7 +447,12 @@ class STI_GS_Channel_Watcher {
 
 		STI_Logger::info( sprintf( 'گلدن اسکن: Start Pipeline — %d Session ساخته شد (آماده‌ی باقی‌مانده: %d).', $created, $ready ) );
 
-		return array( 'created' => $created, 'ready' => $ready, 'worker_on' => (bool) $worker_on );
+		return array(
+			'created'   => $created,
+			'ready'     => $ready,
+			'worker_on' => (bool) $worker_on,
+			'line'      => class_exists( 'STI_GS_Line' ) ? STI_GS_Line::state() : 'RUNNING',
+		);
 	}
 
 	/* ============================== گزارش ============================== */

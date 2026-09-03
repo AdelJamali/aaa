@@ -197,9 +197,9 @@ class STI_GS_Auto_Worker {
 		) );
 	}
 
-	/** فاصله‌ی بین تیک‌ها به ثانیه. */
+	/** فاصله‌ی بین تیک‌ها به ثانیه (۱۰.۱۱: از تنظیمات اتوماسیون قابل تغییر). */
 	public static function interval_seconds() {
-		$n = (int) ( class_exists( 'STI_Settings' ) ? STI_Settings::get( 'gs_worker_interval', 300 ) : 300 );
+		$n = (int) ( class_exists( 'STI_GS_Automation' ) ? STI_GS_Automation::get( 'worker_interval' ) : 300 );
 		return max( 60, min( 3600, $n ) );
 	}
 
@@ -210,6 +210,53 @@ class STI_GS_Auto_Worker {
 			return;
 		}
 
+		/*
+		 * ۱۰.۱۱ — وضعیت خط تولید (Start/Stop واقعی، نه فقط UI):
+		 *   STOPPED → هیچ کار جدیدی؛ START یک continuation واقعی است.
+		 *   PAUSING → هیچ کار جدیدی؛ وقتی دیگر قفل زنده‌ای نماند
+		 *             → STOPPED. Stage در حال اجرا در همان درخواستش
+		 *             تا انتها می‌رسد — هیچ process kill نمی‌شود.
+		 *   DEGRADED/ERROR خط را نمی‌گیرند: DEGRADED یعنی Governor
+		 *             کارهای سنگین را خفه کرده و ERROR با تیک بعدی
+		 *             که موفق شود، خودترمیم می‌شود.
+		 */
+		if ( class_exists( 'STI_GS_Line' ) ) {
+			$line = STI_GS_Line::state();
+			if ( STI_GS_Line::STOPPED === $line ) {
+				return;
+			}
+			if ( STI_GS_Line::PAUSING === $line ) {
+				STI_GS_Line::finalize_pause();
+				return;
+			}
+		}
+
+		try {
+			self::tick_inner();
+		} catch ( \Throwable $e ) {
+			/* ۱۰.۱۱ — خطای تیک نباید Fatal در کران باشد: لاگ + وضعیت ERROR. */
+			if ( class_exists( 'STI_Logger' ) ) {
+				STI_Logger::error( 'Auto Worker: خطا در تیک — وضعیت → ERROR: ' . $e->getMessage() );
+			}
+			if ( class_exists( 'STI_GS_Line' ) ) {
+				STI_GS_Line::mark_error();
+			}
+			return;
+		}
+
+		/* ۱۰.۱۱ — خودترمیمی: تیک موفق، ERROR تیک قبلی را پاک می‌کند. */
+		if ( class_exists( 'STI_GS_Line' ) && STI_GS_Line::ERROR === STI_GS_Line::state() ) {
+			STI_GS_Line::clear_error();
+		}
+	}
+
+	/**
+	 * تیک Worker — کار واقعی.
+	 *
+	 * ۱۰.۱۱: توسط tick() در try/catch پیچیده شده — هر خطای داخلی
+	 * وضعیت ERROR خط می‌شود، نه Fatal.
+	 */
+	protected static function tick_inner() {
 		/*
 		 * فاصله‌ی خودمان را رعایت می‌کنیم حتی اگر کران هر دقیقه صدا بزند.
 		 * ۱۰.۹.۳ — نگهبان اتمیک (STI_GS_Cron_Gate) به‌جای خواندن/مقایسه/
@@ -585,10 +632,7 @@ class STI_GS_Auto_Worker {
 				'next_retry_at' => self::mysql_time( time() + self::RETRY_AFTER_GIVEUP ),
 				'error_reason'  => mb_substr( $stage . ': ' . $message, 0, 250 ),
 			) );
-			STI_GS_Event::log( $session_id, 'auto_worker', 'error', sprintf(
-				'به سقف %d تلاش خوردم در «%s» ولی eligible برای REVIEW نیست — با backoff بلند ادامه: %s',
-				$limit, $stage, mb_substr( (string) $message, 0, 160 )
-			) );
+			self::log_failure( $session_id, $state, $stage, 'giveup-backoff', $attempts, self::RETRY_AFTER_GIVEUP, $message );
 			self::remember_failure( $session_id, $state, $stage, 'ادامه با backoff بلند: ' . $message );
 			if ( class_exists( 'STI_GS_Run_Log' ) ) {
 				STI_GS_Run_Log::touch( $session_id, $state, 'auto', $bump );
@@ -614,6 +658,7 @@ class STI_GS_Auto_Worker {
 				} else {
 					STI_GS_Recovery::to_dead_letter( $session_id, $stage, $message );
 				}
+				self::log_failure( $session_id, $state, $stage, 'permanent', $attempts, 0, $message );
 				self::remember_failure( $session_id, $state, $stage, 'دائمی: ' . $message );
 				if ( class_exists( 'STI_GS_Run_Log' ) ) {
 					STI_GS_Run_Log::touch( $session_id, $state, 'auto', $bump );
@@ -632,6 +677,7 @@ class STI_GS_Auto_Worker {
 				'error_reason'  => mb_substr( '[' . $class . '] ' . $stage . ': ' . $message, 0, 250 ),
 			) );
 
+			self::log_failure( $session_id, $state, $stage, $class, $attempts, $delay, $message );
 			self::remember_failure( $session_id, $state, $stage, '[' . $class . '] ' . $message );
 			if ( class_exists( 'STI_GS_Run_Log' ) ) {
 				STI_GS_Run_Log::touch( $session_id, $state, 'auto', $bump );
@@ -639,17 +685,59 @@ class STI_GS_Auto_Worker {
 			return 'failed';
 		}
 
-		$delay = self::interval_seconds() * pow( 2, $attempts - 1 );
+		/* ۱۰.۱۱ — backoff پایه‌ی قابل تنظیم (پیش‌فرض ۵ دقیقه) × دو‌تایی. */
+		$base  = (int) ( class_exists( 'STI_GS_Automation' ) ? STI_GS_Automation::get( 'backoff_base_minutes' ) : 5 );
+		$delay = ( $base * MINUTE_IN_SECONDS ) * pow( 2, $attempts - 1 );
 		STI_GS_Session::update( $session_id, array(
 			'attempts'      => $attempts,
 			'next_retry_at' => self::mysql_time( time() + $delay ),
 			'error_reason'  => mb_substr( $stage . ': ' . $message, 0, 250 ),
 		) );
-
+		self::log_failure( $session_id, $state, $stage, 'unclassified', $attempts, $delay, $message );
 		if ( class_exists( 'STI_GS_Run_Log' ) ) {
 			STI_GS_Run_Log::touch( $session_id, $state, 'auto', $bump );
 		}
 		return 'failed';
+	}
+
+	/**
+	 * ۱۰.۱۱ — رویداد شکستِ استاندارد (P3: تلاش + Stage + دسته + delay + هویت).
+	 *
+	 * هیچ credential/secret در این رویداد نیست — فقط file_code/file_name
+	 * که هویتِ تلگرامی Session هستند.
+	 */
+	protected static function log_failure( $session_id, $state, $stage, $class, $attempts, $delay, $message ) {
+		$session  = STI_GS_Session::get( $session_id );
+		$identity = '';
+		if ( $session ) {
+			$identity = (string) ( $session['file_code'] ?? '' );
+			if ( '' === $identity ) {
+				$identity = (string) ( $session['file_name'] ?? '' );
+			}
+		}
+		STI_GS_Event::log( $session_id, 'auto_worker', 'error', sprintf(
+			'شکست در «%s» [%s] — تلاش %d — هویت: %s — retry بعدی: %s — %s',
+			(string) $stage,
+			(string) $class,
+			(int) $attempts,
+			'' !== $identity ? mb_substr( $identity, 0, 40 ) : '—',
+			self::format_delay( (int) $delay ),
+			mb_substr( (string) $message, 0, 160 )
+		) );
+	}
+
+	/** delay (ثانیه) به متن خوانا. */
+	protected static function format_delay( $delay ) {
+		if ( $delay >= DAY_IN_SECONDS ) {
+			return round( $delay / DAY_IN_SECONDS, 1 ) . ' روز';
+		}
+		if ( $delay >= HOUR_IN_SECONDS ) {
+			return round( $delay / HOUR_IN_SECONDS, 1 ) . ' ساعت';
+		}
+		if ( $delay >= MINUTE_IN_SECONDS ) {
+			return round( $delay / MINUTE_IN_SECONDS ) . ' دقیقه';
+		}
+		return $delay . ' ثانیه';
 	}
 
 	/** زمان محلی به فرمت MySQL — میلادی، نه جلالی. */

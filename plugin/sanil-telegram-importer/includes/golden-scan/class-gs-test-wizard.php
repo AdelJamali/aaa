@@ -42,6 +42,11 @@ class STI_GS_Test_Wizard {
 		add_action( 'wp_ajax_sti_gs_review_fix', array( $this, 'ajax_review_fix' ) );
 		add_action( 'wp_ajax_sti_gs_automation_save', array( $this, 'ajax_automation_save' ) );
 		add_action( 'wp_ajax_sti_gs_pipeline_start', array( $this, 'ajax_pipeline_start' ) );
+		/* ۱۰.۱۱ — Start/Stop + مانیتور زنده + Review زنده */
+		add_action( 'wp_ajax_sti_gs_line_start', array( $this, 'ajax_line_start' ) );
+		add_action( 'wp_ajax_sti_gs_line_stop', array( $this, 'ajax_line_stop' ) );
+		add_action( 'wp_ajax_sti_gs_pipeline_poll', array( $this, 'ajax_pipeline_poll' ) );
+		add_action( 'wp_ajax_sti_gs_review_poll', array( $this, 'ajax_review_poll' ) );
 		add_action( 'wp_ajax_sti_gs_queue_run_now', array( $this, 'ajax_queue_run_now' ) );
 		add_action( 'wp_ajax_sti_gs_queue_toggle', array( $this, 'ajax_queue_toggle' ) );
 		add_action( 'wp_ajax_sti_gs_queue_interval', array( $this, 'ajax_queue_interval' ) );
@@ -887,7 +892,13 @@ class STI_GS_Test_Wizard {
 
 	/* ═══════════ ۱۰.۱۰ — AJAX خط تولید ═══════════ */
 
-	/** Run Suggested Fix برای یک آیتم REVIEW. */
+	/**
+	 * Run Suggested Fix برای یک آیتم REVIEW.
+	 *
+	 * ۱۰.۱۱ (P9): بعد از Fix، **Verify** — state جدید Session در پاسخ
+	 * برمی‌گردد تا UI نتیجه را همان‌جا نشان دهد (موفق → ادامه pipeline؛
+	 * ناموفق → دلیل جدید ثبت شده است).
+	 */
 	public function ajax_review_fix() {
 		$this->check_ajax();
 		$session_id = (int) ( $_POST['session_id'] ?? 0 );
@@ -897,9 +908,86 @@ class STI_GS_Test_Wizard {
 		}
 		$ok = STI_GS_Review::run_fix( $session_id, $action );
 		if ( $ok ) {
-			wp_send_json_success( array( 'message' => 'Session #' . $session_id . ' به خط تولید بازگشت.' ) );
+			$session = STI_GS_Session::get( $session_id );
+			$state   = $session ? (string) $session['state'] : '';
+			$label   = ( $state && class_exists( 'STI_GS_Stage' ) ) ? STI_GS_Stage::label( $state ) : $state;
+			wp_send_json_success( array(
+				'message' => 'Session #' . $session_id . ' به خط تولید بازگشت.',
+				'verify'  => array( 'state' => $state, 'label' => $label ),
+			) );
 		}
-		wp_send_json_error( array( 'message' => 'اجرا نشد — Session باید در REVIEW باشد.' ), 400 );
+		/* دلیل ناموفق بودن را صریح بگو — نه یک «خطا» بی‌معنی. */
+		$session = STI_GS_Session::get( $session_id );
+		if ( ! $session ) {
+			wp_send_json_error( array( 'message' => 'Session پیدا نشد (ممکن است حذف شده باشد).' ), 404 );
+		}
+		$st = (string) $session['state'];
+		if ( class_exists( 'STI_GS_Stage' ) && STI_GS_Stage::FINAL_PUBLISHED === STI_GS_Stage::final_of( $st ) ) {
+			wp_send_json_success( array( 'message' => 'Session در PUBLISHED است — کاری برای Fix نیست.', 'verify' => array( 'state' => $st, 'label' => 'PUBLISHED' ) ) );
+		}
+		wp_send_json_error( array( 'message' => 'اجرا نشد — Session در REVIEW نیست (state فعلی: ' . $st . ').' ), 400 );
+	}
+
+	/* ═══════════ ۱۰.۱۱ — AJAX خط تولید (Start/Stop + مانیتور زنده) ═══════════ */
+
+	/** START LINE — continuation واقعی (Worker+کران+RUNNING). */
+	public function ajax_line_start() {
+		$this->check_ajax();
+		$state = STI_GS_Line::start();
+		wp_send_json_success( array( 'state' => $state ) );
+	}
+
+	/** STOP LINE — graceful (PAUSING → STOPPED وقتی قفل زنده نماند). */
+	public function ajax_line_stop() {
+		$this->check_ajax();
+		$state = STI_GS_Line::stop();
+		wp_send_json_success( array( 'state' => $state ) );
+	}
+
+	/** مانیتور زنده — داده‌ی کاملِ خط تولید (سبک؛ poll هر چند ثانیه). */
+	public function ajax_pipeline_poll() {
+		$this->check_ajax();
+		wp_send_json_success( STI_GS_Line::monitor() );
+	}
+
+	/** Review Queue — poll سبک برای رندر زنده (P9: جدول static نیست). */
+	public function ajax_review_poll() {
+		$this->check_ajax();
+		global $wpdb;
+		if ( ! class_exists( 'STI_GS_DB' ) || ! class_exists( 'STI_GS_Stage' ) ) {
+			wp_send_json_success( array( 'items' => array() ) );
+		}
+		$tbl = STI_GS_DB::pipeline_items_table();
+		$states = STI_GS_Stage::review_states();
+		$place = implode( ',', array_fill( 0, count( $states ), '%s' ) );
+		$items = (array) $wpdb->get_results( $wpdb->prepare(
+			"SELECT id, file_name, state, error_reason, attempts FROM {$tbl} WHERE state IN ({$place}) ORDER BY updated_at DESC LIMIT 200",
+			$states
+		), ARRAY_A );
+		$out = array();
+		foreach ( $items as $row ) {
+			$reason = class_exists( 'STI_GS_Review' ) ? STI_GS_Review::reason_of( $row ) : '';
+			$fix    = class_exists( 'STI_GS_Review' ) ? STI_GS_Review::suggested_fix( $row ) : array();
+			$run    = class_exists( 'STI_GS_Run_Log' ) ? STI_GS_Run_Log::for_session( (int) $row['id'] ) : null;
+			$err    = (string) ( $row['error_reason'] ?? '' );
+			if ( preg_match( '/^\[?REVIEW:[A-Z_]+\]/u', $err, $m ) ) {
+				$err = trim( substr( $err, strlen( $m[0] ) ) );
+			}
+			$out[] = array(
+				'id'         => (int) $row['id'],
+				'file'       => mb_substr( (string) $row['file_name'], 0, 40 ),
+				'stage'      => STI_GS_Stage::label( (string) $row['state'] ),
+				'state'      => (string) $row['state'],
+				'reason'     => class_exists( 'STI_GS_Review' ) ? STI_GS_Review::label( $reason ) : $reason,
+				'error'      => mb_substr( $err, 0, 160 ),
+				'attempts'   => (int) ( $row['attempts'] ?? 0 ),
+				'recovery'   => (int) ( $run['recovery_count'] ?? 0 ),
+				'fix_label'  => isset( $fix['label'] ) ? $fix['label'] : '',
+				'fix_action' => isset( $fix['action'] ) ? $fix['action'] : null,
+				'fix_desc'   => isset( $fix['description'] ) ? mb_substr( $fix['description'], 0, 160 ) : '',
+			);
+		}
+		wp_send_json_success( array( 'items' => $out ) );
 	}
 
 	/** ۱۰.۱۰ — گام پنجم: تعیین تعداد Session + Start. */

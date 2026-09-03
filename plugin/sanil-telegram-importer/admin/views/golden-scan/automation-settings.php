@@ -18,6 +18,9 @@ $groups = array(
 	'gov_load_per_core'  => 'آستانه‌های Governor',
 	'gov_backlog'        => 'آستانه‌های Governor',
 	'gov_ipc_faults'     => 'آستانه‌های Governor',
+	'worker_interval'      => 'Worker / Backoff (۱۰.۱۱)',
+	'backoff_base_minutes' => 'Worker / Backoff (۱۰.۱۱)',
+	'poll_interval'        => 'مانیتور زنده (۱۰.۱۱)',
 );
 $grouped = array();
 foreach ( $groups as $key => $g ) {
