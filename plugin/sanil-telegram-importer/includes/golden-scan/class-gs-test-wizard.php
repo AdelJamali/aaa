@@ -38,6 +38,9 @@ class STI_GS_Test_Wizard {
 		add_action( 'wp_ajax_sti_gs_worker_run_now', array( $this, 'ajax_worker_run_now' ) );
 		add_action( 'wp_ajax_sti_gs_worker_reset', array( $this, 'ajax_worker_reset' ) );
 		add_action( 'wp_ajax_sti_gs_worker_chain_mode', array( $this, 'ajax_worker_chain_mode' ) );
+		/* ۱۰.۱۰ — خط تولید */
+		add_action( 'wp_ajax_sti_gs_review_fix', array( $this, 'ajax_review_fix' ) );
+		add_action( 'wp_ajax_sti_gs_automation_save', array( $this, 'ajax_automation_save' ) );
 		add_action( 'wp_ajax_sti_gs_queue_run_now', array( $this, 'ajax_queue_run_now' ) );
 		add_action( 'wp_ajax_sti_gs_queue_toggle', array( $this, 'ajax_queue_toggle' ) );
 		add_action( 'wp_ajax_sti_gs_queue_interval', array( $this, 'ajax_queue_interval' ) );
@@ -879,5 +882,39 @@ class STI_GS_Test_Wizard {
 			);
 		}
 		return $rows;
+	}
+
+	/* ═══════════ ۱۰.۱۰ — AJAX خط تولید ═══════════ */
+
+	/** Run Suggested Fix برای یک آیتم REVIEW. */
+	public function ajax_review_fix() {
+		$this->check_ajax();
+		$session_id = (int) ( $_POST['session_id'] ?? 0 );
+		$action     = sanitize_key( (string) ( $_POST['fix_action'] ?? '' ) );
+		if ( ! $session_id || ! in_array( $action, array( 'rebot', 'rematch', 'redownload' ), true ) ) {
+			wp_send_json_error( array( 'message' => 'ورودی نامعتبر' ), 400 );
+		}
+		$ok = STI_GS_Review::run_fix( $session_id, $action );
+		if ( $ok ) {
+			wp_send_json_success( array( 'message' => 'Session #' . $session_id . ' به خط تولید بازگشت.' ) );
+		}
+		wp_send_json_error( array( 'message' => 'اجرا نشد — Session باید در REVIEW باشد.' ), 400 );
+	}
+
+	/** ذخیره‌ی Automation Settings. */
+	public function ajax_automation_save() {
+		$this->check_ajax();
+		$all = STI_GS_Automation::all();
+		$vals = array();
+		foreach ( array_keys( $all ) as $key ) {
+			if ( isset( $_POST[ $key ] ) ) {
+				$vals[ $key ] = $_POST[ $key ];
+			}
+		}
+		if ( empty( $vals ) ) {
+			wp_send_json_error( array( 'message' => 'مقداری برای ذخیره نفرستاده شد' ), 400 );
+		}
+		$saved = STI_GS_Automation::save( $vals );
+		wp_send_json_success( array( 'values' => $saved ) );
 	}
 }

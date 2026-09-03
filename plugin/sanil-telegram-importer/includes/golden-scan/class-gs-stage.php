@@ -259,7 +259,10 @@ class STI_GS_Stage {
 	/**
 	 * خلاصه‌ی تجمعی برای داشبورد: شمارش stateها به تفکیک Stage و Status.
 	 *
-	 * @param array $rows  ردیف‌هایی با ستون 'state'
+	 * ورودی: ردیف‌هایی با ستون 'state' — و در صورت GROUP BY، ستون 'n'
+	 * (وزن هر ردیف).
+	 *
+	 * @param array $rows
 	 * @return array{by_stage: array, by_status: array, final: array, unknown: array}
 	 */
 	public static function summarize( $rows ) {
@@ -267,26 +270,37 @@ class STI_GS_Stage {
 		$by_status = array( self::PENDING => 0, self::RUNNING => 0, self::WAITING => 0, self::FAILED => 0, self::COMPLETED => 0 );
 		$final     = array( self::FINAL_PUBLISHED => 0, self::FINAL_REVIEW => 0, self::FINAL_CANCELLED => 0 );
 		$unknown   = array();
+		$stage_status = array();
+		foreach ( self::STAGE_ORDER as $st ) {
+			$stage_status[ $st ] = array_fill_keys( array( self::PENDING, self::RUNNING, self::WAITING, self::FAILED ), 0 );
+		}
 
 		foreach ( (array) $rows as $row ) {
+			if ( ! is_array( $row ) ) {
+				continue;
+			}
 			$state = (string) ( $row['state'] ?? '' );
+			$w     = isset( $row['n'] ) ? max( 1, (int) $row['n'] ) : 1;
 			$fin   = self::final_of( $state );
 			if ( $fin ) {
-				$final[ $fin ]++;
+				$final[ $fin ] += $w;
 				continue;
 			}
 			$stage  = self::stage_of( $state );
 			$status = self::status_of( $state );
 			if ( null === $stage ) {
-				$unknown[ $state ] = ( $unknown[ $state ] ?? 0 ) + 1;
+				$unknown[ $state ] = ( $unknown[ $state ] ?? 0 ) + $w;
 				continue;
 			}
-			$by_stage[ $stage ]++;
+			$by_stage[ $stage ] += $w;
 			if ( isset( $by_status[ $status ] ) ) {
-				$by_status[ $status ]++;
+				$by_status[ $status ] += $w;
+			}
+			if ( isset( $stage_status[ $stage ][ $status ] ) ) {
+				$stage_status[ $stage ][ $status ] += $w;
 			}
 		}
 
-		return array( 'by_stage' => $by_stage, 'by_status' => $by_status, 'final' => $final, 'unknown' => $unknown );
+		return array( 'by_stage' => $by_stage, 'by_status' => $by_status, 'stage_status' => $stage_status, 'final' => $final, 'unknown' => $unknown );
 	}
 }
