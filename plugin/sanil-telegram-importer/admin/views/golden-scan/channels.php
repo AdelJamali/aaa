@@ -42,6 +42,21 @@ unset( $gs_c );
 			</div>
 
 			<div class="sti-panel">
+				<div class="sti-panel-head"><div><h2>🏭 Start — خط تولید خودکار (۱۰.۱۰)</h2>
+				<p>گام آخرِ شما همین است: تعداد Session را مشخص کنید و Start بزنید. از این‌جا به بعد هیچ گام دستی لازم نیست — سیستم هر Session را تا <strong>Published</strong> (یا <strong>Review</strong> با Fix مشخص) می‌رساند.</p></div></div>
+				<div class="sti-form-row">
+					<div class="sti-field">
+						<label>تعداد Session برای ساخت</label>
+						<input type="number" id="gs-start-count" value="10" min="1" max="1000" style="width:120px;">
+					</div>
+				</div>
+				<div class="sti-form-actions">
+					<button id="gs-pipeline-start" class="sti-btn">🏭 Start</button>
+					<span id="gs-start-result" class="sti-inline-result"></span>
+				</div>
+			</div>
+
+			<div class="sti-panel">
 				<div class="sti-panel-head"><div><h2>📡 کانال‌های ثبت‌شده</h2><p>وضعیت اسکن هر کانال زنده به‌روزرسانی می‌شود (هر ۳ ثانیه).</p></div><button id="gs-refresh" class="sti-btn secondary">🔄 بروزرسانی</button></div>
 				<div class="sti-table-wrap">
 					<table class="sti-table widefat">
@@ -96,6 +111,7 @@ unset( $gs_c );
 		jQuery(function ($) {
 			'use strict';
 			var A = window.STI || {};
+			var GS_AUTOMATION_URL = '<?php echo esc_js( admin_url( 'admin.php?page=sti-golden-scan&gs_view=automation' ) ); ?>';
 			var pollTimers = {};
 
 			function esc(s) {
@@ -191,6 +207,31 @@ unset( $gs_c );
 				}).fail(function (xhr) {
 					var raw = (xhr && xhr.responseText) ? xhr.responseText.slice(0, 300) : '';
 					$r.text('❌ خطای ارتباط' + (raw ? ' — ' + raw : ''));
+				}).always(function () {
+					$btn.prop('disabled', false);
+				});
+			});
+
+			/* ۱۰.۱۰ — Start: تعیین تعداد Session + روشن‌سازی خط تولید */
+			$('#gs-pipeline-start').on('click', function () {
+				var $btn = $(this), $r = $('#gs-start-result');
+				var count = parseInt($('#gs-start-count').val(), 10) || 0;
+				if (count < 1 || count > 1000) { $r.text('تعداد باید بین ۱ و ۱۰۰۰ باشد.'); return; }
+				$btn.prop('disabled', true);
+				$r.text('در حال ساخت Session و روشن‌سازی خط تولید...');
+				post('sti_gs_pipeline_start', { count: count }).done(function (res) {
+					if (res && res.success) {
+						var d = res.data;
+						var msg = '✅ ' + d.created + ' Session ساخته شد' +
+							((d.ready > 0) ? (' · ' + d.ready + ' مورد آماده‌ی بعدی در صف') : '') +
+							' — Worker ' + (d.worker_on ? 'روشن' : 'خاموش') + '.';
+						$r.html(msg + ' <a href="' + GS_AUTOMATION_URL + '" target="_blank" style="font-size:11px;">(پیگیری در «خط تولید»)</a>');
+						$r.css('color', '#1e7e34');
+					} else {
+						$r.text('❌ ' + ((res.data && res.data.message) || 'خطا'));
+					}
+				}).fail(function () {
+					$r.text('❌ خطای ارتباط');
 				}).always(function () {
 					$btn.prop('disabled', false);
 				});

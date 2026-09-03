@@ -406,6 +406,44 @@ class STI_GS_Channel_Watcher {
 		return $created;
 	}
 
+	/**
+	 * ۱۰.۱۰ — گام پنجم کاربر: «تعیین تعداد Session + Start».
+	 *
+	 * تا $count Session از کاندیداهای آماده (available + با دسته‌بندی)
+	 * ساخته می‌شود، Worker خودکار تضمین می‌شود روشن باشد، و یک تیک
+	 * فوری زمان‌بندی می‌شود. بعد از این فراخوانی، هیچ گام دستی دیگری
+	 * برای پردازش عادی لازم نیست:
+	 *
+	 *   Scan ← Profile Match ← Session Create ← Bot ← Download ← Media
+	 *   ← Product ← Publish Queue ← Published (یا REVIEW با Fix مشخص)
+	 *
+	 * @param int $count
+	 * @return array{created:int, ready:int, worker_on:bool}
+	 */
+	public static function start_pipeline( $count ) {
+		$count = max( 1, min( 1000, (int) $count ) );
+
+		$created   = self::create_sessions( $count );
+		$ready     = (int) ( self::stats()['ready'] ?? 0 );
+		$worker_on = STI_GS_Auto_Worker::is_enabled();
+		if ( ! $worker_on ) {
+			STI_GS_Auto_Worker::set_enabled( true );
+			$worker_on = true;
+		}
+
+		/* تیک فوری — با کران (نه درون‌خطی) تا AJAX گلوگرفتگی نکند */
+		if ( $created > 0 && ! wp_next_scheduled( 'sti_gs_auto_worker' ) ) {
+			wp_schedule_single_event( time() - 1, 'sti_gs_auto_worker' );
+		}
+		if ( function_exists( 'spawn_cron' ) ) {
+			spawn_cron();
+		}
+
+		STI_Logger::info( sprintf( 'گلدن اسکن: Start Pipeline — %d Session ساخته شد (آماده‌ی باقی‌مانده: %d).', $created, $ready ) );
+
+		return array( 'created' => $created, 'ready' => $ready, 'worker_on' => (bool) $worker_on );
+	}
+
 	/* ============================== گزارش ============================== */
 
 	public static function stats() {

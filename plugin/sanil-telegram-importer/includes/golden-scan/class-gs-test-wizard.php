@@ -41,6 +41,7 @@ class STI_GS_Test_Wizard {
 		/* ۱۰.۱۰ — خط تولید */
 		add_action( 'wp_ajax_sti_gs_review_fix', array( $this, 'ajax_review_fix' ) );
 		add_action( 'wp_ajax_sti_gs_automation_save', array( $this, 'ajax_automation_save' ) );
+		add_action( 'wp_ajax_sti_gs_pipeline_start', array( $this, 'ajax_pipeline_start' ) );
 		add_action( 'wp_ajax_sti_gs_queue_run_now', array( $this, 'ajax_queue_run_now' ) );
 		add_action( 'wp_ajax_sti_gs_queue_toggle', array( $this, 'ajax_queue_toggle' ) );
 		add_action( 'wp_ajax_sti_gs_queue_interval', array( $this, 'ajax_queue_interval' ) );
@@ -899,6 +900,17 @@ class STI_GS_Test_Wizard {
 			wp_send_json_success( array( 'message' => 'Session #' . $session_id . ' به خط تولید بازگشت.' ) );
 		}
 		wp_send_json_error( array( 'message' => 'اجرا نشد — Session باید در REVIEW باشد.' ), 400 );
+	}
+
+	/** ۱۰.۱۰ — گام پنجم: تعیین تعداد Session + Start. */
+	public function ajax_pipeline_start() {
+		$this->check_ajax();
+		$count = (int) ( $_POST['count'] ?? 0 );
+		if ( $count < 1 || $count > 1000 ) {
+			wp_send_json_error( array( 'message' => 'تعداد باید بین ۱ و ۱۰۰۰ باشد.' ), 400 );
+		}
+		$res = STI_GS_Channel_Watcher::start_pipeline( $count );
+		wp_send_json_success( $res );
 	}
 
 	/** ذخیره‌ی Automation Settings. */
