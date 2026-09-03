@@ -50,7 +50,7 @@ if ( ! defined( 'ABSPATH' ) ) { exit; }
 class STI_GS_DB {
 
 	const DB_VER_KEY = 'sti_gs_db_ver';
-	const DB_VER     = '2.3';
+	const DB_VER     = '2.4';
 
 	/** نام فیزیکی resolve شده‌ی جدول Pipeline (بدون prefix). */
 	const PIPELINE_TABLE_KEY = 'sti_gs_pipeline_table';
@@ -145,6 +145,17 @@ class STI_GS_DB {
 	public static function handoff_steps_table() {
 		global $wpdb;
 		return $wpdb->prefix . 'sti_gs_handoff_steps';
+	}
+
+	/**
+	 * جدول Session Runs — لاگ هر Session (۱۰.۱۰).
+	 *
+	 * هر Session یک ردیف: started/ended، تاریخچه‌ی Stage، شمارنده‌های
+	 * retry/recovery/IPC-heal/download/publish و نتیجه‌ی نهایی.
+	 */
+	public static function session_runs_table() {
+		global $wpdb;
+		return $wpdb->prefix . 'sti_gs_session_runs';
 	}
 
 	/**
@@ -790,6 +801,31 @@ class STI_GS_DB {
 			UNIQUE KEY session_step (session_id, step_no),
 			KEY session_status (session_id, status),
 			KEY session_bot (session_id, bot_username)
+		) {$charset};" );
+
+		/* ═══════════ جدول Session Runs — لاگ هر Session (۱۰.۱۰) ═══════════
+		 * فقط اضافه‌ای است؛ به هیچ جدول موجود دست نمی‌زند.
+		 * هر Session دقیقاً یک ردیف دارد (UNIQUE session_id) که با هر تیک
+		 * به‌روز می‌شود: تاریخ شروع/پایان، تاریخچه‌ی Stage و شمارنده‌ها. */
+		$runs = self::session_runs_table();
+		dbDelta( "CREATE TABLE {$runs} (
+			id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+			session_id BIGINT UNSIGNED NOT NULL,
+			ran_by VARCHAR(20) NOT NULL DEFAULT 'auto',
+			started_at DATETIME NOT NULL,
+			ended_at DATETIME NULL,
+			final_result VARCHAR(40) NULL,
+			stage_history LONGTEXT NULL,
+			retry_count INT UNSIGNED NOT NULL DEFAULT 0,
+			recovery_count INT UNSIGNED NOT NULL DEFAULT 0,
+			ipc_heal_count INT UNSIGNED NOT NULL DEFAULT 0,
+			download_retry_count INT UNSIGNED NOT NULL DEFAULT 0,
+			publish_retry_count INT UNSIGNED NOT NULL DEFAULT 0,
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL,
+			PRIMARY KEY (id),
+			UNIQUE KEY session_id (session_id),
+			KEY final_result (final_result)
 		) {$charset};" );
 	}
 

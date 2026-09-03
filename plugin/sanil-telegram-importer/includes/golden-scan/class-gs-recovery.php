@@ -289,6 +289,100 @@ class STI_GS_Recovery {
 		self::reap_ipc_orphans();
 	}
 
+	/* ===================== ۱۰.۱۰ — Recovery آگاه از Stage ===================== */
+
+	const IPC_FAULTS_KEY = 'sti_gs_ipc_faults';
+	const IPC_WINDOW_SEC = 1800; // ۳۰ دقیقه
+
+	/**
+	 * پلان بازیابی هر Stage — به ترتیب اولویت (دستور کار ۱۰.۱۰).
+	 *
+	 * این پلان **مستندسازیِ قطعی** مسیر بازیابی است؛ عملیاتی که واقعاً
+	 * اجرا می‌شود یا داخل موتورهای همان Stage است (refresh reference،
+	 * ipc_heal، retry داخلی) یا توسط Worker در tick بعدی انجام می‌شود.
+	 * هیچ پلان «حدس» نیست — هر آیتم یک State/عمل مشخص دارد.
+	 *
+	 * @param string $stage  STI_GS_Stage::*
+	 * @return array<int, string>
+	 */
+	public static function recovery_plan( $stage ) {
+		$plans = array(
+			STI_GS_Stage::BOT      => array( 'Poll Again', 'Inbox Scan (Bot Inbox = Source of Truth)', 'Re-click (Execute Action دوباره)' ),
+			STI_GS_Stage::MATCH    => array( 'Rebuild Candidates', 'Recalculate Scores', 'Retry Match (file_reference تازه)' ),
+			STI_GS_Stage::DOWNLOAD => array( 'Refresh Reference', 'Reconnect Client (ipc_heal + recycle)', 'Retry Download' ),
+			STI_GS_Stage::MEDIA    => array( 'Regenerate Media', 'Skip Optional Assets (thumbnail اختیاری است)', 'Continue (Session متوقف نمی‌شود)' ),
+			STI_GS_Stage::PRODUCT  => array( 'Fallback Builder', 'Fallback Template (عنوان/توضیح بدون AI)', 'Rebuild Product' ),
+			STI_GS_Stage::PUBLISH  => array( 'Repair Metadata', 'Retry Publish (صف)' ),
+			STI_GS_Stage::DISCOVER => array( 'Resolve Button دوباره', 'Retry' ),
+		);
+		return isset( $plans[ $stage ] ) ? $plans[ $stage ] : array( 'Retry' );
+	}
+
+	/** آیا این پیام خطا، خطای لایه‌ی IPC است؟ (برای Governor + لاگ) */
+	public static function is_ipc_fault( $message ) {
+		if ( class_exists( 'STI_MTProto' ) && method_exists( 'STI_MTProto', 'is_ipc_error' ) ) {
+			return STI_MTProto::is_ipc_error( (string) $message );
+		}
+		return false !== stripos( (string) $message, 'endpoint does not exist' );
+	}
+
+	/** ثبت یک خرابی IPC در پنجره‌ی ۳۰ دقیقه (Governor می‌خواند). */
+	public static function record_ipc_fault() {
+		$now = time();
+		$list = get_option( self::IPC_FAULTS_KEY, array() );
+		$list = array_values( array_filter( (array) $list, function ( $ts ) use ( $now ) {
+			return (int) $ts > $now - self::IPC_WINDOW_SEC;
+		} ) );
+		$list[] = $now;
+		update_option( self::IPC_FAULTS_KEY, $list, false );
+	}
+
+	/** تعداد خرابی IPC در ۳۰ دقیقه‌ی آخر. */
+	public static function ipc_faults_recent() {
+		$now  = time();
+		$list = (array) get_option( self::IPC_FAULTS_KEY, array() );
+		$n    = 0;
+		foreach ( $list as $ts ) {
+			if ( (int) $ts > $now - self::IPC_WINDOW_SEC ) {
+				$n++;
+			}
+		}
+		return $n;
+	}
+
+	/**
+	 * ورودِ قطعی به REVIEW — فقط وقتی eligible است.
+	 *
+	 * دلیل به‌صورت صریح در error_reason ثبت می‌شود (فرمت REVIEW:REASON)
+	 * تا داشبورد Review بدون حدس، همان دلیل را نشان بدهد.
+	 *
+	 * @param int    $session_id
+	 * @param string $stage
+	 * @param string $message
+	 * @param string $reason  STI_GS_Review::*
+	 */
+	public static function to_review( $session_id, $stage, $message, $reason = '' ) {
+		if ( '' === $reason && class_exists( 'STI_GS_Review' ) ) {
+			$reason = STI_GS_Review::eligible( 'DEAD_LETTER', $message );
+			if ( ! $reason ) {
+				$reason = STI_GS_Review::UNKNOWN_BOT_FLOW;
+			}
+		}
+		STI_GS_Session::update( (int) $session_id, array(
+			'state'         => 'NEEDS_REVIEW',
+			'stage'         => 'recovery',
+			'next_retry_at' => null,
+			'error_reason'  => mb_substr( '[REVIEW:' . $reason . '] ' . $stage . ': ' . $message, 0, 250 ),
+		) );
+		STI_GS_Event::log( (int) $session_id, 'recovery', 'ok', sprintf(
+			'ورود به REVIEW — دلیل: %s — Stage: %s — خطا: %s',
+			$reason,
+			$stage,
+			mb_substr( (string) $message, 0, 160 )
+		) );
+		self::bump( 'reviewed' );
+	}
+
 	/**
 	 * ۴) 10.9.3 — جمع‌آوری worker های یتیمِ madeline-ipc.
 	 *
@@ -310,17 +404,23 @@ class STI_GS_Recovery {
 			return;
 		}
 		try {
+			/* 10.10 — Detect ← Repair ← Verify ← Log */
 			$count = STI_MTProto::ipc_worker_count();
 			if ( $count < 0 || $count <= $max_alive ) {
 				return;
 			}
+			/* Repair */
 			$report = STI_MTProto::ipc_heal( 'watchdog' );
-			STI_GS_Event::log( 0, 'recovery', 'ok', sprintf(
-				'Watchdog: %d worker زنده‌ی madeline-ipc برای سشن این سایت پیدا شد (سقف: %d) — %d بسته شد و %d فایل IPC فرسوده پاک شد.',
+			/* Verify: شمارش دوباره — باید زیر سقف برگشته باشد */
+			$after = STI_MTProto::ipc_worker_count();
+			$verified = ( -1 === $after ) ? null : ( $after <= $max_alive );
+			STI_GS_Event::log( 0, 'recovery', ( false === $verified ) ? 'error' : 'ok', sprintf(
+				'Watchdog IPC: Detect=%d worker (سقف %d) → Repair: %d بسته/‎%d فایل پاک → Verify=%s.',
 				$count,
 				$max_alive,
 				$report['killed'],
-				$report['stale_files']
+				$report['stale_files'],
+				( null === $verified ) ? 'نامشخص (بدون shell)' : ( $verified ? 'موفق — ' . $after . ' worker' : 'ناموفق — هنوز ' . $after . ' worker' )
 			) );
 			self::bump( 'ipc_orphans' );
 		} catch ( \Throwable $e ) {

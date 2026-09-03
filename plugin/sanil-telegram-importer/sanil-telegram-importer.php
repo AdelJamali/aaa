@@ -198,6 +198,12 @@ require_once STI_PATH . 'includes/golden-scan/class-gs-retry.php';
 require_once STI_PATH . 'includes/golden-scan/class-gs-flags.php';
 /* ۱۰.۹.۳ — دروازه‌ی اتمیک تیک‌های کران (پیش از مصرف‌کننده‌ها) */
 require_once STI_PATH . 'includes/golden-scan/class-gs-cron-gate.php';
+/* ۱۰.۱۰ — خط تولید خودکار: Stage/Status قطعی + تنظیمات + Governor + Review + Run Log */
+require_once STI_PATH . 'includes/golden-scan/class-gs-stage.php';
+require_once STI_PATH . 'includes/golden-scan/class-gs-automation.php';
+require_once STI_PATH . 'includes/golden-scan/class-gs-governor.php';
+require_once STI_PATH . 'includes/golden-scan/class-gs-review.php';
+require_once STI_PATH . 'includes/golden-scan/class-gs-run-log.php';
 require_once STI_PATH . 'includes/golden-scan/class-gs-recovery.php';
 require_once STI_PATH . 'includes/golden-scan/class-gs-channel-watcher.php';
 require_once STI_PATH . 'includes/golden-scan/class-gs-deadline.php';

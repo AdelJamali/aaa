@@ -2391,7 +2391,12 @@ class STI_MTProto {
 		if ( ! self::is_fiber_error( $msg ) && ! self::is_ipc_error( $msg ) ) {
 			return false;
 		}
-		if ( self::$ipc_recycles >= self::MAX_IPC_RECYCLES ) {
+		/* 10.10 — سقف فیوز از «Automation Settings» خوانده می‌شود. */
+		$max = self::MAX_IPC_RECYCLES;
+		if ( class_exists( 'STI_GS_Automation' ) ) {
+			$max = (int) STI_GS_Automation::get( 'ipc_recovery_limit' );
+		}
+		if ( self::$ipc_recycles >= $max ) {
 			return false;
 		}
 		self::$ipc_recycles++;
@@ -2400,7 +2405,7 @@ class STI_MTProto {
 			'MTProto: خطای %s — بازیابی client %d/%d: %s',
 			$kind,
 			self::$ipc_recycles,
-			self::MAX_IPC_RECYCLES,
+			$max,
 			mb_substr( $msg, 0, 180 )
 		) );
 		if ( 'ipc' === $kind ) {

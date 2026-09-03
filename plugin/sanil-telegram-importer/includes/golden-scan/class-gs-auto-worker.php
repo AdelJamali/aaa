@@ -158,6 +158,45 @@ class STI_GS_Auto_Worker {
 		return max( 1, min( 20, $n ) );
 	}
 
+	/* ═══════════ ۱۰.۱۰ — بودجه‌ها از Automation Settings ═══════════ */
+
+	/** Session پردازش‌شده در هر تیک (پیش‌فرض دستور کار: ۱). */
+	public static function sessions_per_tick() {
+		return class_exists( 'STI_GS_Automation' )
+			? (int) STI_GS_Automation::get( 'sessions_per_tick' )
+			: 1;
+	}
+
+	/**
+	 * batch مؤثر: min(سقف قدیمی, sessions_per_tick) × ضریب Governor.
+	 * Governor هرگز زیر ۱ نمی‌رود — حداقل یک Session در هر تیک زنده می‌ماند.
+	 */
+	public static function effective_batch_size() {
+		$base = min( self::batch_size(), self::sessions_per_tick() );
+		if ( class_exists( 'STI_GS_Governor' ) ) {
+			$base = (int) floor( $base * STI_GS_Governor::factor() );
+		}
+		return max( 1, $base );
+	}
+
+	/** سقف تلاش هر Session (پیش‌فرض: ۵ — قابل تنظیم). */
+	public static function retry_limit() {
+		return class_exists( 'STI_GS_Automation' )
+			? (int) STI_GS_Automation::get( 'session_retry_limit' )
+			: self::MAX_ATTEMPTS;
+	}
+
+	/** تعداد Sessionهای با قفل زنده (بودجه‌ی Max Active Sessions). */
+	public static function active_sessions() {
+		global $wpdb;
+		$table = STI_GS_DB::pipeline_items_table();
+		$now   = current_time( 'mysql' );
+		return (int) $wpdb->get_var( $wpdb->prepare(
+			"SELECT COUNT(*) FROM {$table} WHERE locked_until IS NOT NULL AND locked_until > %s",
+			$now
+		) );
+	}
+
 	/** فاصله‌ی بین تیک‌ها به ثانیه. */
 	public static function interval_seconds() {
 		$n = (int) ( class_exists( 'STI_Settings' ) ? STI_Settings::get( 'gs_worker_interval', 300 ) : 300 );
@@ -191,7 +230,28 @@ class STI_GS_Auto_Worker {
 			return;
 		}
 
-		$sessions = self::pick( self::batch_size() );
+		/*
+		 * ۱۰.۱۰ — بودجه‌ی منابع (هاست اشتراکی):
+		 *   Max Active Sessions: اگر همین الان Sessionی با قفل زنده دارد
+		 *   (مثلاً وسط دانلود در درخواست دیگر)، تیک جدید شروع نمی‌کند.
+		 *   Governor: batch را خفه می‌کند، هرگز Session را خطا نمی‌کند.
+		 */
+		$max_active = class_exists( 'STI_GS_Automation' )
+			? (int) STI_GS_Automation::get( 'max_active_sessions' )
+			: 1;
+		if ( self::active_sessions() >= $max_active ) {
+			self::record( array( 'advanced' => 0, 'waiting' => 0, 'failed' => 0, 'completed' => 0 ) );
+			return;
+		}
+
+		if ( class_exists( 'STI_GS_Governor' ) ) {
+			STI_GS_Governor::evaluate();
+		}
+
+		$heavy_left  = class_exists( 'STI_GS_Automation' ) ? (int) STI_GS_Automation::get( 'max_downloads_per_tick' ) : 1;
+		$prod_left   = class_exists( 'STI_GS_Automation' ) ? (int) STI_GS_Automation::get( 'max_products_per_tick' ) : 1;
+
+		$sessions = self::pick( self::effective_batch_size() );
 		if ( empty( $sessions ) ) {
 			return;
 		}
@@ -217,7 +277,40 @@ class STI_GS_Auto_Worker {
 				$bot_used = true;
 			}
 
-			$outcome = self::advance_one( $session );
+			/*
+			 * ۱۰.۱۰ — کارهای سنگین (دانلود/مدیا/محصول):
+			 *   Governor در EMERGENCY → Session WAITING می‌ماند (نه FAILED).
+			 *   سقف max_downloads/max_products در هر تیک.
+			 */
+			$stage  = class_exists( 'STI_GS_Stage' ) ? STI_GS_Stage::stage_of( $state ) : null;
+			$is_dl  = ( STI_GS_Stage::DOWNLOAD === $stage );
+			$is_md  = ( STI_GS_Stage::MEDIA === $stage );
+			$is_pr  = ( STI_GS_Stage::PRODUCT === $stage );
+			if ( $is_dl || $is_md || $is_pr ) {
+				if ( class_exists( 'STI_GS_Governor' ) && ! STI_GS_Governor::allow_heavy() ) {
+					$report['waiting']++;
+					continue; // فشار زیاد — تیک بعدی؛ خرابی نیست
+				}
+				if ( $is_dl && $heavy_left <= 0 ) {
+					$report['waiting']++;
+					continue;
+				}
+				if ( ( $is_md || $is_pr ) && $prod_left <= 0 ) {
+					$report['waiting']++;
+					continue;
+				}
+			}
+
+			$outcome = self::advance_one( $session, array(
+				'dl'  => $is_dl,
+				'prd' => ( $is_md || $is_pr ),
+			) );
+			if ( $is_dl ) {
+				$heavy_left--;
+			}
+			if ( $is_md || $is_pr ) {
+				$prod_left--;
+			}
 			if ( isset( $report[ $outcome ] ) ) {
 				$report[ $outcome ]++;
 			}
@@ -258,16 +351,21 @@ class STI_GS_Auto_Worker {
 			   AND ( next_retry_at IS NULL OR next_retry_at <= %s )
 			 ORDER BY ( attempts >= %d ) ASC, priority DESC, id ASC
 			 LIMIT %d",
-			array_merge( $terminal, array( $now, $now, self::MAX_ATTEMPTS, (int) $limit ) )
+			array_merge( $terminal, array( $now, $now, self::retry_limit(), (int) $limit ) )
 		), ARRAY_A );
 	}
 
 	/**
 	 * یک Session را دقیقاً **یک مرحله** جلو می‌برد.
 	 *
+	 * ۱۰.۱۰: هر Tick فقط next_valid_transition — هیچ پرش. بعد از هر
+	 * عملیات، گذار از نظر Stage اعتبارسنجی می‌شود و لاگ Run به‌روز می‌شود.
+	 *
+	 * @param array $session
+	 * @param array $ctx  dl | prd (برای شمارنده‌ها)
 	 * @return string advanced | waiting | failed | completed | skipped
 	 */
-	protected static function advance_one( $session ) {
+	protected static function advance_one( $session, $ctx = array() ) {
 		$session_id = (int) $session['id'];
 		$state      = (string) $session['state'];
 
@@ -313,6 +411,10 @@ class STI_GS_Auto_Worker {
 				$state, $rewind[ $state ]
 			) );
 			$state = $rewind[ $state ];
+			/* ۱۰.۱۰ — Rewind خودش یک Recovery است (شمارش در Run Log). */
+			if ( class_exists( 'STI_GS_Run_Log' ) ) {
+				STI_GS_Run_Log::touch( $session_id, $state, 'auto', array( 'recovery' => 1 ) );
+			}
 		}
 
 		/**
@@ -352,55 +454,76 @@ class STI_GS_Auto_Worker {
 		 * قفل خودِ موتور یکی را رد می‌کند و همان‌جا «skipped» شمرده می‌شود،
 		 * نه خطا.
 		 */
+		$outcome = 'skipped';
 		try {
 			$result = call_user_func( $next['run'], $session_id );
 			$after  = STI_GS_Session::get( $session_id );
 			$new    = $after ? (string) $after['state'] : $state;
+
+			/*
+			 * ۱۰.۱۰ — اعتبارسنجی گذار: اگر موتور پرش غیرمجاز کرده باشد
+			 * (پرشی به Stage فراتر از بعدی)، anomaly ثبت می‌شود. تصمیم
+			 * برمی‌نمی‌دارد — فقط خطای معماری را آشکار می‌کند.
+			 */
+			if ( $new !== $state && class_exists( 'STI_GS_Stage' )
+				&& ! STI_GS_Stage::valid_transition( $state, $new ) ) {
+				STI_GS_Event::log( $session_id, 'auto_worker', 'error', sprintf(
+					'ANOMALY transition: %s → %s (Stage: %s → %s) — موتور: %s',
+					$state, $new,
+					STI_GS_Stage::stage_of( $state ),
+					STI_GS_Stage::stage_of( $new ),
+					$next['label']
+				) );
+			}
 
 			if ( is_wp_error( $result ) ) {
 				// برخورد قفل یعنی «کس دیگری مشغول است»، نه خرابی. اگر خطا
 				// حساب شود، شمارنده‌ی تلاش الکی بالا می‌رود و Session سالم
 				// بعد از پنج بار کنار گذاشته می‌شود.
 				if ( 'sti_gs_locked' === $result->get_error_code() ) {
-					return 'skipped';
+					$outcome = 'skipped';
+				} else {
+					$outcome = self::handle_failure( $session_id, $new, $next['label'], $result->get_error_message(), $ctx );
 				}
-				return self::handle_failure( $session_id, $new, $next['label'], $result->get_error_message() );
+			} else {
+				/**
+				 * توقف عمدی (زنجیره) — خطا نیست.
+				 *
+				 * Chain Init وقتی تصمیم می‌کند Session legacy بماند، State را
+				 * جابه‌جا نمی‌کند (SCANNED → SCANNED) ولی این «بی‌پیشرفتی» یک
+				 * شکست نیست. بدون این پرچم، worker آن را failure حساب می‌کرد و
+				 * شمارنده‌ی تلاش یک Session سالم بالا می‌رفت.
+				 */
+				if ( is_array( $result ) && ! empty( $result['no_progress'] ) ) {
+					$outcome = ! empty( $result['waiting'] ) ? 'waiting' : 'skipped';
+				} elseif ( in_array( $new, self::TERMINAL, true ) ) {
+					STI_GS_Event::log( $session_id, 'auto_worker', 'ok',
+						'Worker مسیر را تا «' . $new . '» کامل کرد.' );
+					$outcome = 'completed';
+				} elseif ( in_array( $new, self::WAITING, true ) ) {
+					// انتظار خرابی نیست — شمارنده بالا نمی‌رود.
+					$outcome = 'waiting';
+				} elseif ( $new === $state ) {
+					// پیش‌رفتی نداشت ولی خطا هم نداد.
+					$outcome = self::handle_failure( $session_id, $new, $next['label'], 'بدون پیش‌رفت', $ctx );
+				} else {
+					STI_GS_Session::update( $session_id, array( 'attempts' => 0 ) );
+					$outcome = 'advanced';
+				}
 			}
-
-			/**
-			 * توقف عمدی (زنجیره) — خطا نیست.
-			 *
-			 * Chain Init وقتی تصمیم می‌گیرد Session legacy بماند، State را
-			 * جابه‌جا نمی‌کند (SCANNED → SCANNED) ولی این «بی‌پیشرفتی» یک
-			 * شکست نیست. بدون این پرچم، worker آن را failure حساب می‌کرد و
-			 * شمارنده‌ی تلاش یک Session سالم بالا می‌رفت.
-			 */
-			if ( is_array( $result ) && ! empty( $result['no_progress'] ) ) {
-				return ! empty( $result['waiting'] ) ? 'waiting' : 'skipped';
-			}
-
-			if ( in_array( $new, self::TERMINAL, true ) ) {
-				STI_GS_Event::log( $session_id, 'auto_worker', 'ok',
-					'Worker مسیر را تا «' . $new . '» کامل کرد.' );
-				return 'completed';
-			}
-
-			if ( in_array( $new, self::WAITING, true ) ) {
-				// انتظار خرابی نیست — شمارنده بالا نمی‌رود.
-				return 'waiting';
-			}
-
-			if ( $new === $state ) {
-				// پیش‌رفتی نداشت ولی خطا هم نداد.
-				return self::handle_failure( $session_id, $new, $next['label'], 'بدون پیش‌رفت' );
-			}
-
-			STI_GS_Session::update( $session_id, array( 'attempts' => 0 ) );
-			return 'advanced';
 
 		} catch ( \Throwable $e ) {
-			return self::handle_failure( $session_id, $state, $next['label'], $e->getMessage() );
+			$outcome = self::handle_failure( $session_id, $state, $next['label'], $e->getMessage(), $ctx );
 		}
+
+		/* ۱۰.۱۰ — لاگ Run: وضعیت نهاییِ این تیک برای Session ثبت می‌شود. */
+		if ( class_exists( 'STI_GS_Run_Log' ) ) {
+			$after2 = STI_GS_Session::get( $session_id );
+			$state2 = $after2 ? (string) $after2['state'] : $state;
+			STI_GS_Run_Log::touch( $session_id, $state2, 'auto' );
+		}
+
+		return $outcome;
 	}
 
 	/**
@@ -410,16 +533,74 @@ class STI_GS_Auto_Worker {
 	 * یعنی یک Session خراب منابع را نمی‌بلعد ولی اگر مشکل موقتی بود
 	 * (قطعی تلگرام، سهمیه‌ی AI) خودش برمی‌گردد.
 	 */
-	protected static function handle_failure( $session_id, $state, $stage, $message ) {
+	protected static function handle_failure( $session_id, $state, $stage, $message, $ctx = array() ) {
 		$session  = STI_GS_Session::get( $session_id );
 		$attempts = (int) ( $session['attempts'] ?? 0 ) + 1;
 
+		/* ۱۰.۱۰ — Stage این خطا (برای پلان Recovery + شمارنده‌ها). */
+		$gstage = class_exists( 'STI_GS_Stage' ) ? STI_GS_Stage::stage_of( $state ) : null;
+		if ( ! $gstage ) {
+			$gstage = STI_GS_Stage::DOWNLOAD;
+		}
+		$limit  = self::retry_limit();
+
+		/* شمارنده‌ی درست در Run Log: دانلود/انتشار/سایر. */
+		$bump_key = 'retry';
+		if ( STI_GS_Stage::DOWNLOAD === $gstage || ! empty( $ctx['dl'] ) ) {
+			$bump_key = 'download_retry';
+		} elseif ( STI_GS_Stage::PUBLISH === $gstage ) {
+			$bump_key = 'publish_retry';
+		}
+
+		/* ۱۰.۱۰ — خطای IPC: برای Governor ثبت می‌شود (ترتیب: ipc_heal هم شمرده می‌شود). */
+		$bump = array( $bump_key => 1 );
+		if ( class_exists( 'STI_GS_Recovery' ) && STI_GS_Recovery::is_ipc_fault( $message ) ) {
+			STI_GS_Recovery::record_ipc_fault();
+			$bump['ipc_heal'] = 1;
+		}
+
 		/**
-		 * دسته‌بندی خطا فقط **زمان‌بندی تلاش دوباره** را تعیین می‌کند.
-		 *
-		 * هیچ تصمیمی درباره‌ی مسیر زنجیره یا State بعدی گرفته نمی‌شود —
-		 * آن مال Chain Engine است. اینجا فقط پاسخ این سؤال داده می‌شود:
-		 * «چقدر دیگر دوباره امتحان کنیم، یا اصلاً امتحان نکنیم؟»
+		 * SESSION SURVIVAL RULE (۱۰.۱۰):
+		 * REVIEW فقط وقتی مجاز است که (۱) به سقف تلاش خورده باشیم و
+		 * (۲) خطا از ۴ دلیل eligible REVIEW باشد. وگرنه Session ادامه
+		 * پیدا می‌کند — نه DEAD_END بی‌دلیل، نه شکست نهایی.
+		 */
+		$reason = ( class_exists( 'STI_GS_Review' ) )
+			? STI_GS_Review::eligible( $state, $message )
+			: null;
+
+		if ( $attempts >= $limit ) {
+			if ( $reason && class_exists( 'STI_GS_Recovery' ) ) {
+				/* recovery کامل شده + eligible → REVIEW با دلیل صریح */
+				STI_GS_Recovery::to_review( $session_id, $stage, $message, $reason );
+				self::remember_failure( $session_id, $state, $stage, '[REVIEW:' . $reason . '] ' . $message );
+				if ( class_exists( 'STI_GS_Run_Log' ) ) {
+					STI_GS_Run_Log::touch( $session_id, 'NEEDS_REVIEW', 'auto', $bump );
+				}
+				return 'failed';
+			}
+			/* eligible نیست → باید ادامه بدهد: backoff بلند، شمارنده نگه می‌ماند */
+			STI_GS_Session::update( $session_id, array(
+				'attempts'      => $attempts,
+				'next_retry_at' => self::mysql_time( time() + self::RETRY_AFTER_GIVEUP ),
+				'error_reason'  => mb_substr( $stage . ': ' . $message, 0, 250 ),
+			) );
+			STI_GS_Event::log( $session_id, 'auto_worker', 'error', sprintf(
+				'به سقف %d تلاش خوردم در «%s» ولی eligible برای REVIEW نیست — با backoff بلند ادامه: %s',
+				$limit, $stage, mb_substr( (string) $message, 0, 160 )
+			) );
+			self::remember_failure( $session_id, $state, $stage, 'ادامه با backoff بلند: ' . $message );
+			if ( class_exists( 'STI_GS_Run_Log' ) ) {
+				STI_GS_Run_Log::touch( $session_id, $state, 'auto', $bump );
+			}
+			return 'failed';
+		}
+
+		/**
+		 * زیر سقف: دسته‌بندی خطا فقط **زمان‌بندی تلاش دوباره** را تعیین می‌کند
+		 * (Recovery آگاه از Stage: پلان هر Stage در STI_GS_Recovery::recovery_plan
+		 * مستند است؛ عملیات‌های درون‌خطی مثل refresh reference و ipc_heal داخل
+		 * موتورهای همان Stage اجرا می‌شوند).
 		 */
 		if ( class_exists( 'STI_GS_Recovery' ) && class_exists( 'STI_GS_Flags' )
 			&& STI_GS_Flags::on( 'error_classification' ) ) {
@@ -427,13 +608,21 @@ class STI_GS_Auto_Worker {
 			$class = STI_GS_Recovery::classify( $message, $state );
 
 			if ( STI_GS_Recovery::PERMANENT === $class ) {
-				STI_GS_Recovery::to_dead_letter( $session_id, $stage, $message );
+				/* ۱۰.۱۰ — PERMANENT دیگر مستقیم DEAD_LETTER نیست: REVIEW gate اول. */
+				if ( $reason ) {
+					STI_GS_Recovery::to_review( $session_id, $stage, $message, $reason );
+				} else {
+					STI_GS_Recovery::to_dead_letter( $session_id, $stage, $message );
+				}
 				self::remember_failure( $session_id, $state, $stage, 'دائمی: ' . $message );
+				if ( class_exists( 'STI_GS_Run_Log' ) ) {
+					STI_GS_Run_Log::touch( $session_id, $state, 'auto', $bump );
+				}
 				return 'failed';
 			}
 
 			$delay = STI_GS_Recovery::backoff_seconds( $class, $attempts );
-			if ( $attempts >= self::MAX_ATTEMPTS ) {
+			if ( $attempts >= $limit ) {
 				$delay = max( $delay, self::RETRY_AFTER_GIVEUP );
 			}
 
@@ -444,25 +633,11 @@ class STI_GS_Auto_Worker {
 			) );
 
 			self::remember_failure( $session_id, $state, $stage, '[' . $class . '] ' . $message );
+			if ( class_exists( 'STI_GS_Run_Log' ) ) {
+				STI_GS_Run_Log::touch( $session_id, $state, 'auto', $bump );
+			}
 			return 'failed';
 		}
-
-		if ( $attempts >= self::MAX_ATTEMPTS ) {
-			// «کنار گذاشته شد» یعنی «شش ساعت دیگر دوباره»، نه «هرگز».
-			STI_GS_Session::update( $session_id, array(
-				'attempts'      => $attempts,
-				'next_retry_at' => self::mysql_time( time() + self::RETRY_AFTER_GIVEUP ),
-				'error_reason'  => mb_substr( 'AUTO_GAVE_UP: ' . $stage . ' — ' . $message, 0, 250 ),
-			) );
-			STI_GS_Event::log( $session_id, 'auto_worker', 'error', sprintf(
-				'بعد از %d تلاش در مرحله‌ی «%s» کنار گذاشته شد: %s',
-				$attempts, $stage, $message
-			) );
-			self::remember_failure( $session_id, $state, $stage, 'کنار گذاشته شد: ' . $message );
-			return 'failed';
-		}
-
-		self::remember_failure( $session_id, $state, $stage, $message );
 
 		$delay = self::interval_seconds() * pow( 2, $attempts - 1 );
 		STI_GS_Session::update( $session_id, array(
@@ -471,6 +646,9 @@ class STI_GS_Auto_Worker {
 			'error_reason'  => mb_substr( $stage . ': ' . $message, 0, 250 ),
 		) );
 
+		if ( class_exists( 'STI_GS_Run_Log' ) ) {
+			STI_GS_Run_Log::touch( $session_id, $state, 'auto', $bump );
+		}
 		return 'failed';
 	}
 
