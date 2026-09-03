@@ -275,11 +275,23 @@ class STI_File_Hunter {
 			}
 
 			/*
-			 * نکته‌ی حیاتی: MadelineProto متدها را با __call می‌گیرد، پس method_exists
-			 * همیشه false است و نمی‌شود به آن اعتماد کرد. علت خطای
-			 * «The endpoint does not exist!» هم همین بود: نام متد دانلود بین نسخه‌های
-			 * MadelineProto عوض شده (camelCase در v8/v9، snake_case در v7).
-			 * پس همه‌ی نام‌های محتمل به‌ترتیب امتحان می‌شوند.
+			 * چرا چند نام متد امتحان می‌شود؟
+			 *
+			 * 1) MadelineProto متدها را با __call می‌گیرد، پس method_exists
+			 *    همیشه false است و نمی‌شود به آن اعتماد کرد؛ نسخه‌های مختلف
+			 *    هم امضاهای کمی متفاوت دارند (camelCase در v8/v9، snake_case
+			 *    در v7). پس همه‌ی نام‌های محتمل به‌ترتیب امتحان می‌شوند.
+			 *
+			 * 2) 10.9.3 — تصحیح باور قدیمی: خطای «The endpoint does not
+			 *    exist!» ربطی به «تغییر نام متد دانلود» ندارد. این خطا از
+			 *    Amp\Ipc\connect داخل phar می‌آید وقتی سوکت
+			 *    <session_dir>/ipc نیست — یعنی worker فرآیند madeline-ipc
+			 *    مرده یا شروع نشده. در SAPI وب **همه** متدها (از جمله هر
+			 *    نامی از دانلود) از همین یک لایه‌ی IPC رد می‌شوند؛ پس وقتی
+			 *    این خطا بیفتد، امتحان نام‌های بعدی بی‌فایده است. به‌جای آن،
+			 *    catch پایین client را بازیابی می‌کند (rpc_fatal → ipc_heal)
+			 *    و تلاش بعدیِ حلقه — با file_reference تازه — دوباره امتحان
+			 *    می‌کند.
 			 */
 			$methods = array(
 				'downloadToFile'   => function () use ( $mad, $media, $dest ) { return $mad->downloadToFile( $media, $dest ); },
@@ -322,8 +334,23 @@ class STI_File_Hunter {
 					$errors[] = $label . ': فایل خالی';
 				} catch ( Throwable $e ) {
 					$msg = $e->getMessage();
-					if ( false !== stripos( $msg, 'endpoint does not exist' ) || false !== stripos( $msg, 'undefined method' ) ) {
-						continue; // این نام متد در این نسخه نیست — بعدی
+
+					/*
+					 * 10.9.3 — خطای IPC/فیبر یعنی کل لایه‌ی ارتباط خراب است،
+					 * نه «این نام متد». ادامه‌ی حلقه‌ی نام‌ها بی‌فایده است
+					 * (همه‌ی آنها همان لایه را می‌زنند). client بازیابی می‌شود
+					 * و تلاش بعدی حلقه — با file_reference تازه — دوباره
+					 * امتحان می‌کند.
+					 */
+					if ( class_exists( 'STI_MTProto' ) && STI_MTProto::rpc_fatal( $e ) ) {
+						$fresh = $mt->client();
+						if ( ! is_wp_error( $fresh ) ) { $mad = $fresh; }
+						$errors[] = $label . ': لایه‌ی IPC خراب بود — client بازیابی شد، تلاش بعدی ادامه دارد';
+						break;
+					}
+
+					if ( false !== stripos( $msg, 'undefined method' ) ) {
+						continue; // این نام متد واقعاً در این نسخه نیست — بعدی
 					}
 					$errors[] = $label . ': ' . $msg;
 				}

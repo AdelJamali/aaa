@@ -3,7 +3,7 @@
  * Plugin Name:       Golden Importer
  * Plugin URI:        https://goldenfile.ir
  * Description:       Telegram to WooCommerce importer with Agent Bridge for large files
- * Version:           10.9.2
+ * Version:           10.9.3
  * Author:            Golden File Team
  * Text Domain:       flavor-flavor
  * Domain Path:       /languages
@@ -14,7 +14,7 @@
 if ( ! defined( 'ABSPATH' ) ) {
 exit;
 }
-define( 'STI_VERSION', '10.9.2' );
+define( 'STI_VERSION', '10.9.3' );
 define( 'STI_FILE', __FILE__ );
 define( 'STI_PATH', plugin_dir_path( __FILE__ ) );
 define( 'STI_URL', plugin_dir_url( __FILE__ ) );
@@ -196,6 +196,8 @@ require_once STI_PATH . 'includes/golden-scan/class-gs-event.php';
 require_once STI_PATH . 'includes/golden-scan/class-gs-button-resolver.php';
 require_once STI_PATH . 'includes/golden-scan/class-gs-retry.php';
 require_once STI_PATH . 'includes/golden-scan/class-gs-flags.php';
+/* ۱۰.۹.۳ — دروازه‌ی اتمیک تیک‌های کران (پیش از مصرف‌کننده‌ها) */
+require_once STI_PATH . 'includes/golden-scan/class-gs-cron-gate.php';
 require_once STI_PATH . 'includes/golden-scan/class-gs-recovery.php';
 require_once STI_PATH . 'includes/golden-scan/class-gs-channel-watcher.php';
 require_once STI_PATH . 'includes/golden-scan/class-gs-deadline.php';

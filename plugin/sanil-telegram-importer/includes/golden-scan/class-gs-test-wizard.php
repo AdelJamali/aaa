@@ -100,7 +100,8 @@ class STI_GS_Test_Wizard {
 		if ( ! class_exists( 'STI_GS_Recovery' ) ) {
 			wp_send_json_error( array( 'message' => 'ماژول بازیابی بارگذاری نشده.' ) );
 		}
-		STI_GS_Recovery::tick();
+		/* ۱۰.۹.۳ — اجرای دستی هرگز نباید توسط دروازه‌ی کران مسدود شود. */
+		STI_GS_Recovery::tick( true );
 		wp_send_json_success( STI_GS_Recovery::stats() );
 	}
 

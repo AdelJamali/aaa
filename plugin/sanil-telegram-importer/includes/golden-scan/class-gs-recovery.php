@@ -261,7 +261,18 @@ class STI_GS_Recovery {
 
 	/* =========================== Watchdog =========================== */
 
-	public static function tick() {
+	public static function tick( $force = false ) {
+		/*
+		 * ۱۰.۹.۳ — دروازه‌ی اتمیک: با کران درون‌خطی، دو اجرای هم‌زمان
+		 * (یا schedule تکراری) دیگر هر دو tick را اجرا نمی‌کنند.
+		 * دکمه‌ی دستیِ «اجرای watchdog» با $force=true این دروازه را
+		 * دور می‌زند — عمل دستی کاربر همیشه اجرا می‌شود.
+		 */
+		if ( ! $force && class_exists( 'STI_GS_Cron_Gate' )
+			&& ! STI_GS_Cron_Gate::pass( 'watchdog', 600 ) ) {
+			return;
+		}
+
 		if ( ! class_exists( 'STI_GS_Flags' ) || ! STI_GS_Flags::on( 'watchdog' ) ) {
 			return;
 		}
@@ -275,6 +286,46 @@ class STI_GS_Recovery {
 		self::release_stale_locks();
 		self::rewind_legacy_stages();
 		self::release_stale_steps();
+		self::reap_ipc_orphans();
+	}
+
+	/**
+	 * ۴) 10.9.3 — جمع‌آوری worker های یتیمِ madeline-ipc.
+	 *
+	 * در MadelineProto v8، هر سشن یک فرآیند worker IPC جداگانه دارد که
+	 * با درخواست وب زنده نمی‌ماند: اگر درخواست وسط کار بمیرد
+	 * (timeout/OOM/kill هاست)، worker زنده می‌ماند و حافظه‌اش آزاد نمی‌شود.
+	 * انباشت این workerها یکی از ریشه‌های «هاست هر چند وقت یک‌بار
+	 * قفل می‌کند و بعد از چند دقیقه درست می‌شود» است.
+	 *
+	 * STI_MTProto::ipc_heal() فقط workerهای **همین سایت** (با دامنه‌ی
+	 * دقیق مسیر سشن) را می‌بندد — روی هاست اشتراکی به workerهای سایر
+	 * سایت‌ها دست نمی‌زند.
+	 *
+	 * بیش از یک worker زنده برای یک سشن، غیرطبیعی است (سابقه‌ی خرابی
+	 * باقی مانده). سقف با $max_alive تنظیم می‌شود.
+	 */
+	protected static function reap_ipc_orphans( $max_alive = 1 ) {
+		if ( ! class_exists( 'STI_MTProto' ) ) {
+			return;
+		}
+		try {
+			$count = STI_MTProto::ipc_worker_count();
+			if ( $count < 0 || $count <= $max_alive ) {
+				return;
+			}
+			$report = STI_MTProto::ipc_heal( 'watchdog' );
+			STI_GS_Event::log( 0, 'recovery', 'ok', sprintf(
+				'Watchdog: %d worker زنده‌ی madeline-ipc برای سشن این سایت پیدا شد (سقف: %d) — %d بسته شد و %d فایل IPC فرسوده پاک شد.',
+				$count,
+				$max_alive,
+				$report['killed'],
+				$report['stale_files']
+			) );
+			self::bump( 'ipc_orphans' );
+		} catch ( \Throwable $e ) {
+			// watchdog هرگز نباید روی خطای غیرحیاتی متوقف شود
+		}
 	}
 
 	/**

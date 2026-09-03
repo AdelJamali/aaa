@@ -29,6 +29,8 @@ class STI_GS_System_Check {
 			self::check_cron(),
 			self::check_lock(),
 			self::check_mtproto(),
+			self::check_ipc(),
+			self::check_queue(),
 			self::check_category_mapping()
 		);
 
@@ -385,6 +387,148 @@ class STI_GS_System_Check {
 		$verdict = $labels[ $state ] ?? array( self::WARN, 'وضعیت نامشخص: ' . $state );
 
 		$out[] = self::row( 'تلگرام', 'ورود اکانت', $verdict[0], $verdict[1] );
+
+		return $out;
+	}
+
+	/**
+	 * ۱۰.۹.۳ — داشبورد صحتِ IPC/موتور.
+	 *
+	 * دقیقاً همان چیزهایی که تا حالا باید با دست در FTP/SSH یا
+	 * phpMyAdmin دیده می‌شد: سوکت IPC، تعداد worker زنده، تناسب
+	 * نسخه‌ی PHP با phar، و مصرف حافظه. فقط می‌خواند؛ ترمیم می‌کند
+	 * نه.
+	 */
+	protected static function check_ipc() {
+		$out = array();
+
+		if ( ! class_exists( 'STI_MTProto' ) ) {
+			return array( self::row( 'IPC / موتور', 'کلاس MTProto', self::FAIL, 'بارگذاری نشده' ) );
+		}
+
+		$d = STI_MTProto::ipc_diagnostic();
+
+		/* phar ↔ PHP */
+		if ( ! $d['phar_installed'] ) {
+			$out[] = self::row( 'IPC / موتور', 'موتور (phar)', self::WARN,
+				'نصب نشده — «تنظیمات تلگرام → نصب موتور»' );
+		} elseif ( $d['php_ok'] ) {
+			$req = $d['phar_required_php'] ?: 'هر نسخه';
+			$out[] = self::row( 'IPC / موتور', 'موتور (phar) ↔ PHP', self::PASS,
+				sprintf( '%s (نیاز به PHP %s) روی PHP %s',
+					size_format( $d['phar_size'] ), $req, $d['php_version'] ) );
+		} else {
+			$out[] = self::row( 'IPC / موتور', 'موتور (phar) ↔ PHP', self::FAIL,
+				sprintf( 'phar به PHP %s+ نیاز دارد ولی PHP هاست %s است — موتور نمی‌تواند بارگذاری شود.
+					این همان خطای «engine failed / requires at least PHP» است.',
+					$d['phar_required_php'], $d['php_version'] ) );
+		}
+
+		/* حافظه */
+		$limit = (int) wp_convert_hr_to_bytes( $d['memory_limit'] );
+		$use_txt = number_format_i18n( round( $d['memory_usage'] / 1048576, 1 ) )
+			. 'M استفاده / ' . number_format_i18n( round( $d['memory_peak'] / 1048576, 1 ) ) . 'M اوج';
+		$out[] = self::row( 'IPC / موتور', 'حافظه PHP',
+			( $limit > 0 && $limit < 512 * MB_IN_BYTES ) ? self::WARN : self::PASS,
+			$d['memory_limit'] . ' (بالاترین: ' . $use_txt . ') — ۱۰.۹.۳ سقف را پیش از require به ۵۱۲M می‌رساند' );
+
+		/* shell — بدون exec، شمارش worker و ترمیم IPC ممکن نیست */
+		if ( ! $d['shell_available'] ) {
+			$out[] = self::row( 'IPC / موتور', 'دسترسی Shell (exec)', self::WARN,
+				'تابع exec غیرفعال است — شمارش worker و ترمیم خودکار IPC ممکن نیست (فقط مانیتورینگ).' );
+		}
+
+		if ( ! $d['session_dir_ok'] ) {
+			$out[] = self::row( 'IPC / موتور', 'سوکت IPC', self::WARN,
+				'سشن هنوز ساخته نشده — با اولین اتصال به تلگرام ایجاد می‌شود.' );
+			return $out;
+		}
+
+		/* سوکت + worker */
+		$workers = (int) $d['worker_count'];
+		$stale   = ( null !== $d['ipc_state_age_s'] && $d['ipc_state_age_s'] > 30 * MINUTE_IN_SECONDS
+			&& $workers === 0 );
+
+		$socket_txt = 'سوکت: ' . $d['socket'] . ' / callback: ' . $d['callback_socket'];
+		if ( $workers < 0 ) {
+			$w_txt = 'تعداد worker قابل شمارش نیست (بدون shell)';
+		} else {
+			$w_txt = $workers . ' worker زنده';
+		}
+
+		if ( $stale ) {
+			$out[] = self::row( 'IPC / موتور', 'وضعیت IPC', self::WARN,
+				$socket_txt . ' — ' . $w_txt . ' — state '
+				. (int) ( $d['ipc_state_age_s'] / 60 ) . ' دقیقه‌ای بدون worker:
+				worker مرده و state فرسوده است؛ ۱۰.۹.۳ در اولین اتصال خودکار ترمیم می‌کند.' );
+		} elseif ( 'fifo' === $d['socket'] || 'file' === $d['socket'] ) {
+			$out[] = self::row( 'IPC / موتور', 'وضعیت IPC', self::PASS,
+				$socket_txt . ' — ' . $w_txt
+				. ( null !== $d['ipc_state_age_s']
+					? ' — state ' . (int) ( $d['ipc_state_age_s'] / 60 ) . ' دقیقه‌ای' : '' ) );
+		} else {
+			$out[] = self::row( 'IPC / موتور', 'وضعیت IPC', self::WARN,
+				$socket_txt . ' — ' . $w_txt . ' — سوکت اصلی پیدا نشد (احتمالاً worker در حال راه‌اندازی یا مرده).' );
+		}
+
+		/* انباشت worker */
+		if ( $workers > 1 ) {
+			$out[] = self::row( 'IPC / موتور', 'انباشت worker', self::WARN,
+				$workers . ' worker زنده برای یک سشن غیرطبیعی است — ۱۰.۹.۳ watchdog اضافی‌ها را جمع می‌کند.
+				این انباشت یکی از ریشه‌های «هاست گاهی قفل می‌کند» است.' );
+		}
+
+		return $out;
+	}
+
+	/**
+	 * ۱۰.۹.۳ — عمق صف پردازش (Pipeline).
+	 *
+	 * تشخیص سریع اینکه آیا کار در صف انباشته شده (نشان از ظرفیت/
+	 * سرعت کم) یا صف تقریباً خالی است.
+	 */
+	protected static function check_queue() {
+		global $wpdb;
+		$out = array();
+
+		if ( ! class_exists( 'STI_GS_DB' ) ) {
+			return $out;
+		}
+		$table = STI_GS_DB::pipeline_items_table();
+		if ( ! $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $table ) ) ) {
+			return $out;
+		}
+
+		$rows = (array) $wpdb->get_results( "SELECT state, COUNT(*) AS n FROM `{$table}` GROUP BY state", ARRAY_A );
+		$by = array();
+		$total = 0;
+		foreach ( $rows as $r ) {
+			$by[ $r['state'] ] = (int) $r['n'];
+			$total += (int) $r['n'];
+		}
+
+		$stuck = (int) ( $by['DOWNLOADED'] ?? 0 ) + (int) ( $by['DOWNLOADING'] ?? 0 )
+			+ (int) ( $by['DOWNLOAD_PENDING'] ?? 0 );
+		$failed = (int) ( $by['DEAD_LETTER'] ?? 0 );
+
+		$detail = 'مجموع: ' . number_format_i18n( $total );
+		if ( $total > 0 ) {
+			$top = array();
+			foreach ( $by as $st => $n ) {
+				$top[] = $st . '=' . number_format_i18n( $n );
+			}
+			$detail .= ' — ' . implode( '، ', $top );
+		}
+
+		if ( $failed > 50 ) {
+			$out[] = self::row( 'صف پردازش', 'عمق صف', self::WARN,
+				$detail . ' — ' . number_format_i18n( $failed ) . ' مورد DEAD_LETTER (از «وضعیت» قابل زنده‌سازی است).' );
+		} elseif ( $stuck > 20 ) {
+			$out[] = self::row( 'صف پردازش', 'عمق صف', self::WARN,
+				$detail . ' — ' . number_format_i18n( $stuck ) . ' مورد در مرحله‌ی دانلود گیر کرده.' );
+		} else {
+			$out[] = self::row( 'صف پردازش', 'عمق صف', self::PASS, $detail );
+		}
 
 		return $out;
 	}

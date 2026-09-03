@@ -44,6 +44,21 @@ class STI_MTProto {
 	/** @var bool هندلر حلقه‌ی رویداد یک‌بار نصب شود. */
 	protected static $loop_guard_installed = false;
 
+	/** @var bool 10.9.3 — پیش‌بررسی IPC در این درخواست یک‌بار انجام شده است. */
+	protected static $ipc_preflight_done = false;
+
+	/** @var int 10.9.3 — تعداد بازیابی‌های client در این درخواست (مثل فیوز). */
+	protected static $ipc_recycles = 0;
+
+	/**
+	 * @var int 10.9.3 — سقف بازیابی client در هر درخواست.
+	 *
+	 * بعد از این سقف، دیگر بازیابی نمی‌شود تا از حلقه‌ی بی‌پایان
+	 * «خرابی → شروع worker → خرابی» جلوگیری شود؛ خطا از همان مسیر
+	 * معمول به retry gate می‌رود (عملکرد یک فیوز).
+	 */
+	const MAX_IPC_RECYCLES = 2;
+
 	/** @var string عمر سشن فعال در حافظه (ثانیه) — برای کش‌کردن client. */
 	const CLIENT_TTL = 120;
 
@@ -167,10 +182,65 @@ class STI_MTProto {
 		if ( ! defined( 'MADELINE_ALLOW_COMPOSER' ) ) {
 			define( 'MADELINE_ALLOW_COMPOSER', true );
 		}
+
+		/* 10.9.3 — حافظه: افزایش سقف حتماً **قبل** از require.
+		 * OOM مشاهده‌شده روی همین خط (require phar 19.5MB) بود چون
+		 * افزایش memory_limit در client() بعد از require انجام می‌شد؛
+		 * اگر خودِ require OOM کند، آن افزایش هرگز اجرا نمی‌شد. */
+		self::ensure_memory_headroom();
+
+		/* 10.9.3 — نسخه: اگر stub phar از PHP بالاتر از هاست بخواهد،
+		 * داخل require یک die() اجرا می‌شود و کل درخواست WP می‌میرد
+		 * (کاربر متن «MadelineProto requires at least PHP 8.2» می‌بیند).
+		 * پیش از require تشخیص و خطای کنترل‌شده برمی‌گردانیم. */
+		$required = self::phar_php_requirement();
+		if ( '' !== $required && version_compare( PHP_VERSION, $required, '<' ) ) {
+			throw new \RuntimeException( sprintf(
+				'phar نصب‌شده PHP %s+ می‌خواهد ولی PHP هاست %s است — بارگذاری موتور پیش از require لغو شد (درخواست در امان).',
+				$required, PHP_VERSION
+			) );
+		}
+
 		$old_level = error_reporting();
 		error_reporting( $old_level & ~E_DEPRECATED );
 		require_once self::phar_path();
 		error_reporting( $old_level );
+	}
+
+	/** 10.9.3 — افزایش سقف حافظه پیش از بارگذاری موتور (ایدمپوتنت). */
+	protected static function ensure_memory_headroom() {
+		static $done = false;
+		if ( $done ) {
+			return;
+		}
+		$done = true;
+		$current = (int) ini_get( 'memory_limit' );
+		if ( $current > 0 && $current < 512 ) {
+			@ini_set( 'memory_limit', '512M' );
+		}
+	}
+
+	/**
+	 * 10.9.3 — نسخه‌ی PHP موردنیاز stub phar (مثلاً «8.2»)، یا '' اگر تشخیص داده نشد.
+	 * فقط 2KB اول فایل (stub) خوانده می‌شود — ارزان و بدون عوارض.
+	 *
+	 * @return string
+	 */
+	public static function phar_php_requirement() {
+		static $req = null;
+		if ( null !== $req ) {
+			return $req;
+		}
+		$req  = '';
+		$path = self::phar_path();
+		if ( ! is_file( $path ) ) {
+			return $req;
+		}
+		$stub = (string) @file_get_contents( $path, false, null, 0, 2048 );
+		if ( '' !== $stub && preg_match( '/requires at least PHP (\d+\.\d+)/', $stub, $m ) ) {
+			$req = $m[1];
+		}
+		return $req;
 	}
 
 	/** تست اینکه Phar واقعاً قابل بارگذاری است (بدون نگه‌داشتن کلاس‌ها). */
@@ -178,6 +248,18 @@ class STI_MTProto {
 		if ( ! self::engine_installed() ) {
 			return false;
 		}
+
+		/* 10.9.3 — کش: قبل از این، فقط برای یک class_exists، phar 19.5MB
+		 * در هر رفرش پنل کامپایل می‌شد. نتیجه برای هر نسخه‌ی PHP یک ساعت
+		 * کش می‌شود (نصب/جایگزینی phar روی PHP دیگری، کش را خودکار
+		 * بی‌اعتبار می‌کند). */
+		$cache_key = 'sti_mt_engine_health';
+		$cached    = get_option( $cache_key, array() );
+		if ( is_array( $cached ) && isset( $cached['php'], $cached['ok'] ) && $cached['php'] === PHP_VERSION
+			&& ( time() - (int) ( $cached['ts'] ?? 0 ) ) < HOUR_IN_SECONDS ) {
+			return (bool) $cached['ok'];
+		}
+
 		try {
 			// توجه: MadelineProto کلاس‌ها را lazy-load می‌کند — autoloader تعریف می‌شود
 			// ولی خود کلاس API فقط موقع استفاده لود می‌شود. پس باید با autoload چک کنیم.
@@ -185,9 +267,21 @@ class STI_MTProto {
 				self::load_engine_phar(); // phar شامل autoloader است (سازگار با Composer)
 			}
 		} catch ( \Throwable $e ) {
+			update_option( $cache_key, array(
+				'ok'    => 0,
+				'ts'    => time(),
+				'php'   => PHP_VERSION,
+				'error' => mb_substr( (string) $e->getMessage(), 0, 200 ),
+			), false );
 			return false;
 		}
-		return class_exists( '\danog\MadelineProto\API' );
+		$ok = class_exists( '\danog\MadelineProto\API' );
+		update_option( $cache_key, array(
+			'ok'  => (int) $ok,
+			'ts'  => time(),
+			'php' => PHP_VERSION,
+		), false );
+		return $ok;
 	}
 
 	/**
@@ -466,6 +560,10 @@ class STI_MTProto {
 				if ( $path && @is_file( $path ) && STI_Security::safe_file_size( $path ) > 0 ) { return $path; }
 				$errors[] = $method . ': فایل خالی';
 			} catch ( \Throwable $e ) {
+				if ( self::rpc_fatal( $e ) ) { // 10.9.3 — client بازیابی شد؛ $mad قدیمی است
+					$fresh = $this->client();
+					if ( ! is_wp_error( $fresh ) ) { $mad = $fresh; }
+				}
 				$errors[] = $method . ': ' . $e->getMessage();
 			}
 		}
@@ -481,6 +579,10 @@ class STI_MTProto {
 				}
 			}
 		} catch ( \Throwable $e ) {
+			if ( self::rpc_fatal( $e ) ) { // 10.9.3 — client بازیابی شد؛ $mad قدیمی است
+				$fresh = $this->client();
+				if ( ! is_wp_error( $fresh ) ) { $mad = $fresh; }
+			}
 			$errors[] = 'downloadToStream: ' . $e->getMessage();
 		}
 
@@ -513,9 +615,20 @@ class STI_MTProto {
 
 		// روی هاست‌های اشتراکی memory_limit اغلب ۱۲۸M است که برای MadelineProto
 		// (همراه وردپرس) کافی نیست — سعی کن بالا ببری (اگر هاست اجازه دهد).
+		// 10.9.3: همان افزایش حالا داخل load_engine_phar() **قبل** از require هم
+		// انجام می‌شود — این نقطه فقط برای ساخت خودِ API می‌ماند.
 		$current_limit = (int) ini_get( 'memory_limit' );
 		if ( $current_limit > 0 && $current_limit < 512 ) {
 			@ini_set( 'memory_limit', '512M' );
+		}
+
+		/* 10.9.3 — پیش‌بررسی IPC (یک‌بار در هر درخواست):
+		 * اگر state file ادعا می‌کند worker در حال اجراست ولی فرآیند آن
+		 * واقعاً مرده، پاکش کن قبل از اولین RPC — وگرنه phar 25 ثانیه
+		 * روی سوکت مرده صبر می‌کند (حلقه‌ی tryConnect). */
+		if ( ! self::$ipc_preflight_done ) {
+			self::$ipc_preflight_done = true;
+			self::ipc_preflight();
 		}
 
 		self::ensure_dir();
@@ -531,6 +644,7 @@ class STI_MTProto {
 				$this->client_error = null;
 				return $mad;
 			} catch ( \Throwable $e ) {
+				self::rpc_fatal( $e ); // 10.9.3
 				$last_error = $e->getMessage();
 			}
 		}
@@ -777,6 +891,7 @@ class STI_MTProto {
 				return 'awaiting_code';
 			}
 		} catch ( \Throwable $e ) {
+			self::rpc_fatal( $e ); // 10.9.3
 			STI_Logger::warning( 'MTProto: خطا در بررسی وضعیت — ' . $e->getMessage() );
 		}
 
@@ -798,6 +913,7 @@ class STI_MTProto {
 				'id'       => $self['id'] ?? 0,
 			);
 		} catch ( \Throwable $e ) {
+			self::rpc_fatal( $e ); // 10.9.3
 			return null;
 		}
 	}
@@ -827,12 +943,14 @@ class STI_MTProto {
 				return true;
 			}
 		} catch ( \Throwable $e ) {
+			self::rpc_fatal( $e ); // 10.9.3
 			// بی‌خیال — phoneLogin خودش خطا را می‌دهد
 		}
 
 		try {
 			$auth = $mad->phoneLogin( self::phone() );
 		} catch ( \Throwable $e ) {
+			self::rpc_fatal( $e ); // 10.9.3
 			$msg = $e->getMessage();
 			if ( false !== stripos( $msg, 'already logged' ) ) {
 				return true; // از قبل لاگین است
@@ -885,6 +1003,7 @@ class STI_MTProto {
 		try {
 			$authorization = $mad->completePhoneLogin( $code );
 		} catch ( \Throwable $e ) {
+			self::rpc_fatal( $e ); // 10.9.3
 			$msg = $e->getMessage();
 
 			// اگر state سشن بین دو درخواست از بین رفته بود، سعی کن آن را بازسازی کنی
@@ -894,6 +1013,7 @@ class STI_MTProto {
 					try {
 						$authorization = $mad->completePhoneLogin( $code );
 					} catch ( \Throwable $e2 ) {
+						self::rpc_fatal( $e2 ); // 10.9.3
 						return new WP_Error( 'sti_mt_code', 'ورود ناموفق: ' . $this->friendly_rpc_error( $e2->getMessage() ) );
 					}
 				} else {
@@ -917,6 +1037,7 @@ class STI_MTProto {
 			try {
 				$authorization = $mad->complete2faLogin( $password );
 			} catch ( \Throwable $e ) {
+				self::rpc_fatal( $e ); // 10.9.3
 				// اگر state باز هم از بین رفته بود، با PasswordCalculator مستقیم
 				try {
 					if ( class_exists( '\\danog\\MadelineProto\\MTProtoTools\\PasswordCalculator' ) ) {
@@ -926,6 +1047,7 @@ class STI_MTProto {
 						throw $e;
 					}
 				} catch ( \Throwable $e2 ) {
+					self::rpc_fatal( $e2 ); // 10.9.3
 					return new WP_Error( 'sti_mt_2fa', 'خطا در ورود با رمز: ' . $this->friendly_rpc_error( $e2->getMessage() ) );
 				}
 			}
@@ -980,6 +1102,7 @@ class STI_MTProto {
 			STI_Logger::info( 'MTProto: state ورود بازسازی شد (rehydrate) — phone=' . $login['phone'] );
 			return true;
 		} catch ( \Throwable $e ) {
+			self::rpc_fatal( $e ); // 10.9.3
 			STI_Logger::warning( 'MTProto: rehydrate ناموفق — ' . $e->getMessage() );
 			return false;
 		}
@@ -1039,6 +1162,7 @@ class STI_MTProto {
 			try {
 				$mad->logout();
 			} catch ( \Throwable $e ) {
+				self::rpc_fatal( $e ); // 10.9.3
 				// بی‌خیال — سشن را هم حذف می‌کنیم
 			}
 		}
@@ -1086,6 +1210,7 @@ class STI_MTProto {
 					return new WP_Error( 'sti_mt_invite', 'پیوستن با لینک دعوت ناموفق بود (شاید قبلاً عضو هستید یا لینک منقضی شده).' );
 				}
 			} catch ( \Throwable $e ) {
+				self::rpc_fatal( $e ); // 10.9.3
 				// اگر قبلاً عضو است، resolve از روی id ممکن نیست؛ سعی می‌کنیم با خود لینک کاری نکنیم.
 				return new WP_Error( 'sti_mt_invite', 'پیوستن با لینک دعوت ناموفق: ' . $e->getMessage() );
 			}
@@ -1107,6 +1232,7 @@ class STI_MTProto {
 				return new WP_Error( 'sti_mt_chat', 'متد خواندن اطلاعات کانال در این نسخه‌ی MadelineProto موجود نیست.' );
 			}
 		} catch ( \Throwable $e ) {
+			self::rpc_fatal( $e ); // 10.9.3
 			$last_error = $e->getMessage();
 
 			// fallback: حل از طریق پیام‌ها/چت‌ها — بعضی سرورها getPwrChat را برای
@@ -1118,6 +1244,7 @@ class STI_MTProto {
 					throw new \Exception( 'no getFullInfo' );
 				}
 			} catch ( \Throwable $e2 ) {
+				self::rpc_fatal( $e2 ); // 10.9.3
 				return new WP_Error( 'sti_mt_chat', 'پیدا کردن کانال ناموفق: ' . $this->friendly_rpc_error( $last_error ) );
 			}
 		}
@@ -1189,6 +1316,7 @@ class STI_MTProto {
 			);
 			$result = $mad->messages->search( $params );
 		} catch ( \Throwable $e ) {
+			self::rpc_fatal( $e ); // 10.9.3
 			return new WP_Error( 'sti_mt_search', 'جست‌وجوی تلگرام ناموفق: ' . $e->getMessage() );
 		}
 
@@ -1239,6 +1367,7 @@ class STI_MTProto {
 				'hash'        => 0,
 			) );
 		} catch ( \Throwable $e ) {
+			self::rpc_fatal( $e ); // 10.9.3
 			return new WP_Error( 'sti_mt_history', 'خواندن تاریخچه ناموفق: ' . $e->getMessage() );
 		}
 
@@ -1436,6 +1565,10 @@ class STI_MTProto {
 					$message['raw'] = $raw;
 				}
 			} catch ( \Throwable $e ) {
+				if ( self::rpc_fatal( $e ) ) { // 10.9.3 — client بازیابی شد؛ $mad قدیمی است
+					$fresh = $this->client();
+					if ( ! is_wp_error( $fresh ) ) { $mad = $fresh; }
+				}
 				// بی‌خیال — با همان raw تلاش می‌کنیم
 			}
 		}
@@ -1453,6 +1586,10 @@ class STI_MTProto {
 						$raw = $msgs[0];
 					}
 				} catch ( \Throwable $e ) {
+					if ( self::rpc_fatal( $e ) ) { // 10.9.3 — client بازیابی شد؛ $mad قدیمی است
+						$fresh = $this->client();
+						if ( ! is_wp_error( $fresh ) ) { $mad = $fresh; }
+					}
 					// بی‌خیال
 				}
 			}
@@ -1482,6 +1619,10 @@ class STI_MTProto {
 				}
 				$last_error = 'فایل دانلود نشد یا خالی است';
 			} catch ( \Throwable $e ) {
+				if ( self::rpc_fatal( $e ) ) { // 10.9.3 — client بازیابی شد؛ $mad قدیمی است
+					$fresh = $this->client();
+					if ( ! is_wp_error( $fresh ) ) { $mad = $fresh; }
+				}
 				$last_error = $e->getMessage();
 				// صبر کوتاه انسانی بین تلاش‌ها
 				usleep( ( $attempt + 1 ) * 1200000 );
@@ -1518,6 +1659,7 @@ class STI_MTProto {
 		try {
 			$path = $mad->downloadToFile( $message['raw'], $dest );
 		} catch ( \Throwable $e ) {
+			self::rpc_fatal( $e ); // 10.9.3
 			return new WP_Error( 'sti_mt_download', 'دانلود با اکانت شخصی ناموفق: ' . $e->getMessage() );
 		}
 
@@ -1562,14 +1704,22 @@ class STI_MTProto {
 			$err = $e->getMessage();
 			$low = mb_strtolower( (string) $err );
 
+			/*
+			 * 10.9.3 — «endpoint does not exist» خطای لایه‌ی IPC است:
+			 * سوکت/worker فرآیندِ این سشن مرده است. هیچ ارتباطی با «تغییر
+			 * نام متد» ندارد — در SAPI وب هر متدی از همین لایه رد می‌شود.
+			 * rpc_fatal worker مرده را (با دامنه‌ی سشن) می‌بندد، state
+			 * فرسوده را پاک می‌کند و client را بازیابی می‌کند تا تلاش
+			 * بعدی (در stage بعدی زنجیره) با client تازه انجام شود.
+			 */
+			self::rpc_fatal( $e );
+
 			/**
-			 * خطاهای «endpoint does not exist» و «Event loop terminated»
-			 * معمولاً یعنی MadelineProto نتوانسته با این روش کالبک را اجرا کند
-			 * (نسخه‌ی قدیمی phar، یا بات/پیام خاص). در این حالت هنوز یک راه
-			 * هست: همان deep link / startBot که در مسیر legacy هم جواب می‌دهد.
-			 *
-			 * اگر داده‌ی دکمه یک URL باشد (مثل deep link)، با start_bot_dialog
-			 * تلاش می‌کنیم؛ در غیر این صورت فقط لاگ می‌کنیم و خطا را برمی‌گردانیم.
+			 * Fallback واقعیِ دکمه‌های deep link: اگر داده‌ی دکمه یک
+			 * t.me/...?start=... باشد، همان مسیر startBot از مسیر
+			 * start_bot_dialog هم جواب می‌دهد (چه خطا IPC بوده چه نباشد).
+			 * در غیر این صورت خطا به مرحله‌ی بعدی زنجیره سپرده می‌شود —
+			 * با client بازیابی‌شده، احتمال موفقیت در تلاش بعدی بالاست.
 			 */
 			if ( false !== strpos( $low, 'endpoint does not exist' )
 				|| false !== strpos( $low, 'event loop terminated' )
@@ -1640,6 +1790,7 @@ class STI_MTProto {
 					$docs[] = $n;
 				}
 			} catch ( \Throwable $e ) {
+				self::rpc_fatal( $e ); // 10.9.3
 				// ربات در لیست دیالوگ‌ها نیست یا peer resolve نشد — بی‌خیال
 			}
 		}
@@ -1668,6 +1819,7 @@ class STI_MTProto {
 				$docs[] = $n;
 			}
 		} catch ( \Throwable $e ) {
+			self::rpc_fatal( $e ); // 10.9.3
 			// ignore
 		}
 
@@ -1681,6 +1833,7 @@ class STI_MTProto {
 				'hash'        => 0,
 			) );
 		} catch ( \Throwable $e ) {
+			self::rpc_fatal( $e ); // 10.9.3
 			STI_Logger::warning( 'MTProto: getDialogs — ' . $e->getMessage() );
 			$dialogs = array();
 		}
@@ -1727,6 +1880,7 @@ class STI_MTProto {
 					'hash'        => 0,
 				) );
 			} catch ( \Throwable $e ) {
+				self::rpc_fatal( $e ); // 10.9.3
 				continue;
 			}
 			foreach ( ( $h['messages'] ?? array() ) as $m ) {
@@ -1789,6 +1943,7 @@ class STI_MTProto {
 				'hash'        => 0,
 			) );
 		} catch ( \Throwable $e ) {
+			self::rpc_fatal( $e ); // 10.9.3
 			return new WP_Error( 'sti_mt_debug_history_failed', $peer . ' → ' . $e->getMessage() );
 		}
 
@@ -1828,6 +1983,7 @@ class STI_MTProto {
 				'no_webpage'=> true,
 			) );
 		} catch ( \Throwable $e ) {
+			self::rpc_fatal( $e ); // 10.9.3
 			STI_Logger::warning( 'MTProto: start_bot_dialog — ' . $e->getMessage() );
 			return new WP_Error( 'sti_mt_start', $e->getMessage() );
 		}
@@ -1876,6 +2032,7 @@ class STI_MTProto {
 					$bot_peer = (int) $info['id'];
 				}
 			} catch ( \Throwable $e ) {
+				self::rpc_fatal( $e ); // 10.9.3
 				// بی‌خیال — fallback روی username
 			}
 		}
@@ -1892,6 +2049,7 @@ class STI_MTProto {
 				'random_id'   => mt_rand( 1, 0x7fffffff ),
 			) );
 		} catch ( \Throwable $e ) {
+			self::rpc_fatal( $e ); // 10.9.3
 			// نسخه‌های قدیمی MadelineProto یا خطای موقت — با پیام متنی fallback می‌کنیم.
 			STI_Logger::warning( 'MTProto: messages.startBot — ' . $e->getMessage() . ' — fallback به /start' );
 		}
@@ -1928,6 +2086,7 @@ class STI_MTProto {
 				'username' => (string) ( $chat['username'] ?? '' ),
 			);
 		} catch ( \Throwable $e ) {
+			self::rpc_fatal( $e ); // 10.9.3
 			// اگر قبلاً عضو است، importChatInvite خطا می‌دهد؛ تلاش با resolve نام.
 			$err = $e->getMessage();
 			$info = $this->chat_info( (int) ( $imported['chats'][0]['id'] ?? 0 ) ?: $hash );
@@ -1963,6 +2122,7 @@ class STI_MTProto {
 				$bot_peer = (int) $info['id'];
 			}
 		} catch ( \Throwable $e ) {
+			self::rpc_fatal( $e ); // 10.9.3
 			// بی‌خیال
 		}
 
@@ -1977,6 +2137,7 @@ class STI_MTProto {
 				'from_peer' => array( '_' => 'inputPeerEmpty' ),
 			) );
 		} catch ( \Throwable $e ) {
+			self::rpc_fatal( $e ); // 10.9.3
 			STI_Logger::warning( 'MTProto: requestWebView — ' . $e->getMessage() );
 			// آخرین تلاش: همان پیام متنی
 			return $this->start_bot_dialog( $bot, $app_name );
@@ -2006,6 +2167,7 @@ class STI_MTProto {
 				'no_webpage'=> true,
 			) );
 		} catch ( \Throwable $e ) {
+			self::rpc_fatal( $e ); // 10.9.3
 			return new WP_Error( 'sti_mt_send', $e->getMessage() );
 		}
 	}
@@ -2084,6 +2246,7 @@ class STI_MTProto {
 				'hash'        => 0,
 			) );
 		} catch ( \Throwable $e ) {
+			self::rpc_fatal( $e ); // 10.9.3
 			$flood = self::flood_error( $e );
 			if ( $flood ) {
 				return $flood;
@@ -2168,21 +2331,270 @@ class STI_MTProto {
 	}
 
 	/**
-	 * کشتن worker های به‌جامانده‌ی MadelineProto مربوط به سشن این سایت.
-	 * روی هاست‌های اشتراکی، worker های قدیمی ممکن است از جلسات قبل مانده باشند
-	 * و حافظه بگیرند؛ این متد با pkill آنها را می‌بندد (اگر shell مجاز باشد).
+	 * آیا این پیام خطا، خطای **فیبر** Amp است؟
 	 *
-	 * @return int  تعداد worker های کشته‌شده (یا -1 اگر shell در دسترس نباشد).
+	 * 10.9.3: «Must call resume() ... before calling suspend()» یعنی فیبر
+	 * اصلی این client دوبار suspend شده و حلقه‌ی رویداد این client برای
+	 * بقیه‌ی همین درخواست آلوده است. ادامه‌ی کار با همین client تضمین
+	 * شکست است — باید client بازیابی شود (rpc_fatal()).
+	 *
+	 * @param string $msg
+	 * @return bool
+	 */
+	public static function is_fiber_error( $msg ) {
+		$m = mb_strtolower( (string) $msg );
+		return ( false !== strpos( $m, 'must call resume' )
+			|| false !== strpos( $m, 'before calling suspend' ) );
+	}
+
+	/**
+	 * آیا این پیام خطا، خطای **لایه‌ی IPC** phar است؟
+	 *
+	 * 10.9.3: «The endpoint does not exist!» از Amp\Ipc\connect می‌آید وقتی
+	 * فایل سوکت `<session_dir>/ipc` وجود ندارد — یعنی worker فرآیند
+	 * `madeline-ipc` مرده یا شروع نشده.
+	 *
+	 * نکته‌ی مهم که پیش‌تر اشتباه خوانده می‌شد: این خطا **هیچ ارتباطی با نام
+	 * متد دانلود ندارد**. در MadelineProto v8 همه‌ی RPCها — از جمله
+	 * downloadToFile — در SAPI وب از طریق همین لایه‌ی IPC رد می‌شوند، پس
+	 * این خطا روی هر متدی می‌تواند بیفتد و نشانه‌ی خرابی worker/سوکت است،
+	 * نه «تغییر نام متد دانلود».
+	 *
+	 * @param string $msg
+	 * @return bool
+	 */
+	public static function is_ipc_error( $msg ) {
+		$m = mb_strtolower( (string) $msg );
+		return false !== strpos( $m, 'endpoint does not exist' );
+	}
+
+	/**
+	 * 10.9.3 — تشخیص مرکزیِ خطاهای «آلوده‌کننده‌ی درخواست».
+	 *
+	 * در هر catch که یک RPC تلگرام را می‌پیچد، یک خطه از این متد صدا زده
+	 * می‌شود. اگر خطا فیبر یا IPC باشد، client فعلی برای بقیه‌ی این
+	 * درخواست بی‌فایده است:
+	 *   1. در صورت خطای IPC: ipc_heal() — worker های مرده/قدیمیِ **این
+	 *      سایت** بسته و فایل‌های IPC فرسوده پاک می‌شوند.
+	 *   2. client فعلی (با حلقه‌ی آلوده) رها می‌شود؛ client() بعدی یک API
+	 *      تازه با حلقه‌ی رویداد سالم می‌سازد.
+	 *
+	 * سقف MAX_IPC_RECYCLES در هر درخواست مثل فیوز است: بعد از آن، خطا از
+	 * مسیر معمول به retry gate می‌رود و حلقه‌ی بی‌پایان شروع worker شکل
+	 * نمی‌گیرد.
+	 *
+	 * @param \Throwable $e
+	 * @return bool آیا بازیابی انجام شد؟
+	 */
+	public static function rpc_fatal( \Throwable $e ) {
+		$msg = $e->getMessage();
+		if ( ! self::is_fiber_error( $msg ) && ! self::is_ipc_error( $msg ) ) {
+			return false;
+		}
+		if ( self::$ipc_recycles >= self::MAX_IPC_RECYCLES ) {
+			return false;
+		}
+		self::$ipc_recycles++;
+		$kind = self::is_fiber_error( $msg ) ? 'fiber' : 'ipc';
+		STI_Logger::warning( sprintf(
+			'MTProto: خطای %s — بازیابی client %d/%d: %s',
+			$kind,
+			self::$ipc_recycles,
+			self::MAX_IPC_RECYCLES,
+			mb_substr( $msg, 0, 180 )
+		) );
+		if ( 'ipc' === $kind ) {
+			self::ipc_heal( 'rpc_fatal' );
+		}
+		self::stop_client();
+		return true;
+	}
+
+	/**
+	 * 10.9.3 — شمارش worker های madeline-ipc **مربوط به سشن این سایت**.
+	 *
+	 * دامنه‌ی شمارش دقیقاً مسیر اچ‌شده‌ی سشن این سایت است؛ روی هاست
+	 * اشتراکی هر سایت دیگر با سشن خودش worker خودش را دارد و نباید
+	 * دست‌خورده باشد.
+	 *
+	 * @return int تعداد (یا -1 اگر shell در دسترس نباشد).
+	 */
+	public static function ipc_worker_count() {
+		if ( ! function_exists( 'exec' ) || ! is_callable( 'exec' ) ) {
+			return -1;
+		}
+		$pattern = 'madeline-ipc ' . self::session_path();
+		$out     = array();
+		@exec( 'pgrep -f ' . escapeshellarg( $pattern ) . ' 2>/dev/null | wc -l', $out );
+		return isset( $out[0] ) ? (int) trim( $out[0] ) : -1;
+	}
+
+	/**
+	 * 10.9.3 — پیش‌بررسی IPC: state فرسوده را **پیش از** اولین RPC پاک کن.
+	 *
+	 * ساختار IPC در phar v8:
+	 *   <session_dir>/ipc           سوکت (FIFO) — worker سرور است
+	 *   <session_dir>/callback.ipc  سوکت callback
+	 *   <session_dir>/ipcState.php  state (startupId/زمان شروع)
+	 *   <session_dir>/lock          قفل انحصاری سشن
+	 *
+	 * اگر state وجود داشته باشد ولی فرآیند worker نباشد، client بعدی یا
+	 * 25 ثانیه روی سوکت مرده می‌چرخد (حلقه‌ی tryConnect) یا از state کج
+	 * می‌شود. فقط state **کهنه** (بیش از 30 دقیقه) را پاک می‌کنیم تا با
+	 * worker تازه‌شروع‌شده در لحظه‌ی رقابتی تداخل نکنیم.
+	 */
+	protected static function ipc_preflight() {
+		try {
+			$dir = self::session_path();
+			if ( ! is_dir( $dir ) ) {
+				return; // هنوز سشن/IPC ساخته نشده
+			}
+			$state = $dir . '/ipcState.php';
+			if ( ! is_file( $state ) ) {
+				return; // هیچ ادعایی از worker در حال اجرا
+			}
+			$age = time() - (int) @filemtime( $state );
+			if ( $age < 30 * MINUTE_IN_SECONDS ) {
+				return; // تازه — احتمالاً در حال راه‌اندازی/خاموشی سالم
+			}
+			$count = self::ipc_worker_count();
+			if ( $count > 0 ) {
+				return; // worker زنده است — دست نزن
+			}
+			if ( -1 === $count ) {
+				return; // بدون shell نمی‌توان قاطع بود — فقط گزارش
+			}
+			self::ipc_heal( 'preflight: state ' . (int) ( $age / 60 ) . ' دقیقه‌ای بدون worker' );
+		} catch ( \Throwable $e ) {
+			// پیش‌بررسی هرگز نباید جریان اصلی را بشکند
+		}
+	}
+
+	/**
+	 * 10.9.3 — ترمیم خودکار IPC.
+	 *
+	 * «The endpoint does not exist!» یعنی سوکت `<session_dir>/ipc` نیست:
+	 * worker فرآیند `madeline-ipc` مرده (timeout/OOM/کشتن توسط هاست) یا
+	 * شروع نشده. ترمیم =
+	 *   1. بستن worker های **این سایت** (فقط با دامنه‌ی مسیر سشن؛ هرگز
+	 *      pkill بدون دامنه که worker سایت‌های دیگر هاست اشتراکی را هم
+	 *      می‌کُشد)؛
+	 *   2. پاک کردن فایل‌های IPC فرسوده تا بار بعد client() یک worker
+	 *      تمیز شروع کند؛
+	 *   3. رها کردن client فعلی.
+	 *
+	 * @param string $reason
+	 * @return array{ok:bool, killed:int, stale_files:int, reason:string}
+	 */
+	public static function ipc_heal( $reason = 'manual' ) {
+		$report = array( 'ok' => false, 'killed' => 0, 'stale_files' => 0, 'reason' => $reason );
+		$dir    = self::session_path();
+		if ( ! is_dir( $dir ) ) {
+			$report['reason'] = 'no_session_dir';
+			return $report;
+		}
+
+		$pattern = 'madeline-ipc ' . $dir;
+		$killed  = 0;
+		if ( function_exists( 'exec' ) && is_callable( 'exec' ) ) {
+			$pids = array();
+			@exec( 'pgrep -f ' . escapeshellarg( $pattern ) . ' 2>/dev/null', $pids );
+			foreach ( (array) $pids as $pid ) {
+				$pid = (int) $pid;
+				if ( $pid > 1 ) {
+					@exec( 'kill ' . $pid . ' 2>/dev/null' );
+					$killed++;
+				}
+			}
+			sleep( 1 );
+			$pids2 = array();
+			@exec( 'pgrep -f ' . escapeshellarg( $pattern ) . ' 2>/dev/null', $pids2 );
+			foreach ( (array) $pids2 as $pid ) {
+				$pid = (int) $pid;
+				if ( $pid > 1 ) {
+					@exec( 'kill -9 ' . $pid . ' 2>/dev/null' );
+				}
+			}
+		}
+		$report['killed'] = $killed;
+
+		$gone = 0;
+		foreach ( array( 'ipc', 'callback.ipc', 'ipcState.php', 'lock' ) as $f ) {
+			$p = $dir . '/' . $f;
+			if ( file_exists( $p ) && @unlink( $p ) ) {
+				$gone++;
+			}
+		}
+		$report['stale_files'] = $gone;
+
+		self::stop_client();
+		$report['ok'] = true;
+		STI_Logger::warning( sprintf(
+			'MTProto: ترمیم IPC (%s) — %d worker بسته شد، %d فایل فرسوده پاک شد.',
+			$reason,
+			$killed,
+			$gone
+		) );
+		return $report;
+	}
+
+	/**
+	 * 10.9.3 — تصویر وضعیت IPC/موتور برای داشبورد صحت (Health Dashboard).
+	 *
+	 * همه‌ی مقادیر فقط **خوانده** می‌شوند؛ هیچ ترمیمی اینجا انجام نمی‌شود.
+	 *
+	 * @return array
+	 */
+	public static function ipc_diagnostic() {
+		$dir = self::session_path();
+		$dir_ok = is_dir( $dir );
+
+		$socket  = 'n/a';
+		$csock   = 'n/a';
+		$state_s = null;
+		if ( $dir_ok ) {
+			$socket  = is_file( $dir . '/ipc' ) ? (string) @filetype( $dir . '/ipc' ) : 'missing';
+			$csock   = is_file( $dir . '/callback.ipc' ) ? (string) @filetype( $dir . '/callback.ipc' ) : 'missing';
+			$state_s = is_file( $dir . '/ipcState.php' ) ? ( time() - (int) @filemtime( $dir . '/ipcState.php' ) ) : null;
+		}
+
+		$required_php = self::phar_php_requirement();
+		$di = array(
+			'session_dir'       => $dir,
+			'session_dir_ok'    => $dir_ok,
+			'socket'            => $socket,
+			'callback_socket'   => $csock,
+			'ipc_state_age_s'   => $state_s,
+			'worker_count'      => $dir_ok ? self::ipc_worker_count() : -1,
+			'phar_installed'    => self::engine_installed(),
+			'phar_size'         => self::engine_installed() ? (int) @filesize( self::phar_path() ) : 0,
+			'phar_required_php' => $required_php,
+			'php_version'       => PHP_VERSION,
+			'php_ok'            => ( '' === $required_php ) || version_compare( PHP_VERSION, $required_php, '>=' ),
+			'memory_limit'      => (string) ini_get( 'memory_limit' ),
+			'memory_usage'      => function_exists( 'memory_get_usage' ) ? memory_get_usage( true ) : 0,
+			'memory_peak'       => function_exists( 'memory_get_peak_usage' ) ? memory_get_peak_usage( true ) : 0,
+			'shell_available'   => function_exists( 'exec' ) && is_callable( 'exec' ),
+		);
+		return $di;
+	}
+
+	/**
+	 * کشتن worker های به‌جامانده‌ی MadelineProto مربوط به سشن این سایت.
+	 *
+	 * 10.9.3: نسخه‌ی قبلی `pkill -f madeline-ipc` **بدون هیچ دامنه‌ای**
+	 * اجرا می‌شد — روی هاست اشتراکی worker همه‌ی سایت‌هایی که از این
+	 * افزونه استفاده می‌کنند را می‌کُشت. حالا دقیقاً از طریق ipc_heal()
+	 * و فقط با دامنه‌ی مسیر سشن این سایت.
+	 *
+	 * @return int تعداد موارد پاک‌شده (worker + فایل) یا -1 بدون shell.
 	 */
 	public static function cleanup_orphan_workers() {
 		if ( ! function_exists( 'exec' ) || ! is_callable( 'exec' ) ) {
 			return -1;
 		}
-		$pattern = 'madeline-ipc';
-		$before  = array();
-		@exec( 'pgrep -fc ' . escapeshellarg( $pattern ) . ' 2>/dev/null', $before );
-		@exec( 'pkill -f ' . escapeshellarg( $pattern ) . ' 2>/dev/null; pkill -f ' . escapeshellarg( 'MadelineProto worker' ) . ' 2>/dev/null; true' );
-		return isset( $before[0] ) ? (int) $before[0] : -1;
+		$report = self::ipc_heal( 'cleanup_orphan_workers' );
+		return $report['killed'] + $report['stale_files'];
 	}
 
 	/** آیا سایت Composer autoloader دارد؟ (بسیاری از افزونه‌ها دارند) */
@@ -2386,6 +2798,7 @@ class STI_MTProto {
 			) );
 			return (array) ( $h['messages'] ?? array() );
 		} catch ( \Throwable $e ) {
+			self::rpc_fatal( $e ); // 10.9.3
 			return array();
 		}
 	}
@@ -2403,6 +2816,7 @@ class STI_MTProto {
 				'hash'        => 0,
 			) );
 		} catch ( \Throwable $e ) {
+			self::rpc_fatal( $e ); // 10.9.3
 			$msg = $e->getMessage();
 			if ( false === stripos( $msg, 'SIGTERM' ) ) {
 				STI_Logger::warning( 'MTProto: getDialogs — ' . mb_substr( $msg, 0, 200 ) );
@@ -2441,6 +2855,7 @@ class STI_MTProto {
 				$msgs = (array) ( $res['messages'] ?? array() );
 				if ( ! empty( $msgs[0] ) && is_array( $msgs[0] ) ) { return $msgs[0]; }
 			} catch ( \Throwable $e ) {
+				self::rpc_fatal( $e ); // 10.9.3
 				continue;
 			}
 		}

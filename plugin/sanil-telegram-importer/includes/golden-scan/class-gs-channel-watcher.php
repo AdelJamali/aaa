@@ -151,8 +151,12 @@ class STI_GS_Channel_Watcher {
 			return;
 		}
 
-		$last = (int) get_option( self::LAST_RUN_KEY, 0 );
-		if ( $last && ( time() - $last ) < self::interval_seconds() ) {
+		/*
+		 * ۱۰.۹.۳ — نگهبان اتمیک: خواندن/مقایسه/نوشتن قدیمی (TOCTOU)
+		 * جایگزین شد؛ دو درخواست هم‌زمان دیگر هر دو نمی‌توانند رد شوند.
+		 */
+		if ( class_exists( 'STI_GS_Cron_Gate' )
+			&& ! STI_GS_Cron_Gate::pass( 'watcher', self::interval_seconds() ) ) {
 			return;
 		}
 		update_option( self::LAST_RUN_KEY, time(), false );
@@ -271,8 +275,22 @@ class STI_GS_Channel_Watcher {
 			if ( ! wp_next_scheduled( 'sti_gs_scan_worker', $args ) ) {
 				wp_schedule_single_event( time() - 1, 'sti_gs_scan_worker', $args );
 			}
-			spawn_cron();
 			$started++;
+		}
+
+		/*
+		 * 10.9.3 — spawn_cron() از داخل حلقه‌ی کانال‌ها بیرون آمد.
+		 *
+		 * هر spawn_cron() کل صف WP-Cron را **هم‌اکنون** اجرا می‌کند —
+		 * یعنی با N کانال، هر دورِ Watcher، N بار کل کران (همه‌ی crons
+		 * GS + legacy) پشت‌سرهم اجرا می‌شد: هم CPU هاست اشتراکی را
+		 * می‌خواباند و هم اجرای همزمانِ cronهای GS با هم را می‌ساخت
+		 * (همان «فشار کران» گزارش‌شده). بیدار کردن یک‌بار، برای هر
+		 * run کافی است؛ رویدادهای single-event به‌هیچ‌وجه از دست
+		 * نمی‌روند.
+		 */
+		if ( $started > 0 && function_exists( 'spawn_cron' ) ) {
+			spawn_cron();
 		}
 
 		return $started;

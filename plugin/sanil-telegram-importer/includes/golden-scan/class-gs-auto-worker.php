@@ -171,9 +171,14 @@ class STI_GS_Auto_Worker {
 			return;
 		}
 
-		// فاصله‌ی خودمان را رعایت می‌کنیم حتی اگر کران هر دقیقه صدا بزند.
-		$last = (int) get_option( self::STATS_KEY . '_last', 0 );
-		if ( $last && ( time() - $last ) < self::interval_seconds() ) {
+		/*
+		 * فاصله‌ی خودمان را رعایت می‌کنیم حتی اگر کران هر دقیقه صدا بزند.
+		 * ۱۰.۹.۳ — نگهبان اتمیک (STI_GS_Cron_Gate) به‌جای خواندن/مقایسه/
+		 * نوشتنِ جدا: دو تیک هم‌زمان دیگر نمی‌توانند هر دو رد شوند.
+		 * (LAST برای نمایش در «وضعیت» همچنان نوشته می‌شود.)
+		 */
+		if ( class_exists( 'STI_GS_Cron_Gate' )
+			&& ! STI_GS_Cron_Gate::pass( 'auto_worker', self::interval_seconds() ) ) {
 			return;
 		}
 		update_option( self::STATS_KEY . '_last', time(), false );
