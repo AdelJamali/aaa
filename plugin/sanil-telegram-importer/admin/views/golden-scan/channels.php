@@ -13,96 +13,117 @@ foreach ( $channels as &$gs_c ) {
 }
 unset( $gs_c );
 ?>
-<div class="wrap sti-wrap">
-	<div class="sti-shell">
-		<?php include dirname( __DIR__ ) . '/partials-tabs.php'; ?>
-		<div class="sti-content">
-			<div class="sti-header">
-				<h1><span class="dashicons dashicons-search"></span> گلدن اسکن | فاز ۱: اسکن کانال</h1>
-			</div>
-			<?php include __DIR__ . '/partial-subnav.php'; ?>
+<div class="gi-console" dir="rtl">
+	<?php include STI_PATH . 'admin/views/golden-scan/partial-subnav.php'; ?>
 
-			<div class="sti-info-box" style="margin-bottom:18px;">
-				<strong>این مرحله فقط ایندکس می‌کند، چیزی دانلود یا منتشر نمی‌شود.</strong>
-				<p style="margin:7px 0 0;">برای کانال‌های بزرگ از «⚡ اسکن موازی» استفاده کن: بازه‌ی شناسه‌ی پیام‌ها به چند بخش تقسیم می‌شود و هم‌زمان جلو می‌روند — چند برابر سریع‌تر از حالت ساده، و بدون خطر ذخیره‌ی تکراری (هر پیام با شناسه‌ی یکتا فقط یک‌بار ثبت می‌شود، حتی اگر دو بخش هم‌مرز به آن برسند). اسکن در هر دو حالت قابل توقف/ادامه است.</p>
-			</div>
+	<div class="gi-console-head">
+		<h1 class="gi-h1">📡 منابع</h1>
+		<p class="gi-h1-sub">این مرحله فقط ایندکس می‌کند؛ چیزی دانلود یا منتشر نمی‌شود.</p>
+	</div>
 
-			<div class="sti-panel">
-				<div class="sti-panel-head"><div><h2>➕ افزودن کانال</h2><p>یوزرنیم، لینک t.me یا لینک دعوت خصوصی را وارد کن.</p></div></div>
-				<div class="sti-form-row">
-					<div class="sti-field" style="grid-column:span 2;">
-						<label>شناسه‌ی کانال</label>
-						<input id="gs-identifier" dir="ltr" placeholder="@ChannelName یا https://t.me/ChannelName">
-					</div>
-				</div>
-				<div class="sti-form-actions">
-					<button id="gs-add" class="sti-btn">➕ ثبت کانال</button>
-					<span id="gs-add-result" class="sti-inline-result"></span>
-				</div>
-			</div>
+	<div class="gi-bento">
 
-			<div class="sti-panel">
-				<div class="sti-panel-head"><div><h2>🏭 Start — خط تولید خودکار (۱۰.۱۰)</h2>
-				<p>گام آخرِ شما همین است: تعداد Session را مشخص کنید و Start بزنید. از این‌جا به بعد هیچ گام دستی لازم نیست — سیستم هر Session را تا <strong>Published</strong> (یا <strong>Review</strong> با Fix مشخص) می‌رساند.</p></div></div>
-				<div class="sti-form-row">
-					<div class="sti-field">
-						<label>تعداد Session برای ساخت</label>
-						<input type="number" id="gs-start-count" value="10" min="1" max="1000" style="width:120px;">
-					</div>
-				</div>
-				<div class="sti-form-actions">
-					<button id="gs-pipeline-start" class="sti-btn">🏭 Start</button>
-					<span id="gs-start-result" class="sti-inline-result"></span>
-				</div>
+		<!-- اسکن موازی (info) -->
+		<div class="gi-card gi-span-7">
+			<div class="gi-card-head">
+				<h2 class="gi-card-title">⚡ اسکن موازی برای کانال‌های بزرگ</h2>
 			</div>
+			<p class="gi-card-sub" style="font-size:var(--gi-fs1);">بازه‌ی شناسه‌ی پیام‌ها به چند بخش تقسیم می‌شود و هم‌زمان جلو می‌روند — چند برابر سریع‌تر از حالت ساده، و بدون خطر ذخیره‌ی تکراری (هر پیام با شناسه‌ی یکتا فقط یک‌بار ثبت می‌شود، حتی اگر دو بخش هم‌مرز به آن برسند). اسکن در هر دو حالت قابل توقف/ادامه است.</p>
+		</div>
 
-			<div class="sti-panel">
-				<div class="sti-panel-head"><div><h2>📡 کانال‌های ثبت‌شده</h2><p>وضعیت اسکن هر کانال زنده به‌روزرسانی می‌شود (هر ۳ ثانیه).</p></div><button id="gs-refresh" class="sti-btn secondary">🔄 بروزرسانی</button></div>
-				<div class="sti-table-wrap">
-					<table class="sti-table widefat">
-						<thead>
-							<tr>
-								<th>عنوان</th>
-								<th>شناسه</th>
-								<th>پیشرفت</th>
-								<th>وضعیت</th>
-								<th>خطا</th>
-								<th>عملیات</th>
-							</tr>
-						</thead>
-						<tbody id="gs-channels">
-							<?php if ( empty( $channels ) ) : ?>
-								<tr><td colspan="6" class="sti-empty">هنوز کانالی ثبت نشده.</td></tr>
-							<?php else : ?>
-								<?php foreach ( $channels as $c ) : ?>
-									<?php
-									$progress_html = (int) $c['message_count'] . ' پیام · نقطه‌ی ادامه: ' . (int) $c['last_scanned_message_id'];
-									if ( ! empty( $c['segments'] ) ) {
-										$s = $c['segments'];
-										$progress_html = (int) $s['messages_saved'] . ' پیام · ' . (int) $s['done_segments'] . '/' . (int) $s['total_segments'] . ' بخش کامل';
-									}
-									?>
-									<tr data-id="<?php echo (int) $c['id']; ?>">
-										<td><strong><?php echo esc_html( $c['title'] ?: '—' ); ?></strong></td>
-										<td><code dir="ltr"><?php echo esc_html( $c['identifier'] ); ?></code></td>
-										<td class="gs-col-progress"><?php echo esc_html( $progress_html ); ?></td>
-										<td class="gs-col-status"><span class="sti-badge"><?php echo esc_html( $c['scan_status'] ); ?></span></td>
-										<td class="gs-col-error"><?php echo esc_html( $c['last_error'] ?: '—' ); ?></td>
-										<td class="gs-col-actions">
-											<button class="sti-btn-sm gs-start" data-id="<?php echo (int) $c['id']; ?>">▶ شروع/ادامه</button>
-										<button class="sti-btn-sm secondary gs-edit" data-id="<?php echo (int) $c['id']; ?>" data-identifier="<?php echo esc_attr( $c['identifier'] ); ?>">✏️ ویرایش</button>
-											<button class="sti-btn-sm gs-parallel" data-id="<?php echo (int) $c['id']; ?>">⚡ موازی</button>
-											<button class="sti-btn-sm secondary gs-pause" data-id="<?php echo (int) $c['id']; ?>">⏸ توقف</button>
-											<button class="sti-btn-sm danger gs-delete" data-id="<?php echo (int) $c['id']; ?>">🗑</button>
-										</td>
-									</tr>
-								<?php endforeach; ?>
-							<?php endif; ?>
-						</tbody>
-					</table>
-				</div>
+		<!-- Start pipeline -->
+		<div class="gi-card gi-card--accent gi-span-5">
+			<div class="gi-card-head">
+				<h2 class="gi-card-title">🏭 Start — خط تولید خودکار</h2>
+				<span class="gi-card-sub">آخرین گام دستی شما همین است</span>
+			</div>
+			<p class="gi-card-sub" style="font-size:var(--gi-fs1);margin-bottom:var(--gi-s4);">تعداد Session را مشخص کنید و Start بزنید. از این‌جا به بعد هیچ گام دستی لازم نیست — سیستم هر Session را تا <strong>Published</strong> (یا <strong>Review</strong> با Fix مشخص) می‌رساند.</p>
+			<div class="gi-form-row">
+				<label for="gs-start-count">تعداد Session برای ساخت</label>
+				<input type="number" id="gs-start-count" value="10" min="1" max="1000" style="max-width:140px;">
+			</div>
+			<div class="gi-flex" style="align-items:center;gap:var(--gi-s3);flex-wrap:wrap;">
+				<button id="gs-pipeline-start" class="gi-btn gi-btn--primary">🏭 Start</button>
+				<span id="gs-start-result" class="gi-inline-res" role="status" aria-live="polite"></span>
 			</div>
 		</div>
+
+		<!-- افزودن کانال -->
+		<div class="gi-card gi-span-12">
+			<div class="gi-card-head">
+				<h2 class="gi-card-title">➕ افزودن کانال</h2>
+				<span class="gi-card-sub">یوزرنیم، لینک t.me یا لینک دعوت خصوصی</span>
+			</div>
+			<div class="gi-form-row">
+				<label for="gs-identifier">شناسه‌ی کانال</label>
+				<input id="gs-identifier" dir="ltr" placeholder="@ChannelName یا https://t.me/ChannelName" style="max-width:520px;">
+			</div>
+			<div class="gi-flex" style="align-items:center;gap:var(--gi-s3);flex-wrap:wrap;">
+				<button id="gs-add" class="gi-btn gi-btn--primary">➕ ثبت کانال</button>
+				<span id="gs-add-result" class="gi-inline-res" role="status" aria-live="polite"></span>
+			</div>
+		</div>
+
+		<!-- کانال‌های ثبت‌شده -->
+		<div class="gi-card gi-card--flush gi-span-12">
+			<div class="gi-card-head" style="padding:var(--gi-s5) var(--gi-s5) var(--gi-s3);">
+				<div>
+					<h2 class="gi-card-title">📡 کانال‌های ثبت‌شده</h2>
+					<span class="gi-card-sub">وضعیت اسکن هر کانال زنده به‌روزرسانی می‌شود (هر ۳ ثانیه)</span>
+				</div>
+				<button id="gs-refresh" class="gi-btn gi-btn--subtle">⟳ بروزرسانی</button>
+			</div>
+			<div class="gi-table-wrap" style="border:none;border-radius:0;">
+				<table class="gi-table gi-responsive" id="gs-channels-table">
+					<thead>
+						<tr>
+							<th scope="col">عنوان</th>
+							<th scope="col">شناسه</th>
+							<th scope="col">پیشرفت</th>
+							<th scope="col">وضعیت</th>
+							<th scope="col">خطا</th>
+							<th scope="col">عملیات</th>
+						</tr>
+					</thead>
+					<tbody id="gs-channels">
+						<?php if ( empty( $channels ) ) : ?>
+							<tr><td colspan="6">
+								<div class="gi-empty" style="padding:var(--gi-s7) var(--gi-s5);">
+									<div class="gi-empty-ico" aria-hidden="true">📡</div>
+									<div class="gi-empty-title">هنوز کانالی اضافه نشده.</div>
+									<div class="gi-empty-sub">کانال تلگرام اولت را بالای صفحه ثبت کن — فقط ایندکس می‌شود، نه دانلود/انتشار.</div>
+								</div>
+							</td></tr>
+						<?php else : ?>
+							<?php foreach ( $channels as $c ) :
+								$progress_html = (int) $c['message_count'] . ' پیام · نقطه‌ی ادامه: ' . (int) $c['last_scanned_message_id'];
+								if ( ! empty( $c['segments'] ) ) {
+									$s = $c['segments'];
+									$progress_html = (int) $s['messages_saved'] . ' پیام · ' . (int) $s['done_segments'] . '/' . (int) $s['total_segments'] . ' بخش کامل';
+								}
+								$scan_state = 'running' === $c['scan_status'] ? 'running' : ( (int) $c['message_count'] > 0 ? 'done' : ( 'paused' === $c['scan_status'] || 'segmented' === $c['scan_status'] ? 'paused' : '' ) );
+							?>
+								<tr data-id="<?php echo (int) $c['id']; ?>">
+									<td data-label="عنوان"><strong><?php echo esc_html( $c['title'] ?: '—' ); ?></strong></td>
+									<td data-label="شناسه"><code dir="ltr" style="font-size:var(--gi-fs0);"><?php echo esc_html( $c['identifier'] ); ?></code></td>
+									<td data-label="پیشرفت" class="gs-col-progress"><?php echo esc_html( $progress_html ); ?></td>
+									<td data-label="وضعیت" class="gs-col-status"><span class="sti-badge"><?php echo esc_html( $c['scan_status'] ); ?></span></td>
+									<td data-label="خطا" class="gs-col-error"><?php echo esc_html( $c['last_error'] ?: '—' ); ?></td>
+									<td data-label="عملیات" class="gs-col-actions">
+										<button class="gi-btn gi-btn--subtle gs-start" data-id="<?php echo (int) $c['id']; ?>">▶ شروع/ادامه</button>
+										<button class="gi-btn gi-btn--ghost gs-edit" data-id="<?php echo (int) $c['id']; ?>" data-identifier="<?php echo esc_attr( $c['identifier'] ); ?>">✏️ ویرایش</button>
+										<button class="gi-btn gi-btn--subtle gs-parallel" data-id="<?php echo (int) $c['id']; ?>">⚡ موازی</button>
+										<button class="gi-btn gi-btn--ghost gs-pause" data-id="<?php echo (int) $c['id']; ?>">⏸ توقف</button>
+										<button class="gi-btn gi-btn--ghost gs-delete" data-id="<?php echo (int) $c['id']; ?>" aria-label="حذف کانال" title="حذف">🗑</button>
+									</td>
+								</tr>
+							<?php endforeach; ?>
+						<?php endif; ?>
+					</tbody>
+				</table>
+			</div>
+		</div>
+
 	</div>
 </div>
 <script>
@@ -135,18 +156,26 @@ unset( $gs_c );
 			function rowHtml(c) {
 				return '' +
 					'<tr data-id="' + c.id + '">' +
-					'<td><strong>' + esc(c.title || '—') + '</strong></td>' +
-					'<td><code dir="ltr">' + esc(c.identifier) + '</code></td>' +
-					'<td class="gs-col-progress">' + progressText(c) + '</td>' +
-					'<td class="gs-col-status"><span class="sti-badge">' + esc(c.scan_status) + '</span></td>' +
-					'<td class="gs-col-error">' + esc(c.last_error || '—') + '</td>' +
-					'<td class="gs-col-actions">' +
-					'<button class="sti-btn-sm gs-start" data-id="' + c.id + '">▶ شروع/ادامه</button> ' +
-					'<button class="sti-btn-sm secondary gs-edit" data-id="' + c.id + '" data-identifier="' + esc(c.identifier) + '">✏️ ویرایش</button> ' +
-					'<button class="sti-btn-sm gs-parallel" data-id="' + c.id + '">⚡ موازی</button> ' +
-					'<button class="sti-btn-sm secondary gs-pause" data-id="' + c.id + '">⏸ توقف</button> ' +
-					'<button class="sti-btn-sm danger gs-delete" data-id="' + c.id + '">🗑</button>' +
+					'<td data-label="عنوان"><strong>' + esc(c.title || '—') + '</strong></td>' +
+					'<td data-label="شناسه"><code dir="ltr" style="font-size:var(--gi-fs0);">' + esc(c.identifier) + '</code></td>' +
+					'<td data-label="پیشرفت" class="gs-col-progress">' + progressText(c) + '</td>' +
+					'<td data-label="وضعیت" class="gs-col-status"><span class="sti-badge">' + esc(c.scan_status) + '</span></td>' +
+					'<td data-label="خطا" class="gs-col-error">' + esc(c.last_error || '—') + '</td>' +
+					'<td data-label="عملیات" class="gs-col-actions">' +
+					'<button class="gi-btn gi-btn--subtle gs-start" data-id="' + c.id + '">▶ شروع/ادامه</button> ' +
+					'<button class="gi-btn gi-btn--ghost gs-edit" data-id="' + c.id + '" data-identifier="' + esc(c.identifier) + '">✏️ ویرایش</button> ' +
+					'<button class="gi-btn gi-btn--subtle gs-parallel" data-id="' + c.id + '">⚡ موازی</button> ' +
+					'<button class="gi-btn gi-btn--ghost gs-pause" data-id="' + c.id + '">⏸ توقف</button> ' +
+					'<button class="gi-btn gi-btn--ghost gs-delete" data-id="' + c.id + '" aria-label="حذف کانال">🗑</button>' +
 					'</td></tr>';
+			}
+
+			function emptyRow() {
+				return '<tr><td colspan="6">' +
+					'<div class="gi-empty" style="padding:var(--gi-s7) var(--gi-s5);">' +
+					'<div class="gi-empty-ico" aria-hidden="true">📡</div>' +
+					'<div class="gi-empty-title">هنوز کانالی اضافه نشده.</div>' +
+					'<div class="gi-empty-sub">کانال تلگرام اولت را بالای صفحه ثبت کن.</div></div></td></tr>';
 			}
 
 			function refreshList() {
@@ -154,7 +183,7 @@ unset( $gs_c );
 					if (!r || !r.success) { return; }
 					var channels = r.data.channels || [];
 					if (!channels.length) {
-						$('#gs-channels').html('<tr><td colspan="6" class="sti-empty">هنوز کانالی ثبت نشده.</td></tr>');
+						$('#gs-channels').html(emptyRow());
 						return;
 					}
 					var html = '';
@@ -176,6 +205,7 @@ unset( $gs_c );
 			function startPolling(id) {
 				if (pollTimers[id]) { return; }
 				pollTimers[id] = setInterval(function () {
+					if (document.hidden) { return; }
 					post('sti_gs_scan_poll', { channel_id: id }).done(function (r) {
 						if (!r || !r.success) { return; }
 						var c = r.data.channel;
@@ -225,13 +255,13 @@ unset( $gs_c );
 						var msg = '✅ ' + d.created + ' Session ساخته شد' +
 							((d.ready > 0) ? (' · ' + d.ready + ' مورد آماده‌ی بعدی در صف') : '') +
 							' — Worker ' + (d.worker_on ? 'روشن' : 'خاموش') + '.';
-						$r.html(msg + ' <a href="' + GS_AUTOMATION_URL + '" target="_blank" style="font-size:11px;">(پیگیری در «خط تولید»)</a>');
-						$r.css('color', '#1e7e34');
+						$r.html(msg + ' <a href="' + GS_AUTOMATION_URL + '" target="_blank">پیگیری در «خط تولید»</a>');
+						$r.addClass('ok');
 					} else {
-						$r.text('❌ ' + ((res.data && res.data.message) || 'خطا'));
+						$r.text('❌ ' + ((res.data && res.data.message) || 'خطا')).addClass('err');
 					}
 				}).fail(function () {
-					$r.text('❌ خطای ارتباط');
+					$r.text('❌ خطای ارتباط').addClass('err');
 				}).always(function () {
 					$btn.prop('disabled', false);
 				});

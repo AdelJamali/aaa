@@ -102,6 +102,27 @@ class STI_Admin {
 			'ajaxUrl' => admin_url( 'admin-ajax.php' ),
 			'nonce'   => wp_create_nonce( 'sti_admin_nonce' ),
 		) );
+
+		/*
+		 * ۱۰.۱۱-UX — Console redesign assets (Golden Scan pages only).
+		 * Presentation only: no backend/contract impact.
+		 * Vazirmatn: enqueued from the browser side (admin's internet);
+		 * if unreachable, the font stack falls back gracefully.
+		 * To self-host, define STI_GI_SELF_HOST_FONT and put your own
+		 * gi-fonts.css in admin/assets/css/.
+		 */
+		if ( strpos( $hook, 'sti-golden-scan' ) !== false ) {
+			if ( ! defined( 'STI_GI_SELF_HOST_FONT' ) || ! STI_GI_SELF_HOST_FONT ) {
+				wp_enqueue_style(
+					'gi-vazirmatn',
+					'https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;700;800&display=swap',
+					array(),
+					null
+				);
+			}
+			wp_enqueue_style( 'gi-console', STI_URL . 'admin/assets/css/gi-console.css', array( 'sti-modern' ), STI_VERSION );
+			wp_enqueue_script( 'gi-console', STI_URL . 'admin/assets/js/gi-console.js', array(), STI_VERSION, true );
+		}
 	}
 
 	protected function check_nonce() {

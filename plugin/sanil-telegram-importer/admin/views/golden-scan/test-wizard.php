@@ -4,69 +4,96 @@ $channels = STI_GS_Channel::all();
 $state    = STI_GS_Test_Wizard::state();
 $report   = STI_GS_Test_Wizard::report();
 ?>
-<div class="wrap sti-wrap">
-	<h1>گلدن اسکن — تست خودکار</h1>
+<div class="gi-console" dir="rtl">
 	<?php include STI_PATH . 'admin/views/golden-scan/partial-subnav.php'; ?>
 
-	<p>مرحله‌ها را به ترتیب بزنید. هیچ SQL، Console یا ویرایش فایلی لازم نیست.</p>
+	<div class="gi-console-head">
+		<h1 class="gi-h1">🧪 تست خودکار</h1>
+		<p class="gi-h1-sub">مرحله‌ها را به ترتیب بزنید. هیچ SQL، Console یا ویرایش فایلی لازم نیست.</p>
+	</div>
 
 	<?php if ( empty( $channels ) ) : ?>
-		<div class="notice notice-warning"><p>اول از تب «کانال‌ها» یک کانال اضافه کنید.</p></div>
-	<?php else : ?>
+		<div class="gi-notice gi-notice--warning" style="margin:var(--gi-s4) 0;">
+			اول از تب «کانال‌ها» یک کانال اضافه کنید.
+			<a href="<?php echo esc_url( admin_url( 'admin.php?page=sti-golden-scan' ) ); ?>">رفتن به کانال‌ها</a>
+		</div>
+	<?php else :
+		$locked = STI_GS_Test_Wizard::locked_channel();
+	?>
 
-	<?php $locked = STI_GS_Test_Wizard::locked_channel(); ?>
-	<p>
-		<label><strong>کانال تست:</strong></label>
-		<select id="gs-wizard-channel" style="min-width:300px;" <?php echo $locked ? 'disabled' : ''; ?>>
-			<?php foreach ( $channels as $ch ) : ?>
-				<option value="<?php echo (int) $ch['id']; ?>" <?php selected( $locked, (int) $ch['id'] ); ?>>
-					<?php echo esc_html( ( $ch['title'] ?: $ch['identifier'] ) . ' — ' . $ch['identifier'] ); ?>
-				</option>
-			<?php endforeach; ?>
-		</select>
-		<?php if ( $locked ) : ?>
-			<input type="hidden" id="gs-wizard-channel-locked" value="<?php echo (int) $locked; ?>">
-			<span style="color:#666;">🔒 تا «شروع دوباره» روی همین کانال قفل است.</span>
-		<?php endif; ?>
-	</p>
+	<div class="gi-bento">
 
-	<table class="widefat striped" id="gs-wizard-table">
-		<thead><tr>
-			<th style="width:44px;">#</th>
-			<th style="width:230px;">مرحله</th>
-			<th style="width:120px;">وضعیت</th>
-			<th>نتیجه</th>
-			<th style="width:140px;"></th>
-		</tr></thead>
-		<tbody>
-		<?php $i = 1; foreach ( STI_GS_Test_Wizard::STEPS as $key => $label ) :
-			$st = $state[ $key ]['status'] ?? 'pending'; ?>
-			<tr data-step="<?php echo esc_attr( $key ); ?>">
-				<td><?php echo $i++; ?></td>
-				<td><strong><?php echo esc_html( $label ); ?></strong></td>
-				<td class="gs-status"><?php echo esc_html( $st ); ?></td>
-				<td class="gs-message"><?php echo esc_html( $state[ $key ]['message'] ?? '—' ); ?></td>
-				<td><button class="button button-primary gs-run-step">اجرا</button></td>
-			</tr>
-		<?php endforeach; ?>
-		</tbody>
-	</table>
+		<div class="gi-card gi-span-12">
+			<div class="gi-flex" style="align-items:center;flex-wrap:wrap;padding:var(--gi-s4);">
+				<label class="gi-field" style="margin:0;">
+					<span class="gi-field-label"><strong>کانال تست</strong></span>
+					<select id="gs-wizard-channel" style="min-width:300px;" <?php echo $locked ? 'disabled' : ''; ?>>
+						<?php foreach ( $channels as $ch ) : ?>
+							<option value="<?php echo (int) $ch['id']; ?>" <?php selected( $locked, (int) $ch['id'] ); ?>>
+								<?php echo esc_html( ( $ch['title'] ?: $ch['identifier'] ) . ' — ' . $ch['identifier'] ); ?>
+							</option>
+						<?php endforeach; ?>
+					</select>
+				</label>
+				<?php if ( $locked ) : ?>
+					<input type="hidden" id="gs-wizard-channel-locked" value="<?php echo (int) $locked; ?>">
+					<span class="gi-card-sub" style="font-weight:700;">🔒 تا «شروع دوباره» روی همین کانال قفل است.</span>
+				<?php endif; ?>
+			</div>
+		</div>
 
-	<h2 style="margin-top:26px;">گزارش نهایی</h2>
-	<table class="widefat striped" id="gs-wizard-report">
-		<tbody>
-		<?php foreach ( $report as $r ) : ?>
-			<tr><td style="width:280px;"><?php echo esc_html( $r['label'] ); ?></td>
-			    <td><?php echo esc_html( $r['status'] ); ?></td></tr>
-		<?php endforeach; ?>
-		</tbody>
-	</table>
+		<div class="gi-card gi-card--flush gi-span-12">
+			<div class="gi-card-head" style="padding:var(--gi-s5) var(--gi-s5) var(--gi-s3);">
+				<h2 class="gi-card-title">مرحله‌ها</h2>
+				<span class="gi-card-sub">به ترتیب اجرا کنید — وضعیت به‌صورت زنده به‌روز می‌شود</span>
+			</div>
+			<div class="gi-table-wrap" style="border:none;border-radius:0;">
+				<table class="gi-table gi-responsive" id="gs-wizard-table">
+					<thead><tr>
+						<th scope="col" style="width:44px;">#</th>
+						<th scope="col" style="width:230px;">مرحله</th>
+						<th scope="col" style="width:140px;">وضعیت</th>
+						<th scope="col">نتیجه</th>
+						<th scope="col" style="width:120px;"></th>
+					</tr></thead>
+					<tbody>
+						<?php $i = 1; foreach ( STI_GS_Test_Wizard::STEPS as $key => $label ) :
+							$st = $state[ $key ]['status'] ?? 'pending'; ?>
+							<tr data-step="<?php echo esc_attr( $key ); ?>">
+								<td data-label="#" class="gi-nums"><?php echo $i++; ?></td>
+								<td data-label="مرحله"><strong><?php echo esc_html( $label ); ?></strong></td>
+								<td data-label="وضعیت" class="gs-status"><?php echo esc_html( $st ); ?></td>
+								<td data-label="نتیجه" class="gs-message"><?php echo esc_html( $state[ $key ]['message'] ?? '—' ); ?></td>
+								<td data-label="اجرا"><button class="gi-btn gi-btn--primary gi-btn--sm gs-run-step">اجرا</button></td>
+							</tr>
+						<?php endforeach; ?>
+					</tbody>
+				</table>
+			</div>
+		</div>
 
-	<p style="margin-top:16px;">
-		<button class="button" id="gs-wizard-refresh">به‌روزرسانی وضعیت</button>
-		<button class="button" id="gs-wizard-close-run">بستن Run باز</button>
-		<button class="button" id="gs-wizard-reset">شروع دوباره</button>
-	</p>
+		<div class="gi-card gi-card--flush gi-span-12">
+			<div class="gi-card-head" style="padding:var(--gi-s5) var(--gi-s5) var(--gi-s3);">
+				<h2 class="gi-card-title">گزارش نهایی</h2>
+			</div>
+			<div class="gi-table-wrap" style="border:none;border-radius:0;">
+				<table class="gi-table" id="gs-wizard-report">
+					<tbody>
+						<?php foreach ( $report as $r ) : ?>
+							<tr><td style="font-weight:700;"><?php echo esc_html( $r['label'] ); ?></td>
+							    <td><?php echo esc_html( $r['status'] ); ?></td></tr>
+						<?php endforeach; ?>
+					</tbody>
+				</table>
+			</div>
+			<div class="gi-flex" style="align-items:center;flex-wrap:wrap;padding:var(--gi-s4);border-top:1px solid var(--gi-border);">
+				<button class="gi-btn gi-btn--subtle" id="gs-wizard-refresh">⟳ به‌روزرسانی وضعیت</button>
+				<button class="gi-btn gi-btn--ghost" id="gs-wizard-close-run">بستن Run باز</button>
+				<button class="gi-btn gi-btn--ghost" id="gs-wizard-reset">شروع دوباره</button>
+			</div>
+		</div>
+
+	</div>
 
 	<script>
 	(function(){
@@ -98,11 +125,12 @@ $report   = STI_GS_Test_Wizard::report();
 			if (!rows) return;
 			var tb = document.querySelector('#gs-wizard-report tbody');
 			tb.innerHTML = rows.map(function(r){
-				return '<tr><td style="width:280px;">'+r.label+'</td><td>'+(ICON[r.status]||r.status)+'</td></tr>';
+				return '<tr><td style="font-weight:700;">'+r.label+'</td><td>'+(ICON[r.status]||r.status)+'</td></tr>';
 			}).join('');
 		}
 
 		function refresh(){
+			if (document.hidden) { return; }
 			post('sti_gs_wizard_state').then(function(res){
 				if (!res.success) return;
 				Object.keys(res.data.state || {}).forEach(function(k){ paintRow(k, res.data.state[k]); });
