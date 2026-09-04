@@ -26,6 +26,16 @@ $gs_ready_total = (int) ( STI_GS_Channel_Watcher::stats()['ready'] ?? 0 );
 		<p class="gi-h1-sub">مرحله‌ی ۱ و ۲: افزودن کانال و اسکن. این صفحه فقط ایندکس می‌کند؛ محصول در «📦 صف انتشار» ساخته و منتشر می‌شود.</p>
 	</div>
 
+	<?php
+	$gs_steps_active = 2;
+	$gs_steps_next   = array(
+		'url'   => admin_url( 'admin.php?page=sti-golden-scan&gs_view=publish-queue' ),
+		'label' => 'انتخاب دسته و افزودن به صف',
+	);
+	$gs_steps_note = number_format_i18n( $gs_ready_total ) . ' محصول آماده · ' . number_format_i18n( count( $channels ) ) . ' کانال';
+	include STI_PATH . 'admin/views/golden-scan/partial-steps.php';
+	?>
+
 	<div class="gi-bento">
 
 		<!-- ۱) افزودن کانال (اولین کارت) -->
@@ -409,7 +419,15 @@ $gs_ready_total = (int) ( STI_GS_Channel_Watcher::stats()['ready'] ?? 0 );
 				var id = $(this).data('id');
 				if (!window.confirm('کانال و تمام پیام‌های اسکن‌شده‌ی آن حذف شود؟')) { return; }
 				stopPolling(id);
-				post('sti_gs_channel_delete', { id: id }).done(function () { refreshList(); });
+				post('sti_gs_channel_delete', { id: id }).done(function (r) {
+					if (r && r.success) {
+						refreshList();
+					} else {
+						window.alert((r.data && r.data.message) || 'حذف نشد — دوباره امتحان کن.');
+					}
+				}).fail(function () {
+					window.alert('خطای ارتباط — حذف انجام نشد.');
+				});
 			});
 
 			// شروع polling برای کانال‌هایی که از قبل در حال اسکن بودند.

@@ -78,6 +78,16 @@ $next_sched = (array) $wpdb->get_results(
 		<p class="gi-h1-sub">مرکز مدیریت انتشار: انتخاب دسته‌ها، افزودن محصولات به صف، و برنامه‌ی انتشار. هر «محصول» یک فایل آماده برای تبدیل به محصول ووکامرس است.</p>
 	</div>
 
+	<?php
+	$gs_steps_active = 4;
+	$gs_steps_next   = array(
+		'url'   => admin_url( 'admin.php?page=sti-golden-scan&gs_view=automation' ),
+		'label' => 'پیگیری در خط تولید',
+	);
+	$gs_steps_note = number_format_i18n( (int) $total_all ) . ' محصول آماده در ' . count( $cat_rows ) . ' دسته';
+	include STI_PATH . 'admin/views/golden-scan/partial-steps.php';
+	?>
+
 	<?php if ( ! $cat_rows ) : ?>
 	<div class="gi-card gi-span-12">
 		<div class="gi-empty" style="text-align:center;padding:var(--gi-s6) var(--gi-s4);">

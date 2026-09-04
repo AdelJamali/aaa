@@ -11,6 +11,16 @@ $channels = STI_GS_Channel::all();
 		<p class="gi-h1-sub">مرحله‌ی ۳: تحلیل پیام‌هایی که <strong>از قبل</strong> در Inventory هستند — بدون اسکن دوباره‌ی تلگرام و بدون هزینه‌ی AI. هدف: پیش از انتخاب دسته‌های انتشار، عدد واقعی داشته باشید، نه حدس.</p>
 	</div>
 
+	<?php
+	$gs_steps_active = 3;
+	$gs_steps_next   = array(
+		'url'   => admin_url( 'admin.php?page=sti-golden-scan&gs_view=publish-queue' ),
+		'label' => 'انتخاب دسته‌های انتشار',
+	);
+	$gs_steps_note = number_format_i18n( (int) $sum['scanned'] ) . ' پیام تحلیل‌شده · ' . count( $sum['categories'] ) . ' دسته';
+	include STI_PATH . 'admin/views/golden-scan/partial-steps.php';
+	?>
+
 	<div class="gi-card gi-span-12" style="margin-bottom:var(--gi-s5);">
 		<div class="gi-flex" style="align-items:center;flex-wrap:wrap;gap:var(--gi-s3);padding:var(--gi-s4);">
 			<label class="gi-field" style="margin:0;">
