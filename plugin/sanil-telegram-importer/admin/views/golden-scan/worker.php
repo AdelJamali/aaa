@@ -220,6 +220,173 @@ $today = $stats['today'] ?? array();
 	})();
 	</script>
 
+	<!-- ===== STI-CHAIN-AUDIT v1 (10.12.3) — Real Automation Chain Test — read-only ===== -->
+	<div id="gs-ca-card" style="margin:0 0 16px;border:2px solid #2563eb;border-radius:12px;background:#eff6ff;direction:rtl;">
+		<div style="padding:12px 14px;">
+			<div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;">
+				<h2 style="margin:0;font-size:16px;">🩺 تست واقعی زنجیره اتوماسیون</h2>
+				<span style="font-size:11px;opacity:.7;">Internal Runtime Diagnostic — روی Runtime واقعی همین سایت</span>
+			</div>
+			<p style="margin:6px 0 10px;font-size:12px;opacity:.85;">با یک کلیک، زنجیره کامل (Profile ← Profile Item ← Message ← Selection ← Watcher ← AJAX ← create_sessions ← Session ← Pipeline ← Worker ← Telegram ← Fiber) با دادهٔ واقعی خوانده می‌شود — <strong>فقط خواندنی</strong> (SELECT / get_option): هیچ Session، Profile، Queue، Worker یا Watcher تغییر نمی‌کند.</p>
+			<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+				<button type="button" id="gs-ca-run" class="gi-btn gi-btn--danger" style="background:#2563eb;border-color:#2563eb;color:#fff;">🩺 اجرای تست Runtime</button>
+				<button type="button" id="gs-ca-opt-toggle" class="gi-btn gi-btn--subtle">⚠️ تست واقعی Toggle</button>
+				<button type="button" id="gs-ca-opt-run" class="gi-btn gi-btn--subtle">⚠️ تست واقعی Watcher Run</button>
+			</div>
+			<p style="margin:8px 0 0;font-size:11px;color:#b45309;">دو دکمهٔ ⚠️ اختیاری هستند و خودکار اجرا نمی‌شوند؛ <strong>Runtime واقعی را اجرا می‌کنند و ممکن است state/queue را تغییر دهند</strong> — فقط با تأیید صریح شما.</p>
+			<div id="gs-ca-result" style="display:none;margin-top:12px;"></div>
+		</div>
+	</div>
+	<script>
+	/* STI-CHAIN-AUDIT v1 (10.12.3) — renders the runtime chain audit in-page. */
+	(function(){
+	'use strict';
+	try{
+		var runBtn=document.getElementById('gs-ca-run'),
+		    optT=document.getElementById('gs-ca-opt-toggle'),
+		    optR=document.getElementById('gs-ca-opt-run'),
+		    panel=document.getElementById('gs-ca-result');
+		if(!runBtn||!panel){return;}
+
+		/* PART 4 — DOM check (بعد از render کامل صفحه). */
+		var dom={card:'MISSING',toggle:'MISSING',run:'MISSING',sti:'?',checked:false};
+		function domCheck(){
+			var t=document.getElementById('gs-wt-toggle'),
+			    r=document.getElementById('gs-wt-run');
+			dom.toggle=t?'FOUND':'MISSING';
+			dom.run=r?'FOUND':'MISSING';
+			if(t&&t.closest){var c=t.closest('.gi-card');dom.card=c?(c.offsetParent===null?'FOUND (hidden)':'FOUND'):'MISSING (no .gi-card)';}
+			else{dom.card=t?'FOUND (no card wrapper)':'MISSING';}
+			dom.sti=(typeof window.STI==='object'&&window.STI)?'defined':'UNDEFINED';
+			dom.checked=true;
+		}
+		if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',domCheck);}
+		else{domCheck();}
+
+		function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+		function post(action,data){
+			var nonce=(typeof window.STI==='object'&&window.STI)?window.STI.nonce:null,
+			    url=(typeof window.STI==='object'&&window.STI&&window.STI.ajaxUrl)?window.STI.ajaxUrl:(typeof window.ajaxurl==='string'?window.ajaxurl:null);
+			if(!nonce||!url){
+				return Promise.resolve({ok:false,meta:{status:'NO_TRANSPORT',json:null,raw:'STI/nonce/ajaxUrl در دسترس نیست (STI='+((typeof window.STI==='object'&&window.STI)?'object':'undefined')+', nonce='+(nonce===null?'null':esc(nonce))+') — این خود یک یافتهٔ Runtime است: localize در این صفحه emit نشده.'}});
+			}
+			var b=new URLSearchParams(Object.assign({action:action,nonce:nonce},data||{}));
+			return fetch(url,{method:'POST',credentials:'same-origin',body:b})
+				.then(function(r){return r.text().then(function(t){return {status:r.status,text:t};});})
+				.then(function(o){
+					try{return {ok:true,meta:{status:o.status,json:JSON.parse(o.text),raw:o.text.slice(0,400)}};}
+					catch(e){return {ok:true,meta:{status:o.status,json:null,raw:o.text.slice(0,400)}};}
+				})
+				.catch(function(e){return {ok:false,meta:{status:'FETCH_ERROR',json:null,raw:String(e&&e.message||e)}};});
+		}
+		function kvTable(o,depth){
+			depth=depth||0;
+			if(typeof o!=='object'||o===null){return '<span dir="ltr">'+esc(o)+'</span>';}
+			if(Array.isArray(o)){
+				if(!o.length){return '<span dir="ltr" style="opacity:.6">[]</span>';}
+				var h='<div style="margin:2px 0 2px '+(depth*12)+'px;">';
+				for(var i=0;i<Math.min(o.length,30);i++){
+					h+='<div dir="ltr" style="font-family:ui-monospace,Consolas,monospace;font-size:11px;white-space:pre-wrap;word-break:break-all;">'+(typeof o[i]==='object'&&o[i]!==null?'['+i+'] ':esc(i)+': ')+kvTable(o[i],depth+1)+'</div>';
+				}
+				if(o.length>30){h+='<div style="opacity:.5;font-size:11px;">… '+(o.length-30)+' more</div>';}
+				return h+'</div>';
+			}
+			var h2='<table style="border-collapse:collapse;width:100%;margin:4px 0;">';
+			for(var k in o){
+				if(!Object.prototype.hasOwnProperty.call(o,k)){continue;}
+				h2+='<tr><td style="vertical-align:top;padding:1px 8px 1px 0;white-space:nowrap;" dir="ltr"><b style="font-family:ui-monospace,monospace;font-size:11px;">'+esc(k)+'</b></td><td style="vertical-align:top;font-size:11px;">'+kvTable(o[k],depth+1)+'</td></tr>';
+			}
+			return h2+'</table>';
+		}
+		function section(title,body,open){
+			return '<details '+(open?'open':'')+' style="margin:8px 0;border:1px solid #c7d7f5;border-radius:8px;background:#fff;"><summary style="cursor:pointer;padding:6px 10px;font-size:12px;font-weight:700;">'+esc(title)+'</summary><div style="padding:0 10px 8px;">'+body+'</div></details>';
+		}
+		function renderAudit(res){
+			var d=res.data||{};
+			var rows=d.rows||[];
+			/* PART 4 — inject DOM results into the Watcher UI row + recompute first break: */
+			var uiRow=null,firstBreak=null;
+			for(var i=0;i<rows.length;i++){
+				if(rows[i].name==='Watcher UI'){
+					uiRow=rows[i];
+					var uiOk=(dom.toggle==='FOUND'&&dom.run==='FOUND'&&dom.card.indexOf('FOUND')===0);
+					uiRow.result=uiOk?'PASS':'FAIL';
+					uiRow.evidence='Watcher card='+dom.card+' · #gs-wt-toggle='+dom.toggle+' · #gs-wt-run='+dom.run+' · STI='+dom.sti+' (at DOMContentLoaded)';
+				}
+			}
+			for(var j=0;j<rows.length;j++){if(rows[j].result==='FAIL'){firstBreak=rows[j];break;}}
+			var v=d.verdict||{};
+			var h='';
+			/* Headline (PART 15) */
+			h+='<div style="border:2px solid #1d4ed8;border-radius:10px;background:#dbeafe;padding:10px 12px;font-size:14px;font-weight:800;margin-bottom:10px;">';
+			h+='🔎 '+esc(v.headline||'(no headline)');
+			h+='</div>';
+			if(v.headline_detail){h+='<div dir="ltr" style="font-size:11px;font-family:ui-monospace,monospace;white-space:pre-wrap;word-break:break-all;background:#fff;border:1px solid #c7d7f5;border-radius:8px;padding:8px 10px;margin-bottom:10px;">'+esc(v.headline_detail)+'</div>';}
+			/* FIRST HARD BREAK */
+			h+='<div dir="ltr" style="border:2px solid #dc2626;border-radius:10px;background:#fef2f2;padding:10px 12px;font-family:ui-monospace,Consolas,monospace;font-size:12px;line-height:1.8;white-space:pre-wrap;word-break:break-all;margin-bottom:10px;"><b>FIRST HARD BREAK</b>\n'+(firstBreak?(esc(firstBreak.letter)+' — '+esc(firstBreak.name)):'(none detected)')+'\nEvidence:\n'+(firstBreak?esc(firstBreak.evidence):'all rows PASS (or no data)')+'</div>';
+			/* Final table */
+			h+='<div style="overflow-x:auto;"><table style="border-collapse:collapse;width:100%;background:#fff;font-size:11px;"><thead><tr><th style="border-bottom:2px solid #1d4ed8;padding:4px 6px;text-align:right;">Chain</th><th style="border-bottom:2px solid #1d4ed8;padding:4px 6px;text-align:right;">Runtime Result</th><th style="border-bottom:2px solid #1d4ed8;padding:4px 6px;text-align:right;">Evidence</th></tr></thead><tbody>';
+			for(var r=0;r<rows.length;r++){
+				var rr=rows[r],col=rr.result==='FAIL'?'#b91c1c':(rr.result==='PASS'?'#15803d':'#1d4ed8');
+				h+='<tr style="border-bottom:1px solid #e5eefc;"><td style="padding:4px 6px;white-space:nowrap;font-weight:700;">'+esc(rr.letter)+' · '+esc(rr.name)+'</td><td style="padding:4px 6px;white-space:nowrap;"><b dir="ltr" style="color:'+col+';">'+esc(rr.result)+'</b></td><td dir="ltr" style="padding:4px 6px;font-family:ui-monospace,monospace;font-size:10.5px;white-space:pre-wrap;word-break:break-all;max-width:420px;">'+esc(rr.evidence)+'</td></tr>';
+			}
+			h+='</tbody></table></div>';
+			/* Details per part */
+			h+=section('PART 1 — Runtime Snapshot',kvTable(d.snapshot),false);
+			h+=section('PART 2 — Real Database Read',kvTable(d.db),false);
+			h+=section('PART 3 — Real Watcher State (option / is_enabled / stats)',kvTable(d.watcher_state),true);
+			h+=section('PART 5 — AJAX Registration (runtime hooks)',kvTable(d.ajax_registration),false);
+			h+=section('PART 7 — Real Run Path Trace',kvTable(d.run_path),true);
+			h+=section('PART 8 — create_sessions Read-Only Simulation',kvTable(d.simulation),true);
+			h+=section('PART 9 — create_from_profile_item Path',kvTable(d.session_path),false);
+			h+=section('PART 10 — Real Session Check (sample ≤ 10)',kvTable(d.session_sample),true);
+			h+=section('PART 11 — Real Pipeline Check (last 10)',kvTable(d.pipeline_sample),false);
+			h+=section('PART 12 — Real Worker Read-Only Check',kvTable(d.worker),true);
+			h+=section('PART 13 — Fiber / Memory',kvTable(d.fiber_memory),false);
+			h+=section('Telegram (row G)',kvTable(d.telegram),false);
+			h+='<div dir="ltr" style="font-size:10px;opacity:.55;margin-top:8px;">generated_at='+esc(d.generated_at||'')+' · plugin_version='+esc(d.version||'')+'</div>';
+			panel.innerHTML=h;
+			panel.style.display='block';
+		}
+		runBtn.addEventListener('click',function(){
+			runBtn.disabled=true;
+			runBtn.textContent='⏳ در حال اجرای تست Runtime…';
+			panel.style.display='block';
+			panel.innerHTML='<div style="font-size:12px;opacity:.7;padding:8px 0;">در حال خواندن Runtime واقعی (فقط SELECT/get_option)…</div>';
+			post('sti_gs_chain_audit',{}).then(function(res){
+				runBtn.disabled=false;
+				runBtn.textContent='🩺 اجرای تست Runtime';
+				if(res.ok&&res.meta.json&&res.meta.json.success){renderAudit(res.meta.json);}
+				else{
+					var m=res.meta||{};
+					panel.innerHTML='<div dir="ltr" style="border:2px solid #dc2626;border-radius:10px;background:#fef2f2;padding:10px 12px;font-family:ui-monospace,monospace;font-size:12px;white-space:pre-wrap;word-break:break-all;">AJAX transport result:\nstatus='+esc(m.status)+'\nsuccess='+esc(m.json?m.json.success:'(no json)')+'\nmessage='+esc(m.json&&m.json.data?m.json.data.message:'')+'\nraw='+esc(m.raw||'')+'</div>';
+				}
+			});
+		});
+		function optionalTest(action,label,payload){
+			if(!confirm(label+' — این تست Runtime واقعی را اجرا می‌کند و ممکن است state/queue را تغییر دهد. ادامه؟')){return;}
+			var box=document.createElement('div');
+			box.style.cssText='margin-top:8px;border:1px solid #f59e0b;border-radius:8px;background:#fffbeb;padding:8px 10px;font-size:11px;';
+			box.innerHTML='<span dir="ltr" style="font-family:ui-monospace,monospace;">⏳ ارسال ' + esc(action) + '…</span>';
+			panel.appendChild(box);
+			post(action,payload).then(function(res){
+				var m=res.meta||{};
+				box.innerHTML='<b>⚠️ نتیجهٔ تست واقعی ('+esc(action)+')</b> <span dir="ltr" style="font-family:ui-monospace,monospace;white-space:pre-wrap;word-break:break-all;">status='+esc(m.status)+'\nsuccess='+esc(m.json?m.json.success:'(no json)')+'\nmessage='+esc(m.json&&m.json.data?m.json.data.message:'')+'\nraw='+esc(m.raw||'')+'</span><div style="margin-top:4px;opacity:.8;">این درخواست endpoint واقعی را اجرا کرد — state ممکن است تغییر کرده باشد.</div>';
+				if(panel.style.display==='none'){panel.style.display='block';}
+			});
+		}
+		if(optT){optT.addEventListener('click',function(){
+			var t=document.getElementById('gs-wt-toggle');
+			var on=t&&t.dataset&&t.dataset.on==='1';
+			optionalTest('sti_gs_watcher_toggle','تست واقعی Toggle (حالت فعلی: '+(on?'روشن':'خاموش')+' → وضعیت معکوس)',{enabled:on?'':'1'});
+		});}
+		if(optR){optR.addEventListener('click',function(){
+			optionalTest('sti_gs_watcher_run','تست واقعی Watcher Run (یک چرخهٔ کامل اسکن/پروفایل/ساخت Session)',{});
+		});}
+	}catch(topErr){}
+	})();
+	</script>
+
 	<div class="gi-bento">
 
 		<!-- Worker control hero -->

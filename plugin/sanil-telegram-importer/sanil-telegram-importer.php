@@ -3,7 +3,7 @@
  * Plugin Name:       Golden Importer
  * Plugin URI:        https://goldenfile.ir
  * Description:       Telegram to WooCommerce importer with Agent Bridge for large files
- * Version:           10.12.2
+ * Version:           10.12.3
  * Author:            Golden File Team
  * Text Domain:       flavor-flavor
  * Domain Path:       /languages
@@ -14,7 +14,7 @@
 if ( ! defined( 'ABSPATH' ) ) {
 exit;
 }
-define( 'STI_VERSION', '10.12.2' );
+define( 'STI_VERSION', '10.12.3' );
 define( 'STI_FILE', __FILE__ );
 define( 'STI_PATH', plugin_dir_path( __FILE__ ) );
 define( 'STI_URL', plugin_dir_url( __FILE__ ) );
@@ -208,6 +208,7 @@ require_once STI_PATH . 'includes/golden-scan/class-gs-recovery.php';
 require_once STI_PATH . 'includes/golden-scan/class-gs-line.php';
 require_once STI_PATH . 'includes/golden-scan/class-gs-channel-watcher.php';
 require_once STI_PATH . 'includes/golden-scan/class-gs-deadline.php';
+require_once STI_PATH . 'includes/golden-scan/class-gs-chain-audit.php';
 /* ═══ معماری زنجیره‌ای ۱۰.۸ — Node Classifier / Processor / Chain Engine ═══ */
 require_once STI_PATH . 'includes/golden-scan/class-gs-node.php';
 require_once STI_PATH . 'includes/golden-scan/class-gs-deep-link-parser.php';
@@ -360,6 +361,7 @@ if ( class_exists( 'STI_GS_Publish_Queue' ) ) { STI_GS_Publish_Queue::init(); }
 if ( class_exists( 'STI_GS_Auto_Worker' ) ) { STI_GS_Auto_Worker::init(); }
 if ( class_exists( 'STI_GS_Recovery' ) ) { STI_GS_Recovery::init(); }
 if ( class_exists( 'STI_GS_Channel_Watcher' ) ) { STI_GS_Channel_Watcher::init(); }
+if ( class_exists( 'STI_GS_Chain_Audit' ) ) { STI_GS_Chain_Audit::init(); }
 if ( class_exists( 'STI_GS_Scanner' ) ) { STI_GS_Scanner::instance(); }
 if ( class_exists( 'STI_GS_Profile_Ajax' ) ) { STI_GS_Profile_Ajax::instance(); }
 if ( class_exists( 'STI_GS_Session_Ajax' ) ) { STI_GS_Session_Ajax::instance(); }
