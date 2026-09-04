@@ -77,11 +77,16 @@ class STI_GS_Line {
 			if ( self::STOPPED !== $from ) {
 				return false;
 			}
-			$wpdb->query( $wpdb->prepare(
+			$ok = $wpdb->query( $wpdb->prepare(
 				"INSERT INTO {$wpdb->options} (option_name, option_value, option_modified, option_autoload)
 				 VALUES (%s, %s, %s, 'no')",
 				self::OPTION, $to, current_time( 'mysql' )
 			) );
+			if ( false === $ok ) {
+				return false;
+			}
+			/* ۱۰.۱۲-RC: همگام‌سازی object cache با نوشتنِ خام (همان set_state). */
+			wp_cache_set( self::OPTION, $to, 'options' );
 			return true;
 		}
 
@@ -90,6 +95,10 @@ class STI_GS_Line {
 			 WHERE option_name = %s AND option_value = %s",
 			$to, self::OPTION, $from
 		) );
+		if ( $affected > 0 ) {
+			/* ۱۰.۱۲-RC: همگام‌سازی object cache با نوشتنِ خام (همان set_state). */
+			wp_cache_set( self::OPTION, $to, 'options' );
+		}
 		return $affected > 0;
 	}
 
@@ -107,16 +116,22 @@ class STI_GS_Line {
 			"SELECT option_id FROM {$wpdb->options} WHERE option_name = %s", self::OPTION
 		) );
 		if ( $exists ) {
-			$wpdb->query( $wpdb->prepare(
+			$ok = $wpdb->query( $wpdb->prepare(
 				"UPDATE {$wpdb->options} SET option_value = %s WHERE option_name = %s",
 				$to, self::OPTION
 			) );
 		} else {
-			$wpdb->query( $wpdb->prepare(
+			$ok = $wpdb->query( $wpdb->prepare(
 				"INSERT INTO {$wpdb->options} (option_name, option_value, option_modified, option_autoload)
 				 VALUES (%s, %s, %s, 'no')",
 				self::OPTION, $to, current_time( 'mysql' )
 			) );
+		}
+		if ( false !== $ok ) {
+			/* ۱۰.۱۲-RC: همگام‌سازی object cache با نوشتنِ خام — همان قراردادِ
+			 * update_option(). بدون این، خواننده‌های get_option() در هاست با
+			 * cache پایدار (Redis/Memcached) ممکن است مقدار کهنه را ببینند. */
+			wp_cache_set( self::OPTION, $to, 'options' );
 		}
 		if ( '' !== $reason && class_exists( 'STI_Logger' ) ) {
 			STI_Logger::info( 'گلدن اسکن خط تولید: وضعیت → ' . $to . ' (' . $reason . ')' );
