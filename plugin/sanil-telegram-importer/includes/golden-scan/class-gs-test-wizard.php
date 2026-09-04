@@ -44,6 +44,7 @@ class STI_GS_Test_Wizard {
 		add_action( 'wp_ajax_sti_gs_pipeline_start', array( $this, 'ajax_pipeline_start' ) );
 		add_action( 'wp_ajax_sti_gs_start_diagnostic', array( $this, 'ajax_start_diagnostic' ) );
 		add_action( 'wp_ajax_sti_gs_publish_queue_create', array( $this, 'ajax_publish_queue_create' ) );
+		add_action( 'wp_ajax_sti_gs_publish_queue_save_selection', array( $this, 'ajax_publish_queue_save_selection' ) );
 		/* ۱۰.۱۱ — Start/Stop + مانیتور زنده + Review زنده */
 		add_action( 'wp_ajax_sti_gs_line_start', array( $this, 'ajax_line_start' ) );
 		add_action( 'wp_ajax_sti_gs_line_stop', array( $this, 'ajax_line_stop' ) );
@@ -1137,6 +1138,23 @@ class STI_GS_Test_Wizard {
 			'schedule_preview' => $schedule_preview,
 			'worker_on'        => class_exists( 'STI_GS_Auto_Worker' ) ? (bool) STI_GS_Auto_Worker::is_enabled() : null,
 		) );
+	}
+
+	/**
+	 * ۱۰.۱۲ — ذخیره‌ی انتخاب دسته‌های انتشار (optionِ B4).
+	 */
+	public function ajax_publish_queue_save_selection() {
+		$this->check_ajax();
+		$raw  = ( isset( $_POST['categories'] ) && is_array( $_POST['categories'] ) ) ? (array) $_POST['categories'] : array();
+		$cats = array();
+		foreach ( $raw as $c ) {
+			$c = (int) $c;
+			if ( $c > 0 ) {
+				$cats[] = $c;
+			}
+		}
+		update_option( 'sti_gs_publish_categories', $cats, false );
+		wp_send_json_success( array( 'categories' => $cats ) );
 	}
 
 	/** ذخیره‌ی Automation Settings. */

@@ -700,7 +700,7 @@ class STI_Admin {
 
 	public function render_golden_scan() {
 		if ( ! current_user_can( self::CAP ) ) { wp_die( 'دسترسی غیرمجاز' ); }
-		$allowed = array( 'profiles', 'sessions', 'system-check', 'test-wizard', 'logs', 'worker', 'insight', 'automation', 'review', 'environment', 'automation-settings' );
+		$allowed = array( 'profiles', 'sessions', 'system-check', 'test-wizard', 'logs', 'worker', 'insight', 'automation', 'review', 'environment', 'automation-settings', 'publish-queue' );
 		$view = ( isset( $_GET['gs_view'] ) && in_array( $_GET['gs_view'], $allowed, true ) ) ? $_GET['gs_view'] : 'channels';
 		include STI_PATH . 'admin/views/golden-scan/' . $view . '.php';
 	}

@@ -13,47 +13,22 @@ foreach ( $channels as &$gs_c ) {
 }
 unset( $gs_c );
 ?>
+<?php
+/* ۱۰.۱۲ — صفحه‌ی منابع فقط: افزودن کانال → اسکن → آمار.
+ * ساخت محصول به «📦 صف انتشار» منتقل شده است. */
+$gs_ready_total = (int) ( STI_GS_Channel_Watcher::stats()['ready'] ?? 0 );
+?>
 <div class="gi-console" dir="rtl">
 	<?php include STI_PATH . 'admin/views/golden-scan/partial-subnav.php'; ?>
 
 	<div class="gi-console-head">
 		<h1 class="gi-h1">📡 منابع</h1>
-		<p class="gi-h1-sub">این مرحله فقط ایندکس می‌کند؛ چیزی دانلود یا منتشر نمی‌شود.</p>
+		<p class="gi-h1-sub">مرحله‌ی ۱ و ۲: افزودن کانال و اسکن. این صفحه فقط ایندکس می‌کند؛ محصول در «📦 صف انتشار» ساخته و منتشر می‌شود.</p>
 	</div>
 
 	<div class="gi-bento">
 
-		<!-- اسکن موازی (info) -->
-		<div class="gi-card gi-span-7">
-			<div class="gi-card-head">
-				<h2 class="gi-card-title">⚡ اسکن موازی برای کانال‌های بزرگ</h2>
-			</div>
-			<p class="gi-card-sub" style="font-size:var(--gi-fs1);">بازه‌ی شناسه‌ی پیام‌ها به چند بخش تقسیم می‌شود و هم‌زمان جلو می‌روند — چند برابر سریع‌تر از حالت ساده، و بدون خطر ذخیره‌ی تکراری (هر پیام با شناسه‌ی یکتا فقط یک‌بار ثبت می‌شود، حتی اگر دو بخش هم‌مرز به آن برسند). اسکن در هر دو حالت قابل توقف/ادامه است.</p>
-		</div>
-
-		<!-- Start pipeline -->
-		<div class="gi-card gi-card--accent gi-span-5">
-			<div class="gi-card-head">
-				<h2 class="gi-card-title">🏭 Start — خط تولید خودکار</h2>
-				<span class="gi-card-sub">آخرین گام دستی شما همین است</span>
-			</div>
-			<p class="gi-card-sub" style="font-size:var(--gi-fs1);margin-bottom:var(--gi-s4);">تعداد Session را مشخص کنید و Start بزنید. از این‌جا به بعد هیچ گام دستی لازم نیست — سیستم هر Session را تا <strong>Published</strong> (یا <strong>Review</strong> با Fix مشخص) می‌رساند.</p>
-			<div class="gi-form-row">
-				<label for="gs-start-count">تعداد Session برای ساخت</label>
-				<input type="number" id="gs-start-count" value="10" min="1" max="1000" style="max-width:140px;">
-			</div>
-			<div class="gi-flex" style="align-items:center;gap:var(--gi-s3);flex-wrap:wrap;">
-				<button id="gs-pipeline-start" class="gi-btn gi-btn--primary">🏭 Start</button>
-				<span id="gs-start-result" class="gi-inline-res" role="status" aria-live="polite"></span>
-			</div>
-			<div class="gi-flex" style="align-items:center;gap:var(--gi-s3);flex-wrap:wrap;margin-top:var(--gi-s3);">
-				<button id="gs-start-diagnose" class="gi-btn" title="فقط‌خواندنی — هیچ چیز ساخته یا تغییر نمی‌کند؛ دقیقاً همان مسیر Start را می‌ساید و می‌گوید هر آماده در کدام دروازه می‌ماند">🔍 اگر Start صفر ساخت — تشخیص</button>
-				<span id="gs-diag-result" class="gi-inline-res" role="status" aria-live="polite"></span>
-			</div>
-			<div id="gs-diag-panel" hidden style="margin-top:var(--gi-s4);"></div>
-		</div>
-
-		<!-- افزودن کانال -->
+		<!-- ۱) افزودن کانال (اولین کارت) -->
 		<div class="gi-card gi-span-12">
 			<div class="gi-card-head">
 				<h2 class="gi-card-title">➕ افزودن کانال</h2>
@@ -125,9 +100,32 @@ unset( $gs_c );
 							<?php endforeach; ?>
 						<?php endif; ?>
 					</tbody>
-				</table>
+					</table>
+				</div>
 			</div>
-		</div>
+
+			<!-- اسکن موازی (بعد از لیست) -->
+			<div class="gi-card gi-span-12">
+				<div class="gi-card-head">
+					<h2 class="gi-card-title">⚡ اسکن موازی برای کانال‌های بزرگ</h2>
+				</div>
+				<p class="gi-card-sub" style="font-size:var(--gi-fs1);">بازه‌ی شناسه‌ی پیام‌ها به چند بخش تقسیم می‌شود و هم‌زمان جلو می‌روند — چند برابر سریع‌تر از حالت ساده، و بدون خطر ذخیره‌ی تکراری (هر پیام با شناسه‌ی یکتا فقط یک‌بار ثبت می‌شود، حتی اگر دو بخش هم‌مرز به آن برسند). اسکن در هر دو حالت قابل توقف/ادامه است.</p>
+			</div>
+
+			<!-- ۱۰.۱۲ — CTA: موجودی آماده برای انتشار (ساخت محصول اینجا نیست) -->
+			<div class="gi-card gi-card--accent gi-span-12">
+				<div class="gi-card-head">
+					<h2 class="gi-card-title">📦 <?php echo number_format_i18n( $gs_ready_total ); ?> محصول آماده برای انتشار</h2>
+					<span class="gi-card-sub">مرحله‌ی بعد: انتخاب دسته‌ها و افزودن به صف انتشار</span>
+				</div>
+				<div class="gi-flex" style="align-items:center;gap:var(--gi-s3);flex-wrap:wrap;">
+					<a class="gi-btn gi-btn--primary" href="<?php echo esc_url( admin_url( 'admin.php?page=sti-golden-scan&gs_view=publish-queue' ) ); ?>">انتخاب دسته و افزودن به صف ←</a>
+					<button id="gs-start-diagnose" class="gi-btn" title="فقط‌خواندنی — هیچ چیزی ساخته یا تغییر نمی‌کند؛ دقیقاً همان مسیر ساخت را می‌ساید و می‌گوید هر محصول در کدام دروازه می‌ماند">🔍 اگر به صف اضافه نشد — تشخیص</button>
+					<span class="gi-field" style="margin:0;display:inline-flex;align-items:center;gap:var(--gi-s2);"><span class="gi-field-label">نمونه</span><input type="number" id="gs-diag-count" value="10" min="1" max="100" style="width:80px;"></span>
+					<span id="gs-diag-result" class="gi-inline-res" role="status" aria-live="polite"></span>
+				</div>
+				<div id="gs-diag-panel" hidden style="margin-top:var(--gi-s4);"></div>
+			</div>
 
 	</div>
 </div>
@@ -137,7 +135,6 @@ unset( $gs_c );
 		jQuery(function ($) {
 			'use strict';
 			var A = window.STI || {};
-			var GS_AUTOMATION_URL = '<?php echo esc_js( admin_url( 'admin.php?page=sti-golden-scan&gs_view=automation' ) ); ?>';
 			var pollTimers = {};
 
 			function esc(s) {
@@ -247,32 +244,9 @@ unset( $gs_c );
 				});
 			});
 
-			/* ۱۰.۱۰ — Start: تعیین تعداد Session + روشن‌سازی خط تولید */
-			$('#gs-pipeline-start').on('click', function () {
-				var $btn = $(this), $r = $('#gs-start-result');
-				var count = parseInt($('#gs-start-count').val(), 10) || 0;
-				if (count < 1 || count > 1000) { $r.text('تعداد باید بین ۱ و ۱۰۰۰ باشد.'); return; }
-				$btn.prop('disabled', true);
-				$r.text('در حال ساخت Session و روشن‌سازی خط تولید...');
-				post('sti_gs_pipeline_start', { count: count }).done(function (res) {
-					if (res && res.success) {
-						var d = res.data;
-						var msg = '✅ ' + d.created + ' Session ساخته شد' +
-							((d.ready > 0) ? (' · ' + d.ready + ' مورد آماده‌ی بعدی در صف') : '') +
-							' — Worker ' + (d.worker_on ? 'روشن' : 'خاموش') + '.';
-						$r.html(msg + ' <a href="' + GS_AUTOMATION_URL + '" target="_blank">پیگیری در «خط تولید»</a>');
-						$r.addClass('ok');
-					} else {
-						$r.text('❌ ' + ((res.data && res.data.message) || 'خطا')).addClass('err');
-					}
-				}).fail(function () {
-					$r.text('❌ خطای ارتباط').addClass('err');
-				}).always(function () {
-					$btn.prop('disabled', false);
-				});
-			});
+			/* ۱۰.۱۲ — ساخت محصول به «📦 صف انتشار» منتقل شد؛ اینجا فقط CTA است. */
 
-			/* ۱۰.۱۱-UX+ — تشخیص Start (فقط‌خواندنی) */
+			/* ۱۰.۱۱-UX+ — تشخیص ساخت (فقط‌خواندنی) */
 			function diagRow(label, val, note) {
 				return '<tr><td><strong>' + esc(label) + '</strong></td><td dir="ltr" style="font-weight:700;">' +
 					(val === null || val === undefined ? '—' : Number(val)) +
@@ -289,7 +263,7 @@ unset( $gs_c );
 					(expected > 0 ? 'var(--gi-success-soft)' : 'var(--gi-danger-soft)') + ';">' +
 					'<strong>' + (expected > 0 ? '✅ حکم: ' : '⛔ حکم: ') + '</strong>' +
 					'از <b>' + (v.ready || 0) + '</b> آماده، <b>' + (v.eligible || 0) + '</b> واجدِ شرایط — در این اجرا تقریباً <b>' + expected +
-					'</b> Session ساخته <u>خواهد</u> شد (فقط پیش‌بینی؛ هنوز چیزی ساخته نشده).' +
+					'</b> محصول به صف <u>اضافه خواهد</u> شد (فقط پیش‌بینی؛ هنوز چیزی ساخته نشده).' +
 					(expected === 0 ? ' دروازه‌ی دقیقِ گیر در جدول زیر مشخص شده.' : '') + '</div>';
 
 				/* ۲ — جدول دروازه‌ها */
@@ -358,10 +332,10 @@ unset( $gs_c );
 
 			$('#gs-start-diagnose').on('click', function () {
 				var $btn = $(this), $r = $('#gs-diag-result');
-				var count = parseInt($('#gs-start-count').val(), 10) || 0;
+				var count = parseInt($('#gs-diag-count').val(), 10) || 0;
 				if (count < 1 || count > 100) { $r.text('تعداد باید بین ۱ و ۱۰۰ باشد.'); return; }
 				$btn.prop('disabled', true);
-				$r.text('در حال ساید کردن مسیر Start (فقط‌خواندنی؛ معمولاً چند ثانیه)...');
+				$r.text('در حال ساید کردن مسیر ساخت (فقط‌خواندنی؛ معمولاً چند ثانیه)...');
 				post('sti_gs_start_diagnostic', { count: count }).done(function (res) {
 					if (res && res.success) {
 						renderStartDiag(res.data);

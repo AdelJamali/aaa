@@ -7,8 +7,8 @@ $channels = STI_GS_Channel::all();
 	<?php include STI_PATH . 'admin/views/golden-scan/partial-subnav.php'; ?>
 
 	<div class="gi-console-head">
-		<h1 class="gi-h1">🔍 شناخت کانال</h1>
-		<p class="gi-h1-sub">تحلیل پیام‌هایی که <strong>از قبل</strong> در Inventory هستند — بدون اسکن دوباره‌ی تلگرام و بدون هزینه‌ی AI. هدف: پیش از ساخت دسته‌بندی‌ها، عدد واقعی داشته باشید، نه حدس.</p>
+		<h1 class="gi-h1">🔍 تحلیل محتوا</h1>
+		<p class="gi-h1-sub">مرحله‌ی ۳: تحلیل پیام‌هایی که <strong>از قبل</strong> در Inventory هستند — بدون اسکن دوباره‌ی تلگرام و بدون هزینه‌ی AI. هدف: پیش از انتخاب دسته‌های انتشار، عدد واقعی داشته باشید، نه حدس.</p>
 	</div>
 
 	<div class="gi-card gi-span-12" style="margin-bottom:var(--gi-s5);">
@@ -130,6 +130,17 @@ $channels = STI_GS_Channel::all();
 						<tr><td>بدون دکمه</td><td class="gi-nums" style="text-align:end;"><?php echo number_format_i18n( $sum['buttons']['without'] ); ?></td></tr>
 					</tbody>
 				</table>
+			</div>
+		</div>
+
+		<!-- ۱۰.۱۲ — CTA به مرحله‌ی بعد: انتخاب دسته‌های انتشار -->
+		<div class="gi-card gi-card--accent gi-span-12">
+			<div class="gi-card-head">
+				<h2 class="gi-card-title">مرحله‌ی بعد: انتخاب دسته‌های انتشار</h2>
+				<span class="gi-card-sub">از بین دسته‌های تحلیل‌شده، دسته‌هایی که می‌خواهید منتشر شوند را انتخاب کنید</span>
+			</div>
+			<div class="gi-flex" style="align-items:center;gap:var(--gi-s3);flex-wrap:wrap;">
+				<a class="gi-btn gi-btn--primary" href="<?php echo esc_url( admin_url( 'admin.php?page=sti-golden-scan&gs_view=publish-queue' ) ); ?>">انتخاب دسته‌های انتشار ←</a>
 			</div>
 		</div>
 

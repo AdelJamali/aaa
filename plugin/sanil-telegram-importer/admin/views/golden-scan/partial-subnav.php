@@ -8,7 +8,7 @@ if ( ! defined( 'ABSPATH' ) ) { exit; }
  * دست‌نخورده‌اند؛ فقط presentation عوض شده است.
  * وضعیت خط فقط **خوانده** می‌شود (get_option) — هیچ تغییری انجام نمی‌شود.
  */
-$gs_all_views = array( 'profiles', 'sessions', 'system-check', 'test-wizard', 'logs', 'worker', 'insight', 'automation', 'review', 'environment', 'automation-settings' );
+$gs_all_views = array( 'profiles', 'sessions', 'system-check', 'test-wizard', 'logs', 'worker', 'insight', 'automation', 'review', 'environment', 'automation-settings', 'publish-queue' );
 $gs_current   = ( isset( $_GET['gs_view'] ) && in_array( $_GET['gs_view'], $gs_all_views, true ) ) ? $_GET['gs_view'] : 'channels';
 
 $gs_groups = array(
@@ -17,7 +17,7 @@ $gs_groups = array(
 		'icon'  => '📡',
 		'views' => array(
 			'channels' => 'کانال‌ها',
-			'insight'  => 'شناخت کانال',
+			'insight'  => 'تحلیل محتوا',
 			'profiles' => 'پروفایل‌ها',
 		),
 	),
@@ -25,10 +25,11 @@ $gs_groups = array(
 		'label' => '🏭 خط تولید',
 		'icon'  => '🏭',
 		'views' => array(
-			'automation' => 'Live Pipeline',
-			'sessions'   => 'Session ها',
-			'worker'     => 'Queue / پردازش',
-			'review'     => 'Review',
+			'publish-queue' => '📦 صف انتشار',
+			'automation'    => 'Live Pipeline',
+			'sessions'      => 'Session ها',
+			'worker'        => 'Queue / پردازش',
+			'review'        => 'Review',
 		),
 	),
 	'automation-settings' => array(

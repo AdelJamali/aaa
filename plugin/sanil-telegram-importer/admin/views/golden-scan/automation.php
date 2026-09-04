@@ -101,6 +101,7 @@ $worker_interval = (int) ( class_exists( 'STI_GS_Automation' ) ? STI_GS_Automati
 			<?php if ( 'STOPPED' === $line ) : ?>
 				<div class="gi-hero-state-sub" style="width:100%;margin-top:2px;">
 					STOP امن است: هیچ process kill نمی‌شود، داده‌ای حذف نمی‌شود؛ START ادامه‌ی واقعی است.
+					محصول تازه برای انتشار از <a href="<?php echo esc_url( admin_url( 'admin.php?page=sti-golden-scan&gs_view=publish-queue' ) ); ?>">📦 صف انتشار</a> اضافه می‌شود.
 				</div>
 			<?php endif; ?>
 		</div>
