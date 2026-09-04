@@ -375,6 +375,53 @@ $today = $stats['today'] ?? array();
 				h2+=section('📋 SELECTION AUDIT (خروجی نهایی — قابل کپی)','<pre dir="ltr" style="background:#0f172a;color:#e2e8f0;border-radius:8px;padding:10px;font-size:11px;line-height:1.7;white-space:pre-wrap;word-break:break-all;margin:0;">'+esc(sw.audit_text||'')+'</pre>',true);
 				h+=h2;
 			}
+			/* 🧬 Orphan Root-Cause Audit (10.12.5) */
+			var oc=d.orphan_root_cause;
+			if(oc&&typeof oc==='object'&&!(oc.error)){
+				var h3='<h3 style="font-size:13px;margin:12px 0 4px;">🧬 Orphan Root-Cause Audit (read-only — HOW / WHERE / WHY / WHEN)</h3>';
+				h3+='<div dir="ltr" style="border:2px solid #be123c;border-radius:8px;background:#fff1f2;padding:8px 10px;font-size:12px;font-weight:800;margin-bottom:8px;">'+esc(oc.lean||'')+'</div>';
+				var pp=oc.population||{};
+				h3+='<div dir="ltr" style="font-size:11px;font-family:ui-monospace,monospace;margin-bottom:6px;">total='+pp.total+' · by_status='+esc(JSON.stringify(oc.by_status||{}))+' · NO_PK(0/NULL)='+pp.no_pk+' · DANGLING='+pp.dangling+' · PROFILE_MISSING='+pp.profile_missing+' · VALID='+pp.valid+' · ORPHAN_TOTAL='+oc.orphan_total+'</div>';
+				if(oc.distribution){
+					var dt='<div style="display:flex;gap:8px;flex-wrap:wrap;">';
+					dt+='<div style="flex:1;min-width:220px;"><b>by profile_id (top 10)</b><pre dir="ltr" style="background:#fff;border:1px solid #fecdd3;border-radius:8px;padding:6px;font-size:10px;white-space:pre-wrap;word-break:break-all;margin:4px 0 0;">'+esc(JSON.stringify(oc.distribution.by_profile||[],null,1))+'</pre></div>';
+					dt+='<div style="flex:1;min-width:220px;"><b>by status / by keyword</b><pre dir="ltr" style="background:#fff;border:1px solid #fecdd3;border-radius:8px;padding:6px;font-size:10px;white-space:pre-wrap;word-break:break-all;margin:4px 0 0;">'+esc(JSON.stringify(oc.distribution.by_status||[],null,1))+'\n'+esc(JSON.stringify(oc.distribution.by_keyword||[],null,1))+'</pre></div>';
+					dt+='<div style="flex:1;min-width:220px;"><b>by month (created_at)</b><pre dir="ltr" style="background:#fff;border:1px solid #fecdd3;border-radius:8px;padding:6px;font-size:10px;white-space:pre-wrap;word-break:break-all;margin:4px 0 0;">'+esc(JSON.stringify(oc.distribution.by_month||[],null,1))+'</pre></div>';
+					dt+='</div>';
+					h3+=dt;
+				}
+				var sm=oc.samples||{};
+				if(sm.orphan||sm.healthy){
+					var cmp2='<div style="display:flex;gap:8px;flex-wrap:wrap;">';
+					cmp2+='<pre dir="ltr" style="flex:1;min-width:260px;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:8px;font-size:10.5px;white-space:pre-wrap;word-break:break-all;margin:0;"><b>ORPHAN (first by id)</b>\nfirst_ids='+esc(JSON.stringify(sm.orphan_first_ids||[]))+'\n'+esc(JSON.stringify(sm.orphan||{},null,2))+'</pre>';
+					cmp2+='<pre dir="ltr" style="flex:1;min-width:260px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:8px;font-size:10.5px;white-space:pre-wrap;word-break:break-all;margin:0;"><b>HEALTHY (first by id)</b>\n'+esc(JSON.stringify(sm.healthy||{},null,2))+'\n<b>HEALTHY same-profile</b>\n'+esc(JSON.stringify(sm.healthy_same_profile||null,null,2))+'</pre>';
+					cmp2+='</div>';
+					h3+=section('PART 5 — ORPHAN vs HEALTHY (از DB واقعی)',cmp2,true);
+				}
+				if(oc.timeline){
+					var tl='<pre dir="ltr" style="background:#fff;border:1px solid #fecdd3;border-radius:8px;padding:8px;font-size:10.5px;white-space:pre-wrap;word-break:break-all;margin:0;"><b>extremes</b>\n'+esc(JSON.stringify(oc.timeline.extremes||{},null,1))+'\n<b>daily (last 14d)</b>\n'+esc(JSON.stringify(oc.timeline.daily_14d||[],null,1))+'</pre>';
+					h3+=section('PART 6/7 — Timeline + Recent Production (24h/today)',tl,false);
+				}
+				var sc=oc.schema||{};
+				if(sc.columns){
+					var sch='<pre dir="ltr" style="background:#fff;border:1px solid #fecdd3;border-radius:8px;padding:8px;font-size:10.5px;white-space:pre-wrap;word-break:break-all;margin:0;">'+esc(JSON.stringify(sc.columns,null,1))+'\n'+esc(JSON.stringify(sc.indexes||[],null,1))+'</pre>';
+					h3+=section('PART 1 — Schema واقعی (SHOW COLUMNS / SHOW INDEX از Runtime)',sch,false);
+				}
+				var sf=oc.static_facts||{};
+				if(sf.write_paths){
+					var wp2='<table style="border-collapse:collapse;background:#fff;font-size:10.5px;width:100%;"><thead><tr><th style="border-bottom:2px solid #be123c;padding:3px 5px;text-align:right;">SQL path</th><th style="border-bottom:2px solid #be123c;padding:3px 5px;text-align:right;">FILE / FUNCTION / LINE / CALLER / WHEN</th></tr></thead><tbody>';
+					for(var wk in sf.write_paths){
+						if(!Object.prototype.hasOwnProperty.call(sf.write_paths,wk)){continue;}
+						wp2+='<tr style="border-bottom:1px solid #ffe4e6;"><td dir="ltr" style="padding:3px 5px;font-family:ui-monospace,monospace;vertical-align:top;">'+esc(wk)+'</td><td dir="ltr" style="padding:3px 5px;white-space:pre-wrap;word-break:break-all;vertical-align:top;">'+esc(sf.write_paths[wk])+'</td></tr>';
+					}
+					wp2+='</tbody></table>';
+					wp2+='<div dir="ltr" style="font-size:10.5px;margin-top:6px;white-space:pre-wrap;word-break:break-all;"><b>no_other_writers:</b> '+esc(sf.no_other_writers||'')+'</div>';
+					wp2+='<div dir="ltr" style="font-size:10.5px;margin-top:6px;white-space:pre-wrap;word-break:break-all;"><b>scanner_path:</b> '+esc(sf.scanner_path||'')+'</div>';
+					h3+=section('PART 3/4 — Creation Paths + Scanner Chain (Static، از کد 10.12.5)',wp2,false);
+				}
+				h3+='<details open style="margin:8px 0;border:1px solid #fda4af;border-radius:8px;background:#fff;"><summary style="cursor:pointer;padding:6px 10px;font-size:12px;font-weight:700;">📋 ORPHAN AUDIT EVIDENCE (قابل کپی)</summary><div style="padding:0 10px 10px;"><pre dir="ltr" style="background:#0f172a;color:#e2e8f0;border-radius:8px;padding:10px;font-size:11px;line-height:1.7;white-space:pre-wrap;word-break:break-all;margin:0;">'+esc(oc.audit_text||'')+'</pre></div></details>';
+				h+=h3;
+			}
 			h+=section('PART 9 — create_from_profile_item Path',kvTable(d.session_path),false);
 			h+=section('PART 10 — Real Session Check (sample ≤ 10)',kvTable(d.session_sample),true);
 			h+=section('PART 11 — Real Pipeline Check (last 10)',kvTable(d.pipeline_sample),false);

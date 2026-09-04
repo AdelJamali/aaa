@@ -122,6 +122,7 @@ class STI_GS_Chain_Audit {
 		try { $out['fiber_memory'] = self::part13_fiber_memory(); } catch ( \Throwable $e ) { $out['fiber_memory'] = array( 'error' => $e->getMessage() ); }
 		try { $out['telegram'] = self::part_telemgram(); } catch ( \Throwable $e ) { $out['telegram'] = array( 'error' => $e->getMessage() ); }
 		try { $out['selection_window'] = self::part14_selection_window(); } catch ( \Throwable $e ) { $out['selection_window'] = array( 'error' => $e->getMessage() ); }
+		try { $out['orphan_root_cause'] = self::part15_orphan_root_cause(); } catch ( \Throwable $e ) { $out['orphan_root_cause'] = array( 'error' => $e->getMessage() ); }
 
 		$out['rows']    = self::rows( $out );
 		$out['verdict'] = self::verdict( $out );
@@ -847,6 +848,161 @@ class STI_GS_Chain_Audit {
 			'sample_rows'        => $sample_rows,
 			'reconcile'          => $reconcile,
 			'verdict_break'      => $break,
+			'audit_text'         => $audit_text,
+		);
+	}
+
+	/* ==================== 🧬 ORPHAN ROOT-CAUSE AUDIT (10.12.5) — read-only ====================
+	 * HOW/WHERE/WHY/WHEN: چطور، کجا، چرا و کی 825+ orphan ساخته شده‌اند.
+	 * فقط SELECT/SHOW/get_option — صفر نوشتن.
+	 * orphan := profile گم OR message گم (شامل message_pk=0/NULL و dangling).
+	 */
+
+	protected static function part15_orphan_root_cause() {
+		global $wpdb;
+		$items    = STI_GS_DB::profile_items_table();
+		$profiles = STI_GS_DB::profiles_table();
+		$messages = STI_GS_DB::messages_table();
+
+		/* ---------- PART 1 — Schema واقعی (از Runtime) ---------- */
+		$cols   = array();
+		$idx    = array();
+		foreach ( (array) $wpdb->get_results( "SHOW COLUMNS FROM {$items}" ) as $c ) {
+			$cols[] = array( 'field' => $c->Field, 'type' => $c->Type, 'null' => $c->Null, 'default' => $c->Default, 'key' => $c->Key );
+		}
+		foreach ( (array) $wpdb->get_results( "SHOW INDEX FROM {$items}" ) as $k ) {
+			if ( '0' === $k->Seq_in_index ) {
+				$idx[] = array( 'key' => $k->Key_name, 'unique' => ( 0 === (int) $k->Non_unique ), 'cols' => $k->Column_name );
+			}
+		}
+
+		/* ---------- PART 2 — Orphan Population Audit ---------- */
+		$pop = (array) $wpdb->get_row( "SELECT
+			COUNT(*) AS total,
+			SUM( pi.message_pk IS NULL OR pi.message_pk = 0 ) AS no_pk,
+			SUM( NOT( pi.message_pk IS NULL OR pi.message_pk = 0 ) AND p.id IS NULL ) AS profile_missing,
+			SUM( NOT( pi.message_pk IS NULL OR pi.message_pk = 0 ) AND p.id IS NOT NULL AND m.id IS NULL ) AS dangling,
+			SUM( p.id IS NOT NULL AND m.id IS NOT NULL ) AS valid
+		 FROM {$items} pi
+		 LEFT JOIN {$profiles} p ON p.id = pi.profile_id
+		 LEFT JOIN {$messages} m ON m.id = pi.message_pk", ARRAY_A );
+		$by_status_rows = (array) $wpdb->get_results( "SELECT status, COUNT(*) AS c FROM {$items} GROUP BY status ORDER BY c DESC", ARRAY_A );
+		$by_status = array();
+		foreach ( $by_status_rows as $r ) { $by_status[ (string) $r['status'] ] = (int) $r['c']; }
+
+		$ORPH = ' ( p.id IS NULL OR m.id IS NULL ) ';
+		/* distribution orphanها: */
+		$dist_profiles = (array) $wpdb->get_results( "SELECT pi.profile_id, COUNT(*) AS c, MIN(pi.created_at) AS mn, MAX(pi.created_at) AS mx
+		 FROM {$items} pi LEFT JOIN {$profiles} p ON p.id = pi.profile_id LEFT JOIN {$messages} m ON m.id = pi.message_pk
+		 WHERE{$ORPH} GROUP BY pi.profile_id ORDER BY c DESC LIMIT 10", ARRAY_A );
+		$dist_status = (array) $wpdb->get_results( "SELECT pi.status, COUNT(*) AS c
+		 FROM {$items} pi LEFT JOIN {$profiles} p ON p.id = pi.profile_id LEFT JOIN {$messages} m ON m.id = pi.message_pk
+		 WHERE{$ORPH} GROUP BY pi.status ORDER BY c DESC", ARRAY_A );
+		$dist_kw = (array) $wpdb->get_results( "SELECT IFNULL(pi.matched_keyword,'(NULL)') AS kw, COUNT(*) AS c
+		 FROM {$items} pi LEFT JOIN {$profiles} p ON p.id = pi.profile_id LEFT JOIN {$messages} m ON m.id = pi.message_pk
+		 WHERE{$ORPH} GROUP BY IFNULL(pi.matched_keyword,'(NULL)') ORDER BY c DESC LIMIT 10", ARRAY_A );
+		$dist_month = (array) $wpdb->get_results( "SELECT DATE_FORMAT(pi.created_at, '%Y-%m') AS m, COUNT(*) AS c
+		 FROM {$items} pi LEFT JOIN {$profiles} p ON p.id = pi.profile_id LEFT JOIN {$messages} m ON m.id = pi.message_pk
+		 WHERE{$ORPH} GROUP BY DATE_FORMAT(pi.created_at, '%Y-%m') ORDER BY m", ARRAY_A );
+
+		/* ---------- PART 5 — Healthy vs Orphan samples ---------- */
+		$orphan_sample = (array) $wpdb->get_row( "SELECT pi.id, pi.profile_id, pi.message_pk, pi.status, pi.matched_keyword, pi.created_at,
+			( m.id IS NOT NULL ) AS message_exists, ( p.id IS NOT NULL ) AS profile_exists
+		 FROM {$items} pi LEFT JOIN {$messages} m ON m.id = pi.message_pk LEFT JOIN {$profiles} p ON p.id = pi.profile_id
+		 WHERE{$ORPH} ORDER BY pi.id ASC LIMIT 1", ARRAY_A );
+		$orphan_first_ids = (array) $wpdb->get_col( "SELECT pi.id FROM {$items} pi LEFT JOIN {$profiles} p ON p.id = pi.profile_id LEFT JOIN {$messages} m ON m.id = pi.message_pk WHERE{$ORPH} ORDER BY pi.id ASC LIMIT 5" );
+		$healthy_sample = (array) $wpdb->get_row( "SELECT pi.id, pi.profile_id, pi.message_pk, pi.status, pi.matched_keyword, pi.created_at,
+			( m.id IS NOT NULL ) AS message_exists, ( p.id IS NOT NULL ) AS profile_exists
+		 FROM {$items} pi INNER JOIN {$messages} m ON m.id = pi.message_pk INNER JOIN {$profiles} p ON p.id = pi.profile_id
+		 WHERE pi.message_pk > 0 ORDER BY pi.id ASC LIMIT 1", ARRAY_A );
+		$healthy_same_profile = null;
+		if ( $orphan_sample && $healthy_sample && (int) $orphan_sample['profile_id'] === (int) $healthy_sample['profile_id'] ) {
+			$healthy_same_profile = $healthy_sample;
+		} elseif ( $orphan_sample ) {
+			$healthy_same_profile = (array) $wpdb->get_row( $wpdb->prepare( "SELECT pi.id, pi.profile_id, pi.message_pk, pi.status, pi.matched_keyword, pi.created_at,
+				( m.id IS NOT NULL ) AS message_exists, ( p.id IS NOT NULL ) AS profile_exists
+			 FROM {$items} pi INNER JOIN {$messages} m ON m.id = pi.message_pk INNER JOIN {$profiles} p ON p.id = pi.profile_id
+			 WHERE pi.message_pk > 0 AND pi.profile_id = %d ORDER BY pi.id ASC LIMIT 1", (int) $orphan_sample['profile_id'] ), ARRAY_A );
+		}
+
+		/* ---------- PART 6 — Historical Timeline ---------- */
+		$tl = (array) $wpdb->get_row( "SELECT
+			( SELECT MIN(created_at) FROM {$items} pi LEFT JOIN {$profiles} p ON p.id=pi.profile_id LEFT JOIN {$messages} m ON m.id=pi.message_pk WHERE{$ORPH} ) AS orphan_oldest,
+			( SELECT MAX(created_at) FROM {$items} pi LEFT JOIN {$profiles} p ON p.id=pi.profile_id LEFT JOIN {$messages} m ON m.id=pi.message_pk WHERE{$ORPH} ) AS orphan_newest,
+			( SELECT MIN(created_at) FROM {$items} pi INNER JOIN {$profiles} p ON p.id=pi.profile_id INNER JOIN {$messages} m ON m.id=pi.message_pk WHERE pi.message_pk > 0 ) AS valid_oldest,
+			( SELECT MAX(created_at) FROM {$items} pi INNER JOIN {$profiles} p ON p.id=pi.profile_id INNER JOIN {$messages} m ON m.id=pi.message_pk WHERE pi.message_pk > 0 ) AS valid_newest", ARRAY_A );
+		$tl_daily = (array) $wpdb->get_results( $wpdb->prepare( "SELECT DATE(pi.created_at) AS d,
+			SUM( p.id IS NULL OR m.id IS NULL ) AS orphans, SUM( p.id IS NOT NULL AND m.id IS NOT NULL ) AS valid
+		 FROM {$items} pi LEFT JOIN {$profiles} p ON p.id = pi.profile_id LEFT JOIN {$messages} m ON m.id = pi.message_pk
+		 WHERE pi.created_at >= %s
+		 GROUP BY DATE(pi.created_at) ORDER BY d", date( 'Y-m-d H:i:s', time() - 14 * DAY_IN_SECONDS ) ), ARRAY_A );
+
+		/* ---------- PART 7 — Recent Production (24h / today) ---------- */
+		$recent = (array) $wpdb->get_row( $wpdb->prepare( "SELECT
+			SUM( p.id IS NULL OR m.id IS NULL ) AS orphans_24h,
+			SUM( p.id IS NOT NULL AND m.id IS NOT NULL ) AS valid_24h,
+			SUM( ( p.id IS NULL OR m.id IS NULL ) AND pi.created_at >= %s ) AS orphans_today,
+			SUM( ( p.id IS NOT NULL AND m.id IS NOT NULL ) AND pi.created_at >= %s ) AS valid_today
+		 FROM {$items} pi LEFT JOIN {$profiles} p ON p.id = pi.profile_id LEFT JOIN {$messages} m ON m.id = pi.message_pk
+		 WHERE pi.created_at >= %s",
+			wp_date( 'Y-m-d 00:00:00' ), wp_date( 'Y-m-d 00:00:00' ), date( 'Y-m-d H:i:s', time() - DAY_IN_SECONDS ) ), ARRAY_A );
+
+		/* ---------- حکم اولیه A/B/C (بر اساس داده — تصمیم نهایی در گزارش) ---------- */
+		$o24  = (int) ( $recent['orphans_24h'] ?? 0 );
+		$otd  = (int) ( $recent['orphans_today'] ?? 0 );
+		$o_new = (string) ( $tl['orphan_newest'] ?? '' );
+		$lean = '';
+		if ( $o24 === 0 && $otd === 0 ) {
+			$lean = 'LEANS A — LEGACY ORPHAN STARVATION (هیچ orphan جدیدی در 24h/امروز نوشته نشده)';
+			if ( $o_new ) {
+				$lean .= ' — newest orphan: ' . $o_new;
+			}
+		} elseif ( $o24 > 0 || $otd > 0 ) {
+			$lean = 'LEANS B — ACTIVE ORPHAN PRODUCER (orphan در 24h اخیر نوشته شده) — ولی همهٔ پات‌های in-code حذف‌شده‌اند → نویسندهٔ خارجی/دستورالعمل دست‌نویس';
+		} else {
+			$lean = 'INCONCLUSIVE — توزیع ماهانه را ببین';
+		}
+
+		$orphan_total = (int) ( $pop['no_pk'] ?? 0 ) + (int) ( $pop['profile_missing'] ?? 0 ) + (int) ( $pop['dangling'] ?? 0 );
+		$audit_text = "ORPHAN ROOT-CAUSE AUDIT (DB evidence)\n"
+			. 'total_profile_items = ' . ( $pop['total'] ?? '?' ) . "\n"
+			. 'by_status = ' . wp_json_encode( $by_status ) . "\n"
+			. 'message_pk NULL/0 = ' . ( $pop['no_pk'] ?? 0 ) . " · dangling(pk>0, message gone) = " . ( $pop['dangling'] ?? 0 ) . ' · profile_missing = ' . ( $pop['profile_missing'] ?? 0 ) . "\n"
+			. 'valid(pk>0, message+profile exist) = ' . ( $pop['valid'] ?? 0 ) . "\n"
+			. 'ORPHAN_TOTAL = ' . $orphan_total . "\n"
+			. 'orphan_dist_by_profile = ' . wp_json_encode( $dist_profiles ) . "\n"
+			. 'orphan_dist_by_status = ' . wp_json_encode( $dist_status ) . "\n"
+			. 'orphan_dist_by_keyword = ' . wp_json_encode( $dist_kw ) . "\n"
+			. 'orphan_dist_by_month = ' . wp_json_encode( $dist_month ) . "\n"
+			. 'ORPHAN sample(first by id) = ' . wp_json_encode( $orphan_sample ?: null ) . "\n"
+			. 'orphan_first_ids = ' . wp_json_encode( $orphan_first_ids ) . "\n"
+			. 'HEALTHY sample(first by id) = ' . wp_json_encode( $healthy_sample ?: null ) . "\n"
+			. 'HEALTHY same-profile = ' . wp_json_encode( $healthy_same_profile ) . "\n"
+			. 'timeline = ' . wp_json_encode( $tl ) . "\n"
+			. 'daily_last_14d = ' . wp_json_encode( $tl_daily ) . "\n"
+			. 'recent = ' . wp_json_encode( $recent ) . "\n"
+			. 'lean = ' . $lean;
+
+		return array(
+			'schema'             => array( 'columns' => $cols, 'indexes' => $idx ),
+			'population'         => $pop,
+			'orphan_total'       => $orphan_total,
+			'by_status'          => $by_status,
+			'distribution'       => array( 'by_profile' => $dist_profiles, 'by_status' => $dist_status, 'by_keyword' => $dist_kw, 'by_month' => $dist_month ),
+			'samples'            => array( 'orphan' => $orphan_sample, 'orphan_first_ids' => $orphan_first_ids, 'healthy' => $healthy_sample, 'healthy_same_profile' => $healthy_same_profile ),
+			'timeline'           => array( 'extremes' => $tl, 'daily_14d' => $tl_daily ),
+			'recent'             => $recent,
+			'lean'               => $lean,
+			'static_facts'       => array(
+				'write_paths' => array(
+					'INSERT...SELECT (message_pk=m.id, status=available, ON DUPLICATE KEY UPDATE matched_keyword=matched_keyword)' => 'includes/golden-scan/class-gs-profile.php — STI_GS_Profile::run() — L152-156 (match_mode=all) / L164-169 (per-keyword) — caller: refresh_profiles() (watcher L338-341) و AJAX دستی — WHEN: هر refresh/scan که پیام تازه/مطابقت داشته باشد',
+					'UPDATE status=queued (فقط بعد از INSERT موفق Session)' => 'includes/golden-scan/class-gs-session.php — STI_GS_Session::create_from_profile_item() — L76 — caller: create_sessions() (watcher L422) و AJAX دستی (session-ajax L42)',
+					'DELETE by profile_id (حذف پروفایل)' => 'includes/golden-scan/class-gs-profile.php — STI_GS_Profile::delete() — L110 — caller: profile-ajax ajax_delete (L74-77)',
+					'DELETE by profile_id of channel (حذف کانال — items قبل از messages)' => 'includes/golden-scan/class-gs-channel.php — channel delete — L155-164 (items L158, messages L164) — caller: AJAX حذف کانال',
+				),
+				'no_other_writers' => 'REPLACE INTO: نیست · UPDATE/DELETE دیگری روی message_pk: نیست · هیچ پاتی که message_pk=0/NULL بنویسد در کد فعلی وجود ندارد (ستون NOT NULL؛ INSERTها فقط m.id را می‌نویسند).',
+				'scanner_path'     => 'scan_new_messages() (watcher L233-275) پیام نمی‌نویسد — فقط cron «sti_gs_scan_worker» زمان‌بندی می‌کند (L263-266)؛ نوشتن messages در scanner است (cron request جدا). refresh_profiles() (L305-345) فقط Profile::run را می‌زند (INSERT...SELECT روی پیام‌های موجود) — transaction ندارد، item را UPDATE نمی‌کند (جز matched_keyword)، نمی‌تواند message_pk صفر کند.',
+			),
 			'audit_text'         => $audit_text,
 		);
 	}
