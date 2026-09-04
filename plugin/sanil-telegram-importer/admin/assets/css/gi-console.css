@@ -916,3 +916,15 @@
 /* ═══ 10.11-UX · additions 4 ═══ */
 .gi-console tr.gi-row-fail td { background: var(--gi-danger-soft); }
 .gi-console tr.gi-row-warn td { background: var(--gi-warning-soft); }
+
+/* ═══ 10.11-UX · additions 5 (mobile polish) ═══ */
+@media (max-width: 600px) {
+	.gi-hero-actions { flex-direction: column; align-items: stretch; }
+	.gi-hero-actions .gi-btn { width: 100%; justify-content: center; }
+	.gi-hero-state { min-width: 100%; }
+	.gi-hero-metrics { margin-inline-start: 0; width: 100%; }
+	.gi-line-chip { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.gi-brand { margin-inline-end: 0; }
+	.gi-tab { padding: 9px 12px; }
+	.gi-h1 { font-size: var(--gi-fs3); }
+}
