@@ -331,7 +331,11 @@ class STI_GS_Publish_Queue {
 
 		$interval = self::interval_seconds();
 		$last     = (int) get_option( self::LAST_PUB_KEY, 0 );
-		$next     = max( time() + 60, $last + $interval );
+		/* ۱۰.۱۲ — اگر اپراتور از «برنامه‌ی انتشار» `scheduled_at` آینده
+		 * از‌پیش تعیین کرده باشد، صف حق ندارد آن را جلو بکشد:
+		 * ماکزیممِ سه‌تایی. اگر خالی/گذشته باشد → رفتار دقیقاً همان قبل. */
+		$existing = ! empty( $session['scheduled_at'] ) ? (int) strtotime( $session['scheduled_at'] ) : 0;
+		$next     = max( time() + 60, $last + $interval, $existing );
 
 		STI_GS_Session::update( $session_id, array(
 			'queue_status' => 'queued',

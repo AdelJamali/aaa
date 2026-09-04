@@ -43,6 +43,7 @@ class STI_GS_Test_Wizard {
 		add_action( 'wp_ajax_sti_gs_automation_save', array( $this, 'ajax_automation_save' ) );
 		add_action( 'wp_ajax_sti_gs_pipeline_start', array( $this, 'ajax_pipeline_start' ) );
 		add_action( 'wp_ajax_sti_gs_start_diagnostic', array( $this, 'ajax_start_diagnostic' ) );
+		add_action( 'wp_ajax_sti_gs_publish_queue_create', array( $this, 'ajax_publish_queue_create' ) );
 		/* ۱۰.۱۱ — Start/Stop + مانیتور زنده + Review زنده */
 		add_action( 'wp_ajax_sti_gs_line_start', array( $this, 'ajax_line_start' ) );
 		add_action( 'wp_ajax_sti_gs_line_stop', array( $this, 'ajax_line_stop' ) );
@@ -1016,6 +1017,126 @@ class STI_GS_Test_Wizard {
 			wp_send_json_error( array( 'message' => 'تعداد باید بین ۱ و ۱۰۰ باشد.' ), 400 );
 		}
 		wp_send_json_success( STI_GS_Channel_Watcher::diagnose_start( $count ) );
+	}
+
+	/**
+	 * ۱۰.۱۲ — AJAX «افزودن محصول به صف انتشار» (تب صف انتشار).
+	 *
+	 * ورودی:
+	 *   items[]          = [ { "wc_term_id": 12, "count": 50 }, … ]
+	 *   mode             = immediate | interval
+	 *   interval_minutes = 1..1440 (فقط interval)
+	 *   start_at         = اختیاری 'Y-m-d H:i' (فقط interval)
+	 *
+	 * انتخاب از هر دسته «N مورد اولویت‌دار» است (score DESC).
+	 * در حالت interval: فاصله‌ی صف تنظیم می‌شود و توالی scheduled_at
+	 * (start + i*interval) روی ردیف‌های تازه نوشته می‌شود؛ B2 در
+	 * enqueue() جلوی جلوکشیدن این زمان‌ها را می‌گیرد.
+	 */
+	public function ajax_publish_queue_create() {
+		$this->check_ajax();
+
+		$raw_items = ( isset( $_POST['items'] ) && is_array( $_POST['items'] ) ) ? (array) wp_unslash( $_POST['items'] ) : array();
+		if ( count( $raw_items ) < 1 || count( $raw_items ) > 20 ) {
+			wp_send_json_error( array( 'message' => 'بین ۱ تا ۲۰ دسته انتخاب کنید.' ), 400 );
+		}
+		$mode = ( (string) ( $_POST['mode'] ?? 'immediate' ) ) === 'interval' ? 'interval' : 'immediate';
+		$interval_minutes = max( 1, min( 1440, (int) ( $_POST['interval_minutes'] ?? 30 ) ) );
+		$start_at = trim( (string) ( $_POST['start_at'] ?? '' ) );
+
+		$items = array();
+		$total = 0;
+		foreach ( $raw_items as $it ) {
+			if ( ! is_array( $it ) ) {
+				continue;
+			}
+			$cat = (int) ( $it['wc_term_id'] ?? 0 );
+			$cnt = (int) ( $it['count'] ?? 0 );
+			if ( $cat < 1 || $cnt < 1 || $cnt > 1000 ) {
+				wp_send_json_error( array( 'message' => 'تعداد هر دسته باید بین ۱ و ۱۰۰۰ باشد.' ), 400 );
+			}
+			$items[] = array( 'wc_term_id' => $cat, 'count' => $cnt );
+			$total  += $cnt;
+		}
+		if ( ! $items ) {
+			wp_send_json_error( array( 'message' => 'حداقل یک دسته با تعداد معتبر انتخاب کنید.' ), 400 );
+		}
+		if ( $total > 1000 ) {
+			wp_send_json_error( array( 'message' => 'مجموع هر بار حداکثر ۱۰۰ محصول.' ), 400 );
+		}
+
+		$int_sec = 0;
+		$t0      = 0;
+		if ( 'interval' === $mode ) {
+			$int_sec = STI_GS_Publish_Queue::set_interval_minutes( $interval_minutes );
+			$t0      = ( '' !== $start_at && strtotime( $start_at ) ) ? strtotime( $start_at ) : ( time() + 60 );
+			if ( $t0 < time() + 60 ) {
+				$t0 = time() + 60;
+			}
+		}
+
+		$all_ids      = array();
+		$per_category = array();
+		foreach ( $items as $it ) {
+			$res = STI_GS_Channel_Watcher::start_pipeline( $it['count'], $it['wc_term_id'], true );
+			$per_category[] = array(
+				'wc_term_id' => $it['wc_term_id'],
+				'requested'  => $it['count'],
+				'created'    => (int) ( $res['created'] ?? 0 ),
+			);
+			foreach ( (array) ( $res['ids'] ?? array() ) as $sid ) {
+				$all_ids[] = (int) $sid;
+			}
+		}
+
+		/* توالی زمان‌بندی — فقط ردیف‌هایی که هنوز به حالت نهایی نرسیده‌اند. */
+		$offset           = (int) ( get_option( 'gmt_offset' ) * HOUR_IN_SECONDS );
+		$schedule_preview = array();
+		if ( 'interval' === $mode && $all_ids && $int_sec > 0 ) {
+			$i = 0;
+			foreach ( $all_ids as $sid ) {
+				$when = $t0 + ( $i * $int_sec );
+				$i++;
+				$sess = STI_GS_Session::get( $sid );
+				if ( ! $sess ) {
+					continue;
+				}
+				$st = (string) ( $sess['state'] ?? '' );
+				$qs = (string) ( $sess['queue_status'] ?? '' );
+				if ( in_array( $st, array( 'PUBLISHED', 'REVIEW', 'CANCELLED' ), true ) || 'published' === $qs ) {
+					continue;
+				}
+				$dt = gmdate( 'Y-m-d H:i:s', $when + $offset );
+				STI_GS_Session::update( $sid, array( 'scheduled_at' => $dt ) );
+				if ( count( $schedule_preview ) < 10 ) {
+					$schedule_preview[] = array(
+						'session_id'   => $sid,
+						'scheduled_at' => $dt,
+					);
+				}
+			}
+		}
+
+		$created_total = 0;
+		foreach ( $per_category as $pc ) {
+			$created_total += $pc['created'];
+		}
+
+		if ( class_exists( 'STI_Logger' ) ) {
+			STI_Logger::info( sprintf(
+				'گلدن اسکن صف انتشار: %d محصول به صف اضافه شد (حالت: %s).',
+				$created_total, $mode
+			) );
+		}
+
+		wp_send_json_success( array(
+			'created_total'    => $created_total,
+			'per_category'     => $per_category,
+			'mode'             => $mode,
+			'interval_seconds' => $int_sec,
+			'schedule_preview' => $schedule_preview,
+			'worker_on'        => class_exists( 'STI_GS_Auto_Worker' ) ? (bool) STI_GS_Auto_Worker::is_enabled() : null,
+		) );
 	}
 
 	/** ذخیره‌ی Automation Settings. */

@@ -355,8 +355,18 @@ class STI_GS_Channel_Watcher {
 	 *
 	 * `create_from_profile_item()` خودش idempotent است: اگر برای آن پیام
 	 * Session وجود داشته باشد همان را برمی‌گرداند.
+	 *
+	 * ۱۰.۱۲ — پارامترهای اختیاری برای «صف انتشار»:
+	 *   $wc_term_id     — اگر مشخص باشد، فقط محصولات همان دسته (term_id
+	 *                     ووکامرس؛ همان فضا که profile.default_category_id
+	 *                     نگه می‌دارد) انتخاب می‌شوند.
+	 *   $priority_order — اگر true باشد، ترتیب اولویت (score DESC) — یعنی
+	 *                     «N مورد اولویت‌دار»، نه «N مورد قدیمی‌تر».
+	 *   $created_ids    — آرایه‌ی اختیاری (by-reference) که آیدی هر
+	 *                     Session ساخته‌شده را دریافت می‌کند.
+	 * پیش‌فرض همه = رفتار دقیقاً همان قبل (مسیر cron و اکشن قدیمی دست‌نخورده).
 	 */
-	protected static function create_sessions( $room ) {
+	protected static function create_sessions( $room, $wc_term_id = null, $priority_order = false, &$created_ids = null ) {
 		global $wpdb;
 
 		/**
@@ -380,24 +390,41 @@ class STI_GS_Channel_Watcher {
 		$items    = STI_GS_DB::profile_items_table();
 		$profiles = STI_GS_DB::profiles_table();
 
+		/* ۱۰.۱۲ — فیلتر دسته (اختیاری) + ترتیب اولویت (اختیاری).
+		 * بدون پارامتر، کوئری کلمه‌به‌کلمه همان قبل است. */
+		$cat_filter = '';
+		$params     = array( 'available' );
+		if ( $wc_term_id ) {
+			$cat_filter = "\n\t\t\t   AND p.default_category_id = %d";
+			$params[]   = (int) $wc_term_id;
+		}
+		$order    = $priority_order ? 'ORDER BY pi.score DESC, pi.id ASC' : 'ORDER BY pi.id ASC';
+		$params[] = max( 1, (int) $room );
+
 		$rows = (array) $wpdb->get_results( $wpdb->prepare(
 			"SELECT pi.id
 			 FROM {$items} pi
 			 INNER JOIN {$profiles} p ON p.id = pi.profile_id
 			 WHERE pi.status = %s
 			   AND p.default_category_id IS NOT NULL
-			   AND p.default_category_id > 0
-			 ORDER BY pi.id ASC
+			   AND p.default_category_id > 0{$cat_filter}
+			 {$order}
 			 LIMIT %d",
-			'available', max( 1, (int) $room )
+			$params
 		), ARRAY_A );
 
 		$created = 0;
 		$rejects = array();
+		if ( ! is_array( $created_ids ) ) {
+			$created_ids = array();
+		}
 		foreach ( $rows as $row ) {
 			$res = STI_GS_Session::create_from_profile_item( (int) $row['id'] );
 			if ( ! is_wp_error( $res ) ) {
 				$created++;
+				if ( is_numeric( $res ) ) {
+					$created_ids[] = (int) $res;
+				}
 			} else {
 				/* ۱۰.۱۱-UX+ — ردشدنی‌ها دیگر بی‌صدا نمی‌مانند.
 				 * فقط لاگ است؛ رفتار و شمارش دقیقاً همان قبل. */
@@ -435,13 +462,16 @@ class STI_GS_Channel_Watcher {
 	 *   Scan ← Profile Match ← Session Create ← Bot ← Download ← Media
 	 *   ← Product ← Publish Queue ← Published (یا REVIEW با Fix مشخص)
 	 *
-	 * @param int $count
-	 * @return array{created:int, ready:int, worker_on:bool}
+	 * @param int              $count
+	 * @param int|null         $wc_term_id     ۱۰.۱۲ — فقط این دسته (term_id ووکامرس)
+	 * @param bool             $priority_order ۱۰.۱۲ — انتخاب اولویت‌دار (score DESC)
+	 * @return array{created:int, ids:int[], ready:int, worker_on:bool}
 	 */
-	public static function start_pipeline( $count ) {
+	public static function start_pipeline( $count, $wc_term_id = null, $priority_order = false ) {
 		$count = max( 1, min( 1000, (int) $count ) );
 
-		$created   = self::create_sessions( $count );
+		$ids     = array();
+		$created = self::create_sessions( $count, $wc_term_id, $priority_order, $ids );
 		$ready     = (int) ( self::stats()['ready'] ?? 0 );
 		$worker_on = STI_GS_Auto_Worker::is_enabled();
 		if ( ! $worker_on ) {
@@ -467,6 +497,7 @@ class STI_GS_Channel_Watcher {
 
 		return array(
 			'created'   => $created,
+			'ids'       => array_values( $ids ),
 			'ready'     => $ready,
 			'worker_on' => (bool) $worker_on,
 			'line'      => class_exists( 'STI_GS_Line' ) ? STI_GS_Line::state() : 'RUNNING',
