@@ -3,7 +3,7 @@
  * Plugin Name:       Golden Importer
  * Plugin URI:        https://goldenfile.ir
  * Description:       Telegram to WooCommerce importer with Agent Bridge for large files
- * Version:           10.12.6
+ * Version:           10.12.7
  * Author:            Golden File Team
  * Text Domain:       flavor-flavor
  * Domain Path:       /languages
@@ -14,7 +14,7 @@
 if ( ! defined( 'ABSPATH' ) ) {
 exit;
 }
-define( 'STI_VERSION', '10.12.6' );
+define( 'STI_VERSION', '10.12.7' );
 define( 'STI_FILE', __FILE__ );
 define( 'STI_PATH', plugin_dir_path( __FILE__ ) );
 define( 'STI_URL', plugin_dir_url( __FILE__ ) );

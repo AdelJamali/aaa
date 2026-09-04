@@ -1,3 +1,15 @@
+== 10.12.7 ==
+* Version: 10.12.7 — Installable ZIP: `golden-importer-10.12.7.zip` (repo root).
+* ⚙️ STARVATION FIX (Option A — Exclude Invalid at Selection), applied AFTER the 6-link proven root-cause chain:
+  `create_sessions()` selection now carries the messages join that the creation layer already requires
+  (`class-gs-channel-watcher.php` +2 lines): `INNER JOIN {$messages} m ON m.id = pi.message_pk`.
+  Selection = exactly the rows `create_from_profile_item()` can build a Session from — corrupt/orphan items
+  (message_pk = 0 or dangling) are passed over, NOT deleted; the 825 orphans remain intact as forensic data.
+  No batch/LIMIT change, no status writes, no data modification — fully reversible.
+* PHASE 3 runbook (owner, one host run): ① Worker → «🩺 اجرای تست Runtime» → PHASE 1 EVIDENCE (patched query + EXPLAIN + first-valid rank + orphans before + line forensics) · ② Test Wizard → run Watcher («اجرای Watcher») → real cycle: scan → profile → session creation with the patched query · ③ re-run the tool → created sessions + available→queued transitions · ④ Automation → line START (no state gate) → worker resumes (38+ eligible).
+* Includes the 10.12.6 verification tool (PHASE 1 + Preflight + Line Forensics) — now Preflight ≡ production query.
+* Tests: 10.12 workflow 17/17 + 10.11 regression + P0 governor — all PASS.
+
 == 10.12.6 ==
 * Version: 10.12.6 — Installable ZIP: `golden-importer-10.12.6.zip` (repo root).
 * 🎯 PHASE 1 ROOT-CAUSE VERIFICATION (read-only) inside the 🩺 chain-audit tool: exact current selection SQL (resolved table names) + real EXPLAIN from production · first valid candidate id + its rank + orphans before it · batch occupancy (first room/100/500: VALID vs NO_ITEM) · PATCH PREFLIGHT — the post-fix selection query (Option A: + INNER JOIN messages) executed read-only and its would_create/existing for the next batch reported BEFORE any code change · LINE-STATE FORENSICS (PHASE 4): raw `sti_gs_line_state` option (set vs unset default), state(), recent line-transition logs from wp_sti_logs, full writer inventory (set_state/transition/start/stop/finalize_pause/mark_*) with FILE/LINE/CALLER, current worker blocker (tick L225) and START gate analysis · copyable PHASE 1 EVIDENCE block.

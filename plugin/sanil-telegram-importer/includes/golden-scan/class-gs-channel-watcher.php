@@ -389,6 +389,7 @@ class STI_GS_Channel_Watcher {
 
 		$items    = STI_GS_DB::profile_items_table();
 		$profiles = STI_GS_DB::profiles_table();
+		$messages = STI_GS_DB::messages_table();
 
 		/* ۱۰.۱۲ — فیلتر دسته (اختیاری) + ترتیب اولویت (اختیاری).
 		 * بدون پارامتر، کوئری کلمه‌به‌کلمه همان قبل است. */
@@ -405,6 +406,7 @@ class STI_GS_Channel_Watcher {
 			"SELECT pi.id
 			 FROM {$items} pi
 			 INNER JOIN {$profiles} p ON p.id = pi.profile_id
+			 INNER JOIN {$messages} m ON m.id = pi.message_pk
 			 WHERE pi.status = %s
 			   AND p.default_category_id IS NOT NULL
 			   AND p.default_category_id > 0{$cat_filter}
