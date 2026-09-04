@@ -1,3 +1,17 @@
+== 10.12 ==
+* Version: 10.12 — Installable ZIP: `golden-importer-10.12.zip` (repo root). Workflow refactor per the approved architecture: the UI now follows the real system order — Channel → Scan → Analyze → Select Categories → Publish Queue → Schedule → Pipeline → Publish.
+* NEW 📦 صف انتشار tab (publish center, gs_view=publish-queue) with three sections: (1) category selection — real available counts per category (GROUP BY profile.default_category_id) + real prices (sti_categories.price via woo_term_id) + per-category publish counts; (2) add products to queue — live preview (category/available/selected/price/schedule 09:00·09:30·…) with immediate or scheduled mode (interval + optional start time); (3) publish schedule — read-only queue stats + next 10 scheduled rows.
+* Product-first language: the UI now says «محصول برای انتشار» — Session remains a backend-internal concept only (API/logs unchanged).
+* Partial publishing with priority: «دسته: موکاپ / موجود: 2200 / تعداد: 50» selects the 50 highest-score items (score DESC, id ASC) — `create_sessions($room, $wc_term_id=null, $priority_order=false, &$created_ids=null)`; defaults keep the legacy path word-for-word (cron + old action untouched).
+* Scheduled publishing (approved B2): `Publish_Queue::enqueue()` now respects an operator pre-set future `scheduled_at` via max(now+60, last+interval, existing) — the queue can no longer pull a scheduled row forward; empty/past values behave exactly as before.
+* Channel page restructured: Add Channel first → channel list (real inventory stats) → parallel scan → CTA card («N products ready — select categories & add to queue» + the read-only 🔍 diagnostic until the flow stabilizes). The Start card is gone from channels.
+* «شناخت کانال» → «تحلیل محتوا» (content analysis) + CTA to category selection. Pipeline page is monitoring-only: LINE START/STOP + new «نمای وضعیت» card with the seven approved buckets (waiting / downloading / building / in publish queue / published / review / error) from real states.
+* Workflow Stepper (four questions: where am I / next step / what gets created / how many remain) on the four main pages — read-only, no new AJAX.
+* Floating-window fix (viewport): the mobile table→card thead used inset:-9999px (forced zoom-out); replaced with a visually-hidden pattern + a 10.12 viewport guard block (max-width:100%, overflow-x:hidden, min-width:0 on flex children, max-width on pre/code/img/svg/tables). Test widths: 320/360/390/412/768 + desktop 1280/1440.
+* Button audit: every button on the main views has Action/AJAX/Nonce/Callback/Success/Error/Loading; gs-delete gained error handling.
+* Backend wiring only: +2 read/write AJAX actions (sti_gs_publish_queue_create, sti_gs_publish_queue_save_selection), +1 gs_view; the existing 58 actions, nonces, capabilities, deep links and schema are untouched. No DELETE anywhere; no destructive DB changes.
+* Tests: tests/test-10-12-workflow.py (17/17 static) + 10.11 regression 45/45 + P0 6/6 green; PHP/JS/CSS balance verified.
+
 == 10.11-UX ==
 * Version: 10.11.1 — Installable ZIP: `golden-importer-10.11.1-ux.zip` (repo root).
 * UX PILOT — Golden Scan is now a Premium SaaS Operations Console (Persian, RTL, mobile-first). Presentation layer only: zero changes to business logic, state machine, worker, governor, queues, Telegram, capability checks or `gs_view` deep links; all 58 existing AJAX actions/params/nonces verified identical. «ظاهر کاملاً جدید. موتور کاملاً محفوظ.»
