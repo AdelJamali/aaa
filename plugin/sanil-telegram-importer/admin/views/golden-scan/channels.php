@@ -46,6 +46,11 @@ unset( $gs_c );
 				<button id="gs-pipeline-start" class="gi-btn gi-btn--primary">🏭 Start</button>
 				<span id="gs-start-result" class="gi-inline-res" role="status" aria-live="polite"></span>
 			</div>
+			<div class="gi-flex" style="align-items:center;gap:var(--gi-s3);flex-wrap:wrap;margin-top:var(--gi-s3);">
+				<button id="gs-start-diagnose" class="gi-btn" title="فقط‌خواندنی — هیچ چیز ساخته یا تغییر نمی‌کند؛ دقیقاً همان مسیر Start را می‌ساید و می‌گوید هر آماده در کدام دروازه می‌ماند">🔍 اگر Start صفر ساخت — تشخیص</button>
+				<span id="gs-diag-result" class="gi-inline-res" role="status" aria-live="polite"></span>
+			</div>
+			<div id="gs-diag-panel" hidden style="margin-top:var(--gi-s4);"></div>
 		</div>
 
 		<!-- افزودن کانال -->
@@ -257,6 +262,110 @@ unset( $gs_c );
 							' — Worker ' + (d.worker_on ? 'روشن' : 'خاموش') + '.';
 						$r.html(msg + ' <a href="' + GS_AUTOMATION_URL + '" target="_blank">پیگیری در «خط تولید»</a>');
 						$r.addClass('ok');
+					} else {
+						$r.text('❌ ' + ((res.data && res.data.message) || 'خطا')).addClass('err');
+					}
+				}).fail(function () {
+					$r.text('❌ خطای ارتباط').addClass('err');
+				}).always(function () {
+					$btn.prop('disabled', false);
+				});
+			});
+
+			/* ۱۰.۱۱-UX+ — تشخیص Start (فقط‌خواندنی) */
+			function diagRow(label, val, note) {
+				return '<tr><td><strong>' + esc(label) + '</strong></td><td dir="ltr" style="font-weight:700;">' +
+					(val === null || val === undefined ? '—' : Number(val)) +
+					'</td><td>' + esc(note || '') + '</td></tr>';
+			}
+
+			function renderStartDiag(d) {
+				var v = d.verdict || {}, sk = v.skipped || {}, cls = d.classification || {}, db = d.db || {}, sel = d.selection || {}, cr = d.cron || {}, g = d.gates || {};
+				var expected = Number(v.created_expected) || 0;
+				var h = '';
+
+				/* ۱ — حکم */
+				h += '<div style="padding:var(--gi-s4);border-radius:14px;border:1px solid var(--gi-border);background:' +
+					(expected > 0 ? 'var(--gi-success-soft)' : 'var(--gi-danger-soft)') + ';">' +
+					'<strong>' + (expected > 0 ? '✅ حکم: ' : '⛔ حکم: ') + '</strong>' +
+					'از <b>' + (v.ready || 0) + '</b> آماده، <b>' + (v.eligible || 0) + '</b> واجدِ شرایط — در این اجرا تقریباً <b>' + expected +
+					'</b> Session ساخته <u>خواهد</u> شد (فقط پیش‌بینی؛ هنوز چیزی ساخته نشده).' +
+					(expected === 0 ? ' دروازه‌ی دقیقِ گیر در جدول زیر مشخص شده.' : '') + '</div>';
+
+				/* ۲ — جدول دروازه‌ها */
+				h += '<div class="gi-table-wrap" style="margin-top:var(--gi-s3);"><table class="gi-table gi-responsive"><thead><tr><th>دروازه</th><th>تعداد</th><th>توضیح</th></tr></thead><tbody>' +
+					diagRow('READY — available', v.ready, 'profile_items با وضعیت available (همان عدد صف آماده)') +
+					diagRow('ELIGIBLE — category معتبر', v.eligible, 'از فیلتر انتخاب create_sessions رد می‌شوند (default_category_id بزرگ‌تر از 0)') +
+					diagRow('رد: بدون category', sk.no_category, 'پروفایل بدون دسته‌بندی پیش‌فرض — هرگز نمی‌سازند') +
+					diagRow('رد: message_pk یتیم', sk.message_missing, 'پیام در جدول messages نیست → sti_gs_no_item') +
+					diagRow('رد: Session قبلی برای همان پیام', sk.existing_session, 'محافظت تکراری — بی‌ضرر، ولی چیزی تازه ساخته نمی‌شود') +
+					diagRow('قابلِ درج (کل)', cls.would_insert_total, 'JOIN سالم + Session قبلی ندارد') +
+					'</tbody></table></div>';
+
+				/* ۳ — dry-run ۲۰ مورد اول */
+				var cands = d.candidates || [];
+				if (cands.length) {
+					h += '<p class="gi-card-sub" style="margin-top:var(--gi-s3);">Dry-runِ <b>' + cands.length + '</b> مورد اول — همان ترتیبی که Start امتحان می‌کند:</p>';
+					h += '<div class="gi-table-wrap"><table class="gi-table gi-responsive"><thead><tr><th>profile_item</th><th>profile_id</th><th>message_pk</th><th>channel</th><th>file_code</th><th>JOIN</th><th>Session قبلی</th><th>skip_reason</th></tr></thead><tbody>';
+					cands.forEach(function (c) {
+						h += '<tr>' +
+							'<td dir="ltr">' + (c.profile_item_id == null ? '—' : c.profile_item_id) + '</td>' +
+							'<td dir="ltr">' + (c.profile_id == null ? '—' : c.profile_id) + '</td>' +
+							'<td dir="ltr">' + (c.message_pk == null ? '—' : c.message_pk) + '</td>' +
+							'<td dir="ltr">' + (c.channel_id == null ? '—' : c.channel_id) + '</td>' +
+							'<td dir="ltr"><code style="font-size:var(--gi-fs0);">' + esc(c.file_code || '—') + '</code></td>' +
+							'<td>' + (c.join_ok ? '<span class="gi-badge gi-badge--success">✔ سالم</span>' : '<span class="gi-badge gi-badge--danger">✘ شکست</span>') + '</td>' +
+							'<td dir="ltr">' + (c.existing_session != null ? '#' + c.existing_session : '—') + '</td>' +
+							'<td>' + (c.skip_reason ? '<code dir="ltr" style="font-size:var(--gi-fs0);">' + esc(c.skip_reason) + '</code>' : '→ قرار است درج شود') + '</td>' +
+							'</tr>';
+					});
+					h += '</tbody></table></div>';
+				}
+
+				/* ۴ — SQL انتخاب (دقیق) */
+				h += '<p class="gi-card-sub" style="margin-top:var(--gi-s3);">همان کوئری انتخابِ create_sessions — سطرهای برگشتی برای این اجرا: <b>' + (sel.rows_returned || 0) + '</b>:</p>';
+				h += '<pre dir="ltr" style="text-align:left;padding:var(--gi-s3);border-radius:10px;border:1px solid var(--gi-border);background:var(--gi-surface-sunken);font-size:var(--gi-fs0);overflow-x:auto;white-space:pre-wrap;word-break:break-all;">' + esc(sel.sql || '—') + '</pre>';
+
+				/* ۵ — جدول مقصد و ساختار */
+				h += '<p class="gi-card-sub" style="margin-top:var(--gi-s3);">جدولِ مقصدِ درج: <code dir="ltr">' + esc(db.target_table || '—') + '</code> (' + (db.target_rows == null ? '—' : db.target_rows) +
+					' سطر) · aliasِ sessions_table: ' + (db.alias_is_same ? '<span class="gi-badge gi-badge--success">همان جدول</span>' : '<span class="gi-badge gi-badge--warning">' + esc(db.alias_sessions_tbl) + '</span>') +
+					' · جدول‌های فیزیکی: ' + (db.physical && db.physical.sti_gs_pipeline_items ? 'pipeline_items ✔' : 'pipeline_items ✘') + ' / ' + (db.physical && db.physical.sti_gs_sessions ? 'sessions ✔' : 'sessions ✘') +
+					' · جدول messages: ' + (db.messages_rows == null ? '—' : db.messages_rows) + ' سطر' +
+					' · ستون‌های درج: ' + ((db.missing_columns && db.missing_columns.length) ? '<span class="gi-badge gi-badge--danger">گمشده: ' + db.missing_columns.map(esc).join(', ') + '</span>' : '<span class="gi-badge gi-badge--success">همه ✔</span>') +
+					' · UNIQUE message_pk: ' + (db.unique_message_pk ? '<span class="gi-badge gi-badge--success">✔</span>' : '<span class="gi-badge gi-badge--danger">✘</span>') +
+					(db.halted ? ' · <span class="gi-badge gi-badge--danger">HALT فعال: ' + esc(db.halt_reason) + '</span>' : '') +
+					'</p>';
+
+				/* ۶ — Cron */
+				if (cr.sti_gs_scan_worker === undefined) {
+					h += '<p class="gi-card-sub" style="margin-top:var(--gi-s3);">Cron: <code dir="ltr">wp_next_scheduled</code> — scan_worker: —' + (cr.note ? ' · ' + esc(cr.note) : '') + '</p>';
+				} else {
+					var sw = cr.sti_gs_scan_worker;
+					h += '<p class="gi-card-sub" style="margin-top:var(--gi-s3);">Cron — scan_worker: ' + (sw ? '<span class="gi-badge gi-badge--success">جدول‌بندی‌شده (' + esc(sw.in) + ' دیگر)</span>' : '<span class="gi-badge gi-badge--info">جدول‌بندی‌نشده</span>') +
+						' · auto_worker: ' + (cr.sti_gs_auto_worker ? 'جدول‌بندی‌شده' : 'جدول‌بندی‌نشده') +
+						' · ' + esc(cr.note || '') + '</p>';
+				}
+
+				/* ۷ — وضعیت خط تولید */
+				var workerTxt = g.worker_enabled === true
+					? '<span class="gi-badge gi-badge--success">روشن</span>'
+					: (g.worker_enabled === false ? '<span class="gi-badge gi-badge--warning">خاموش</span>' : '<span class="gi-badge gi-badge--info">نامشخص</span>');
+				h += '<p class="gi-card-sub" style="margin-top:var(--gi-s3);">حالا: Auto-Worker ' + workerTxt + ' · وضعیت خط: ' + esc(g.line_state || '—') + '</p>';
+
+				var $p = $('#gs-diag-panel');
+				$p.html(h).prop('hidden', false);
+			}
+
+			$('#gs-start-diagnose').on('click', function () {
+				var $btn = $(this), $r = $('#gs-diag-result');
+				var count = parseInt($('#gs-start-count').val(), 10) || 0;
+				if (count < 1 || count > 100) { $r.text('تعداد باید بین ۱ و ۱۰۰ باشد.'); return; }
+				$btn.prop('disabled', true);
+				$r.text('در حال ساید کردن مسیر Start (فقط‌خواندنی؛ معمولاً چند ثانیه)...');
+				post('sti_gs_start_diagnostic', { count: count }).done(function (res) {
+					if (res && res.success) {
+						renderStartDiag(res.data);
+						$r.text('✅ تشخیص تمام شد — گزارش بالای همین کارت.').addClass('ok');
 					} else {
 						$r.text('❌ ' + ((res.data && res.data.message) || 'خطا')).addClass('err');
 					}

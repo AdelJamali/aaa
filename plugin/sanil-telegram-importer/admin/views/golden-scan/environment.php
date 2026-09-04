@@ -115,11 +115,22 @@ function gs_env_row( $label, $value, $status = 'pass' ) {
 						} else {
 							gs_env_row( 'رویدادهای کران', 'هیچ رویدادی در صف نیست', 'warn' );
 						}
+					/* ۱۰.۱۱-UX+ — sti_gs_scan_worker یک رویداد one-shot است که فقط
+					 * هنگامِ فعال بودنِ یک اسکن زمان‌بندی می‌شود؛ در حالت عادی
+						 * (بدون اسکن) خالی بودن آن طبیعی است و «گم‌شده» نیست. */
+						$recurring = array( 'sti_gs_auto_worker', 'sti_gs_watchdog', 'sti_gs_channel_watcher', 'sti_gs_publish_tick' );
 						$missing = array();
-						foreach ( $gs_hooks as $h ) {
+						foreach ( $recurring as $h ) {
 							if ( empty( $next_events[ $h ] ) ) { $missing[] = $h; }
 						}
-						gs_env_row( 'کران‌های گلدن اسکن', empty( $missing ) ? 'همه در صف: ' . count( $gs_hooks ) : 'گم‌شده: ' . implode( ', ', $missing ), empty( $missing ) ? 'pass' : 'fail' );
+						gs_env_row( 'کران‌های گلدن اسکن (دوره‌ای)', empty( $missing ) ? 'همه در صف: ' . count( $recurring ) : 'گم‌شده: ' . implode( ', ', $missing ), empty( $missing ) ? 'pass' : 'fail' );
+						gs_env_row(
+							'sti_gs_scan_worker (one-shot)',
+							empty( $next_events['sti_gs_scan_worker'] )
+								? 'جدول‌بندی‌نشده — طبیعی است (فقط هنگامِ اسکن فعال می‌شود؛ با Start Pipeline خودکار زمان‌بندی می‌شود)'
+								: 'روشن — یک اسکن فعال/در راه است',
+							'pass'
+						);
 						gs_env_row( 'کل رویدادهای کران', number_format_i18n( $all_events ) . ' مورد در صف', 'pass' );
 						?>
 					</tbody>

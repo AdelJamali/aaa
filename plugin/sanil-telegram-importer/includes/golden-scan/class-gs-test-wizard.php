@@ -42,6 +42,7 @@ class STI_GS_Test_Wizard {
 		add_action( 'wp_ajax_sti_gs_review_fix', array( $this, 'ajax_review_fix' ) );
 		add_action( 'wp_ajax_sti_gs_automation_save', array( $this, 'ajax_automation_save' ) );
 		add_action( 'wp_ajax_sti_gs_pipeline_start', array( $this, 'ajax_pipeline_start' ) );
+		add_action( 'wp_ajax_sti_gs_start_diagnostic', array( $this, 'ajax_start_diagnostic' ) );
 		/* ۱۰.۱۱ — Start/Stop + مانیتور زنده + Review زنده */
 		add_action( 'wp_ajax_sti_gs_line_start', array( $this, 'ajax_line_start' ) );
 		add_action( 'wp_ajax_sti_gs_line_stop', array( $this, 'ajax_line_stop' ) );
@@ -999,6 +1000,22 @@ class STI_GS_Test_Wizard {
 		}
 		$res = STI_GS_Channel_Watcher::start_pipeline( $count );
 		wp_send_json_success( $res );
+	}
+
+	/**
+	 * ۱۰.۱۱-UX+ — AJAX تشخیص Start Pipeline (فقط‌خواندنی).
+	 *
+	 * دقیقاً همان مسیری که دکمه‌ی Start می‌رود را می‌ساید و می‌گوید
+	 * Candidateهای آماده در کدام دروازه (category / message / duplicate)
+	 * می‌مانند. هیچ Session/Candidate/Cron را تغییر نمی‌دهد.
+	 */
+	public function ajax_start_diagnostic() {
+		$this->check_ajax();
+		$count = (int) ( $_POST['count'] ?? 0 );
+		if ( $count < 1 || $count > 100 ) {
+			wp_send_json_error( array( 'message' => 'تعداد باید بین ۱ و ۱۰۰ باشد.' ), 400 );
+		}
+		wp_send_json_success( STI_GS_Channel_Watcher::diagnose_start( $count ) );
 	}
 
 	/** ذخیره‌ی Automation Settings. */

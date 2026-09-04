@@ -393,15 +393,33 @@ class STI_GS_Channel_Watcher {
 		), ARRAY_A );
 
 		$created = 0;
+		$rejects = array();
 		foreach ( $rows as $row ) {
 			$res = STI_GS_Session::create_from_profile_item( (int) $row['id'] );
 			if ( ! is_wp_error( $res ) ) {
 				$created++;
+			} else {
+				/* ۱۰.۱۱-UX+ — ردشدنی‌ها دیگر بی‌صدا نمی‌مانند.
+				 * فقط لاگ است؛ رفتار و شمارش دقیقاً همان قبل. */
+				$rejects[] = array( (int) $row['id'], $res->get_error_code() );
 			}
 		}
 
 		if ( $created > 0 ) {
 			STI_Logger::info( 'گلدن اسکن Watcher: ' . $created . ' Session تازه ساخته شد.' );
+		}
+		if ( $rejects && class_exists( 'STI_Logger' ) ) {
+			$by_code = array();
+			foreach ( $rejects as $rj ) {
+				$by_code[ $rj[1] ] = ( $by_code[ $rj[1] ] ?? 0 ) + 1;
+			}
+			STI_Logger::warning( 'گلدن اسکن create_sessions: ' . count( $rejects ) . ' ردیف رد شد — ' . wp_json_encode( $by_code ) );
+			foreach ( array_slice( $rejects, 0, 20 ) as $rj ) {
+				STI_Logger::warning( 'گلدن اسکن create_sessions: profile_item #' . $rj[0] . ' → ' . $rj[1] );
+			}
+			if ( count( $rejects ) > 20 ) {
+				STI_Logger::warning( 'گلدن اسکن create_sessions: و ' . ( count( $rejects ) - 20 ) . ' ردیف دیگر (همان دسته).' );
+			}
 		}
 		return $created;
 	}
@@ -453,6 +471,195 @@ class STI_GS_Channel_Watcher {
 			'worker_on' => (bool) $worker_on,
 			'line'      => class_exists( 'STI_GS_Line' ) ? STI_GS_Line::state() : 'RUNNING',
 		);
+	}
+
+	/**
+	 * ۱۰.۱۱-UX+ — تشخیص «Start Pipeline ساخت ۰ Session» (فقط‌خواندنی).
+	 *
+	 * هیچ چیزی را تغییر نمی‌دهد: نه Candidate، نه Session، نه Cron.
+	 * دقیقاً همان gateها را که start_pipeline() می‌گذرد، به‌تدریج می‌ساید
+	 * و تعداد + دلیل هر ردشدنی را گزارش می‌کند:
+	 *
+	 *   READY      = profile_items با status=available
+	 *   ELIGIBLE   = READY × (profile.default_category_id > 0)  [فیلتر انتخاب]
+	 *   JOIN-OK    = ELIGIBLE × (message_pk در جدول messages هست)
+	 *   DUPLICATED = JOIN-OK × (Sessionی برای همان message_pk وجود دارد)
+	 *   CREATED    = min(requested, JOIN-OK − DUPLICATED)  [تخمین]
+	 *
+	 * @param int $count همان عددی که کاربر در Start وارد می‌کند
+	 * @return array
+	 */
+	public static function diagnose_start( $count ) {
+		$count = max( 1, min( 1000, (int) $count ) );
+		global $wpdb;
+
+		$items    = STI_GS_DB::profile_items_table();
+		$profiles = STI_GS_DB::profiles_table();
+		$messages = STI_GS_DB::messages_table();
+		$pipeline = STI_GS_DB::pipeline_items_table();
+
+		$diag = array();
+
+		/* ── G0: وضعیت دیتابیس / جدول هدف ─────────────────────────── */
+		$old_name = $wpdb->prefix . 'sti_gs_sessions';
+		$new_name = $wpdb->prefix . 'sti_gs_pipeline_items';
+		$expected_cols = array( 'profile_item_id', 'message_pk', 'channel_id', 'file_code', 'category_id', 'state', 'chain_mode', 'created_at', 'updated_at' );
+		$actual_cols   = (array) $wpdb->get_col( "DESCRIBE {$pipeline}" );
+		$indexes       = (array) $wpdb->get_results( "SHOW INDEX FROM {$pipeline}", ARRAY_A );
+		$uniq_msg      = false;
+		foreach ( $indexes as $idx ) {
+			if ( (int) ( $idx['Non_unique'] ?? 1 ) === 0 && ( $idx['Column_name'] ?? '' ) === 'message_pk' ) {
+				$uniq_msg = true;
+			}
+		}
+		$diag['db'] = array(
+			'halted'            => (bool) STI_GS_DB::is_halted(),
+			'halt_reason'       => (string) STI_GS_DB::halt_reason(),
+			'migration'         => STI_GS_DB::migration_status(),
+			'target_table'      => $pipeline,
+			'alias_sessions_tbl'=> STI_GS_DB::sessions_table(),
+			'alias_is_same'     => ( STI_GS_DB::sessions_table() === $pipeline ),
+			'physical'          => array(
+				'sti_gs_pipeline_items' => (bool) $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $new_name ) ),
+				'sti_gs_sessions'       => (bool) $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $old_name ) ),
+			),
+			'target_rows'       => (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$pipeline}" ),
+			'missing_columns'   => array_values( array_diff( $expected_cols, $actual_cols ) ),
+			'unique_message_pk' => $uniq_msg,
+			'messages_rows'     => (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$messages}" ),
+		);
+
+		/* ── G1: شمارش‌های READY ──────────────────────────────────── */
+		$ready_total  = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$items} WHERE status = %s", 'available' ) );
+		$ready_cat    = (int) $wpdb->get_var( $wpdb->prepare(
+			"SELECT COUNT(*) FROM {$items} pi INNER JOIN {$profiles} p ON p.id = pi.profile_id
+			 WHERE pi.status = %s AND p.default_category_id > 0", 'available' ) );
+		$ready_nocat  = (int) $wpdb->get_var( $wpdb->prepare(
+			"SELECT COUNT(*) FROM {$items} pi INNER JOIN {$profiles} p ON p.id = pi.profile_id
+			 WHERE pi.status = %s AND ( p.default_category_id IS NULL OR p.default_category_id = 0 )", 'available' ) );
+		$diag['gates'] = array(
+			'ready_total'         => $ready_total,
+			'ready_with_category' => $ready_cat,
+			'ready_no_category'   => $ready_nocat,
+			'worker_enabled'      => class_exists( 'STI_GS_Auto_Worker' ) ? (bool) STI_GS_Auto_Worker::is_enabled() : null,
+			'line_state'          => class_exists( 'STI_GS_Line' ) ? STI_GS_Line::state() : 'n/a',
+		);
+
+		/* ── G2: همان کوئری انتخابِ create_sessions (دقیقاً همان) ── */
+		$sql    = "SELECT pi.id
+			FROM {$items} pi
+			INNER JOIN {$profiles} p ON p.id = pi.profile_id
+			WHERE pi.status = %s
+			  AND p.default_category_id IS NOT NULL
+			  AND p.default_category_id > 0
+			ORDER BY pi.id ASC
+			LIMIT %d";
+		$params = array( 'available', max( 1, $count ) );
+		$prepared = $wpdb->prepare( $sql, $params );
+		$rows = (array) $wpdb->get_results( $prepared, ARRAY_A );
+		$diag['selection'] = array(
+			'sql'           => $prepared,
+			'rows_returned' => count( $rows ),
+		);
+
+		/* ── G3: dry-run هر کاندیدا (۲۰ مورد اول) ─────────────────── */
+		$candidates = array();
+		foreach ( array_slice( $rows, 0, 20 ) as $row ) {
+			$pid = (int) $row['id'];
+			$r   = $wpdb->get_row( $wpdb->prepare(
+				"SELECT pi.id AS profile_item_id, pi.profile_id, pi.message_pk,
+				        m.channel_id, m.file_code, p.default_category_id
+				 FROM {$items} pi
+				 INNER JOIN {$messages} m ON m.id = pi.message_pk
+				 INNER JOIN {$profiles} p ON p.id = pi.profile_id
+				 WHERE pi.id = %d", $pid ), ARRAY_A );
+			$c = array(
+				'profile_item_id'    => $pid,
+				'profile_id'         => null,
+				'message_pk'         => null,
+				'channel_id'         => null,
+				'file_code'          => null,
+				'join_ok'            => (bool) $r,
+				'existing_session'   => null,
+				'skip_reason'        => null,
+			);
+			if ( $r ) {
+				$c['profile_id'] = (int) $r['profile_id'];
+				$c['message_pk'] = (int) $r['message_pk'];
+				$c['channel_id'] = (int) $r['channel_id'];
+				$c['file_code']  = (string) $r['file_code'];
+				$existing        = STI_GS_Session::get_by_message_pk( (int) $r['message_pk'] );
+				if ( $existing ) {
+					$c['existing_session'] = (int) $existing['id'];
+					$c['skip_reason']      = 'existing_session';
+				}
+			} else {
+				/* خودِ item هست (کوئری انتخاب فقط profiles را JOIN می‌کند)؛
+				 * پس شکست JOIN یعنی message_pk یتیم است. */
+				$bare = $wpdb->get_row( $wpdb->prepare( "SELECT profile_id, message_pk FROM {$items} WHERE id = %d", $pid ), ARRAY_A );
+				if ( $bare ) {
+					$c['profile_id'] = (int) $bare['profile_id'];
+					$c['message_pk'] = (int) $bare['message_pk'];
+				}
+				$c['skip_reason'] = 'message_missing';
+			}
+			$candidates[] = $c;
+		}
+		$diag['candidates'] = $candidates;
+
+		/* ── G4: طبقه‌بندی کل ELIGIBLE (نه فقط نمونه) ────────────── */
+		$elig_join_ok = (int) $wpdb->get_var( $wpdb->prepare(
+			"SELECT COUNT(*) FROM {$items} pi
+			 INNER JOIN {$messages} m ON m.id = pi.message_pk
+			 INNER JOIN {$profiles} p ON p.id = pi.profile_id
+			 WHERE pi.status = %s AND p.default_category_id > 0", 'available' ) );
+		$elig_dupe = (int) $wpdb->get_var( $wpdb->prepare(
+			"SELECT COUNT(*) FROM {$items} pi
+			 INNER JOIN {$messages} m ON m.id = pi.message_pk
+			 INNER JOIN {$profiles} p ON p.id = pi.profile_id
+			 INNER JOIN {$pipeline} s ON s.message_pk = m.id
+			 WHERE pi.status = %s AND p.default_category_id > 0", 'available' ) );
+		$would_insert = max( 0, $elig_join_ok - $elig_dupe );
+		$diag['classification'] = array(
+			'eligible_join_ok'   => $elig_join_ok,
+			'eligible_duplicated'=> $elig_dupe,
+			'would_insert_total' => $would_insert,
+		);
+
+		/* ── G5: Cron ─────────────────────────────────────────────── */
+		$cron = array();
+		foreach ( array( 'sti_gs_scan_worker', 'sti_gs_auto_worker', 'sti_gs_channel_watcher', 'sti_gs_publish_tick', 'sti_gs_watchdog' ) as $hook ) {
+			$ts = wp_next_scheduled( $hook );
+			$cron[ $hook ] = $ts
+				? array( 'next' => (int) $ts, 'in' => human_time_diff( time(), (int) $ts ) )
+				: null;
+		}
+		$cron['note'] = 'sti_gs_scan_worker یک رویداد one-shot (single) است که فقط هنگام شروع یک اسکن زمان‌بندی می‌شود؛ خالی بودن آن در حالت عادی (بدون اسکن فعال) طبیعی است.';
+		$diag['cron'] = $cron;
+
+		/* ── G6: حکم نهایی ───────────────────────────────────────── */
+		$diag['verdict'] = array(
+			'ready'      => $ready_total,
+			'eligible'   => $ready_cat,
+			'skipped'    => array(
+				'no_category'    => $ready_nocat,
+				'message_missing'=> max( 0, $ready_cat - $elig_join_ok ),
+				'existing_session' => $elig_dupe,
+			),
+			'created_expected' => min( $count, $would_insert ),
+		);
+
+		if ( class_exists( 'STI_Logger' ) ) {
+			STI_Logger::warning( sprintf(
+				'GS Start-Diagnostic: requested=%d ready=%d eligible=%d join_ok=%d duplicated=%d would_insert=%d target=%s rows=%d missing_cols=%s halted=%s',
+				$count, $ready_total, $ready_cat, $elig_join_ok, $elig_dupe, $would_insert,
+				$pipeline, $diag['db']['target_rows'],
+				$diag['db']['missing_columns'] ? implode( ',', $diag['db']['missing_columns'] ) : 'none',
+				$diag['db']['halted'] ? 'YES(' . $diag['db']['halt_reason'] . ')' : 'no'
+			) );
+		}
+
+		return $diag;
 	}
 
 	/* ============================== گزارش ============================== */
