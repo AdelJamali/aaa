@@ -1,3 +1,9 @@
+== 10.12.2 ==
+* Version: 10.12.2 — Installable ZIP: `golden-importer-10.12.2.zip` (repo root).
+* TEMPORARY READ-ONLY DIAGNOSTIC (Worker page): «🧪 Watcher Runtime Diagnostic» box on the Queue / پردازش خودکار page traces the Watcher button chain at runtime — HTML ← Script ← bind() ← click ← handler ← AJAX(fetch) ← PHP — and prints the FIRST BROKEN POINT / EVIDENCE / FILE / LINE / NEXT ACTION directly in the UI (no console needed). Pure observation: pass-through wrappers on `addEventListener`/`fetch` + a capture-phase click probe; no AJAX action, no DB, no state change, no modification of any existing handler or business logic.
+* Scope: only `admin/views/golden-scan/worker.php` (view + inline diagnostic script) — Session creation, Watcher logic, Worker, Queue, Database, AJAX handlers and all business logic are byte-identical to 10.12.1. REMOVE AFTER AUDIT (marked `STI-TMP-DIAG`).
+* Tests: 10.12 workflow 17/17 + 10.11 regression + P0 governor — all PASS.
+
 == 10.12.1 ==
 * Version: 10.12.1 — Installable ZIP: `golden-importer-10.12.1.zip` (repo root).
 * BUGFIX (START/STOP freeze — root cause: cache inconsistency, accepted): `STI_GS_Line::set_state()` / `transition()` write the line state with raw SQL on `wp_options` without object-cache synchronization. On hosts with a persistent object cache (Redis/Memcached), every `get_option()` reader — the UI, AJAX responses, the auto-worker tick and the diagnostics — kept reading the stale state indefinitely: START «did nothing» (green success response), state frozen at STOPPED, Active=0 with a non-empty Queue. Fix: `wp_cache_set( self::OPTION, $to, 'options' )` after each successful raw write — the same contract `update_option()` maintains. Scope: only `class-gs-line.php`, only those two functions; no refactor, no UI, no cron/worker changes.

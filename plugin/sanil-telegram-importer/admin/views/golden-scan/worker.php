@@ -12,6 +12,214 @@ $today = $stats['today'] ?? array();
 		<p class="gi-h1-sub">وقتی روشن باشد، Sessionها بدون هیچ کلیکی خودشان جلو می‌روند. هر <span class="gi-nums"><?php echo (int) round( $stats['interval'] / 60 ); ?></span> دقیقه، <span class="gi-nums"><?php echo (int) $stats['batch']; ?></span> مورد، هرکدام یک مرحله.</p>
 	</div>
 
+	<!-- ===== STI-TMP-DIAG v1 — READ-ONLY — Watcher Runtime Diagnostic — REMOVE AFTER AUDIT ===== -->
+	<!-- Pure observation: pass-through wrappers on addEventListener/fetch + capture-phase click probe.
+	     No AJAX action, no DB, no state change, no modification of any existing handler/logic. -->
+	<div id="gs-wt-diag" style="margin:0 0 16px;border:2px solid #f59e0b;border-radius:12px;background:#fffbeb;direction:rtl;">
+		<details open>
+			<summary style="cursor:pointer;font-weight:700;padding:10px 14px;font-size:14px;">🧪 Watcher Runtime Diagnostic <span style="font-weight:400;font-size:11px;opacity:.7;">(موقت · فقط‌خواندنی · بدون هیچ اثر بر سیستم)</span></summary>
+			<div style="padding:0 14px 12px;font-size:12px;line-height:1.9;">
+				<p style="margin:2px 0 8px;opacity:.85;">زنجیره تحت تست: HTML ← Script ← bind() ← click ← handler ← AJAX(fetch) ← PHP ← Watcher. برای تست پویا <strong>دکمهٔ واقعی</strong> (▶/⏸ شروع/توقف پایش یا 🔄 اجرای فوری یک چرخه) را کلیک کن؛ ردیای زنده و «اولین نقطهٔ شکست» همین‌جا محاسبه می‌شود. باز کردن کنسول لازم نیست.</p>
+				<div id="gs-wt-diag-static"></div>
+				<div style="margin-top:8px;font-weight:700;">ردیای زنده (REG / CLICK / FETCH / RESP):</div>
+				<div id="gs-wt-diag-trace" style="max-height:220px;overflow:auto;border:1px solid #e7cf8f;border-radius:8px;background:#fff;padding:6px 8px;margin-top:4px;"></div>
+				<div id="gs-wt-diag-verdict" dir="ltr" style="margin-top:8px;"></div>
+				<button type="button" id="gs-wt-diag-reset" style="margin-top:8px;font-size:11px;padding:4px 12px;border:1px solid #d1a53a;background:#fff;border-radius:8px;cursor:pointer;">↺ پاک‌کردن ردیای پویا</button>
+			</div>
+		</details>
+	</div>
+	<script>
+	/* STI-TMP-DIAG v1 — read-only runtime audit of the Watcher button chain. REMOVE AFTER AUDIT. */
+	(function(){
+	'use strict';
+	try{
+		var S=document.getElementById('gs-wt-diag-static'),
+		    T=document.getElementById('gs-wt-diag-trace'),
+		    V=document.getElementById('gs-wt-diag-verdict');
+		if(!S||!T||!V){return;}
+		/* line references of the audited chain — worker.php: 517/520 buttons, 747 <script>, 749-751 post(), 755 bind helper, 758/763/771/776 binds;
+		   class-sti-admin.php: 100 enqueue / 101 localize; class-gs-test-wizard.php: 76 toggle handler / 86 run handler */
+		var LN={toggleBtn:517,runBtn:520,scriptTag:747,postFn:749,postNonce:750,fetchLine:751,bindHelper:755,bindWt:758,bindWtRun:763,bindWdRun:771,bindWdRevive:776,adminEnqueue:100,adminLocalize:101,phpToggle:76,phpRun:86};
+		var elT=document.getElementById('gs-wt-toggle'),
+		    elR=document.getElementById('gs-wt-run'),
+		    events=[],selfProbe=false,settled=false,lastClickSti=null;
+		function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+		function ts(){var d=new Date(),p=function(n,l){n=String(n);while(n.length<(l||2)){n='0'+n;}return n;};return p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds())+'.'+p(d.getMilliseconds(),3);}
+		function truncate(s,n){s=String(s);return s.length>n?s.slice(0,n)+' ...(+ '+(s.length-n)+' chars)':s;}
+		function stiSnap(){var t=typeof window.STI,n='(n/a)',u='(n/a)';if(t==='object'&&window.STI){n=window.STI.nonce===undefined?'(undefined)':String(window.STI.nonce);u=window.STI.ajaxUrl===undefined?'(undefined)':String(window.STI.ajaxUrl);}return{t:t,n:n,u:u};}
+		function rec(tag,a,b,meta){events.push({t:ts(),tag:tag,a:a,b:b||'',meta:meta||null});renderAll();}
+		function find(tag,id){for(var i=0;i<events.length;i++){var e=events[i];if(e.tag===tag&&(!id||e.a===id)){return e;}}return null;}
+		function findMany(tag){var r=[];for(var i=0;i<events.length;i++){if(events[i].tag===tag){r.push(events[i]);}}return r;}
+		function regNonProbe(id){for(var i=0;i<events.length;i++){var e=events[i];if(e.tag==='REG'&&e.a===id&&e.b.indexOf('[diag-probe]')<0){return e;}}return null;}
+		function srow(q,ok,val){return '<div style="border-bottom:1px dashed #e7cf8f;padding:2px 0;">'+q+' → <b style="color:'+(ok?'#15803d':'#b91c1c')+';">'+(ok?'YES':'NO')+'</b> <span dir="ltr" style="font-family:ui-monospace,Consolas,monospace;font-size:11px;">'+esc(val)+'</span></div>';}
+
+		/* ---------- observer 1: addEventListener registrations (pass-through) ---------- */
+		var WATCH_IDS=['gs-wt-toggle','gs-wt-run','gs-wd-run','gs-wd-revive'];
+		var origAdd=EventTarget.prototype.addEventListener;
+		EventTarget.prototype.addEventListener=function(type,fn,opts){
+			try{
+				var t=this;
+				if(t&&t.nodeType===1){
+					var id=(typeof t.id==='string')?t.id:'';
+					var isFlag=false;
+					try{isFlag=t.classList?t.classList.contains('gs-flag'):false;}catch(e0){}
+					if(WATCH_IDS.indexOf(id)>-1||isFlag){
+						rec('REG',id||'gs-flag','type='+type+(selfProbe?' [diag-probe]':'')+(opts&&(opts===true||opts.capture)?' [capture]':''));
+					}
+				}
+			}catch(e1){}
+			return origAdd.apply(this,arguments);
+		};
+
+		/* ---------- observer 2: fetch calls + responses (pass-through) ---------- */
+		var origFetch=window.fetch;
+		window.fetch=function(url,opts){
+			var u='?',body='';
+			try{u=String(url&&url.url?url.url:url);}catch(e0){}
+			try{if(opts&&opts.body){body=String(opts.body);}}catch(e1){}
+			var meta={url:u,method:(opts&&opts.method)||'GET',body:body,action:''};
+			var am=body.match(/(?:^|&)action=([^&]*)/);if(am){meta.action=am[1];}
+			rec('FETCH',u,'method='+meta.method+' action='+(meta.action||'?')+' body='+truncate(body,300),meta);
+			var p;
+			try{p=origFetch.apply(this,arguments);}
+			catch(err){rec('FETCH-THROW','synchronous throw before dispatch',String(err&&err.message||err));throw err;}
+			return p.then(function(res){
+				try{
+					res.clone().text().then(function(txt){
+						var ct='';try{ct=res.headers.get('content-type')||'';}catch(e2){}
+						var isJson=false,success=null,msg='';
+						try{var j=JSON.parse(txt);isJson=true;if(j&&typeof j.success==='boolean'){success=j.success;}if(j&&j.data&&j.data.message){msg=String(j.data.message);}}catch(e3){}
+						rec('RESP',res.status+' '+(ct||'no-ct'),(isJson?('json=yes success='+success+(msg?(' message='+msg):'')):'json=NO')+' raw='+truncate(txt,500),{status:res.status,json:isJson,success:success,msg:msg,raw:txt});
+					}).catch(function(){});
+				}catch(e4){}
+				return res;
+			},function(err){
+				rec('FETCH-REJECT','request failed before response (network/transport)',String(err&&err.message||err));
+				throw err;
+			});
+		};
+
+		/* ---------- observer 3: capture-phase click probe (Q7) ---------- */
+		function probe(el,label){
+			if(!el){return;}
+			selfProbe=true;
+			try{
+				el.addEventListener('click',function(ev){
+					try{
+						var top='?';
+						if((ev.clientX||ev.clientY)&&document.elementFromPoint){
+							var f=document.elementFromPoint(ev.clientX,ev.clientY);
+							top=f?(f.id?('id='+f.id):(f.tagName?f.tagName.toLowerCase():'?')):'none';
+						}else{top='(no coords)';}
+						var pe='?';try{pe=getComputedStyle(el).pointerEvents;}catch(e2){}
+						lastClickSti=stiSnap();
+						rec('CLICK',label,'topAtPoint='+top+' disabled='+el.disabled+' pointer-events='+pe+' | STI@click: typeof='+lastClickSti.t+' nonce='+lastClickSti.n+' ajaxUrl='+lastClickSti.u);
+					}catch(e3){}
+				},true);
+			}finally{selfProbe=false;}
+		}
+		probe(elT,'gs-wt-toggle');
+		probe(elR,'gs-wt-run');
+
+		/* ---------- rendering ---------- */
+		function renderStatic(){
+			var st=stiSnap();
+			var far=0;
+			if(regNonProbe('gs-wt-toggle')){far=LN.bindWt;}
+			if(regNonProbe('gs-wt-run')){far=LN.bindWtRun;}
+			if(regNonProbe('gs-wd-run')){far=LN.bindWdRun;}
+			if(regNonProbe('gs-wd-revive')){far=LN.bindWdRevive;}
+			var rt=regNonProbe('gs-wt-toggle');
+			var h='';
+			h+=srow('۱. آیا #gs-wt-toggle در DOM وجود دارد؟',!!elT,elT?('disabled='+elT.disabled+' data-on="'+(elT.dataset?elT.dataset.on:'?')+'"'):'getElementById → null');
+			h+=srow('۲. آیا #gs-wt-run در DOM وجود دارد؟',!!elR,elR?('disabled='+elR.disabled):'getElementById → null');
+			h+=srow('۳. آیا STI در زمان اجرای script وجود دارد؟',st.t==='object','typeof STI = '+st.t+' (at load)');
+			h+=srow('۴. آیا STI.nonce مقدار دارد؟',!!(st.n&&st.n!=='(undefined)'),st.n);
+			h+=srow('مکمل: STI.ajaxUrl / window.ajaxurl',!!(st.u&&st.u!=='(undefined)'),st.u+' / '+(typeof window.ajaxurl==='string'&&window.ajaxurl?window.ajaxurl:'(undefined)'));
+			h+=srow('۵. آیا Script مربوط به Watcher اجرا شده است؟',settled?(far>0):(far>0),settled?(far?('executed up to line '+far+' (last REG there)'):'NOT executed — zero REG records (parse error / script absent)'):'script section not reached yet…');
+			h+=srow('۶. آیا bind() واقعاً listener ثبت کرده؟',!!rt,rt?('registered @'+rt.t+' — '+rt.b):(settled?'no non-probe REG record for click':'awaiting bind() call…'));
+			S.innerHTML=h;
+		}
+		function renderTrace(){
+			if(!events.length){T.innerHTML='<div dir="ltr" style="opacity:.55;font-family:ui-monospace,monospace;font-size:11px;">— no records yet. Click the REAL button (toggle / run) to trace the chain…</div>';return;}
+			var h='';
+			for(var i=0;i<events.length;i++){var e=events[i];h+='<div dir="ltr" style="font-family:ui-monospace,Consolas,monospace;font-size:11px;white-space:pre-wrap;word-break:break-all;line-height:1.5;">['+e.t+'] <b>'+e.tag+'</b> '+esc(e.a)+(e.b?(' — '+esc(e.b)):'')+'</div>';}
+			T.innerHTML=h;
+		}
+		function verdict(){
+			function out(P,E,F,Lx,N){
+				V.innerHTML='<div style="border-top:2px solid #b45309;padding-top:8px;font-family:ui-monospace,Consolas,monospace;font-size:12px;line-height:1.8;white-space:pre-wrap;word-break:break-all;"><b>FIRST BROKEN POINT:</b>\n'+esc(P)+'\n\n<b>EVIDENCE:</b>\n'+esc(E)+'\n\n<b>FILE:</b>\n'+esc(F)+'\n\n<b>LINE:</b>\n'+esc(Lx)+'\n\n<b>NEXT ACTION:</b>\n'+esc(N)+'</div>';
+			}
+			var cl=null,fc,rp,rj,rt;
+			for(var i=0;i<events.length;i++){if(events[i].tag==='CLICK'){cl=events[i];break;}}
+			fc=findMany('FETCH');rp=findMany('RESP');rj=findMany('FETCH-REJECT');if(!rj.length){rj=findMany('FETCH-THROW');}
+			rt=regNonProbe('gs-wt-toggle');
+			var act='';
+			if(fc.length&&fc[fc.length-1].meta&&fc[fc.length-1].meta.action){act=fc[fc.length-1].meta.action;}
+			var phpRef=act.indexOf('run')>-1?LN.phpRun:LN.phpToggle;
+			if(!elT){
+				out('HTML — element #gs-wt-toggle is NOT rendered in the DOM','getElementById("gs-wt-toggle") returned null on page load','admin/views/golden-scan/worker.php',LN.toggleBtn,'check the PHP condition that wraps the Watcher card (the if/endif block above the button); the script section is fine — there is simply nothing to bind.');
+				return;
+			}
+			if(settled&&!cl&&!rt){
+				out('bind() / script execution — no click listener registered on #gs-wt-toggle','no non-probe REG record for gs-wt-toggle after full page load; the bind() helper silently skips when the element is missing','admin/views/golden-scan/worker.php',LN.bindWt+' (helper: '+LN.bindHelper+')','verify the <script> block (line '+LN.scriptTag+') is present in the rendered DOM and no earlier error aborted it; confirm the element existed BEFORE the script ran.');
+				return;
+			}
+			if(!cl){
+				out('(none yet) — NO BROKEN POINT DETECTED; awaiting click','static checks Q1..Q6 are in the table above','—','—','click the REAL button (▶/⏸ or 🔄) — this box recomputes automatically after each event.');
+				return;
+			}
+			if(!fc.length){
+				var cs=lastClickSti||stiSnap();
+				if(cs.t!=='object'){
+					out('handler — ReferenceError: STI is not defined (dies at first statement of post(), before any fetch)','CLICK reached the element but fetch() was never called; typeof STI at click = '+cs.t,'admin/views/golden-scan/worker.php (STI.nonce reference) + root cause: admin/class-sti-admin.php',LN.postNonce+' (root: '+LN.adminLocalize+')','STI is wp_localize_script-ed on the "sti-admin" handle (admin.js, footer). Verify that script actually loads on THIS page (if the console renders in an iframe / partial / early-exit render, the footer never runs → STI never exists).');
+					return;
+				}
+				if(cs.u==='(undefined)'&&!(typeof window.ajaxurl==='string'&&window.ajaxurl)){
+					out('handler — fetch() called with undefined URL (STI.ajaxUrl missing AND window.ajaxurl missing)','CLICK reached the element; STI exists but ajaxUrl is undefined and the ajaxurl fallback is undefined; no FETCH record','admin/views/golden-scan/worker.php',LN.fetchLine,'inspect how STI is localized on this page (class-sti-admin.php line '+LN.adminLocalize+'); the fetch target must be admin-ajax.php.');
+					return;
+				}
+				out('handler — exception between click and fetch()','CLICK reached the element but fetch() was never called while STI/nonce/ajaxUrl look valid','admin/views/golden-scan/worker.php',LN.bindWt+'..'+LN.fetchLine,'inspect the handler body (currently: read dataset.on, call post()) for the thrown value; this branch is unlikely given current code.');
+				return;
+			}
+			if(rj.length){
+				out('AJAX — request dispatched but never reached the server (network/transport failure)','FETCH '+fc[fc.length-1].a+' → '+rj[0].b,'URL from FETCH record (admin-ajax.php target)','—','Per the rule: request did not complete — do NOT inspect PHP yet. Verify URL reachability/proxy/redirects for that exact URL (e.g. proxy rewriting POSTs, or login-redirect loop).');
+				return;
+			}
+			if(!rp.length){
+				out('(in flight) — request sent, response not captured yet','FETCH '+fc[fc.length-1].a+' dispatched; awaiting response','—','—','wait a moment — the RESP record appears automatically; if it never does, treat as network/timeout case.');
+				return;
+			}
+			var m=rp[rp.length-1].meta||{};
+			if(m.status!==200){
+				out('PHP/AJAX endpoint — HTTP '+m.status+' from admin-ajax.php','action='+(act||'?')+' → HTTP '+m.status+'; raw body: '+truncate(m.raw||'?',300),'includes/golden-scan/class-gs-test-wizard.php',LN.phpToggle+' / '+LN.phpRun,'Per the rule: AJAX was sent, PHP answered with an error status. 400 → check_ajax() failed (nonce/capability); 500 → PHP fatal. Inspect the endpoint + its nonce check.');
+				return;
+			}
+			if(!m.json){
+				out('PHP — HTTP 200 but response is NOT JSON (JSON.parse in post() will throw; toggle handler has no .catch() → silent)','action='+(act||'?')+' → HTTP 200, body is not JSON: '+truncate(m.raw||'?',300),'includes/golden-scan/class-gs-test-wizard.php (ajax_watcher_toggle / ajax_watcher_run)','L'+LN.phpToggle+' / L'+LN.phpRun,'Per the rule: AJAX sent, PHP did not answer properly — jump to the PHP endpoint. Non-JSON on 200 = HTML output (login redirect? cached page? buffered warning/fatal?). Inspect the endpoint output path on the host.');
+				return;
+			}
+			if(m.success===false){
+				out('PHP business logic — handler executed and returned success:false','action='+(act||'?')+' → HTTP 200 JSON success=false, message: '+(m.msg||'(none)'),'includes/golden-scan/class-gs-test-wizard.php','L'+phpRef,'read the message (most likely check_ajax() nonce/capability failure) and inspect that endpoint on the host.');
+				return;
+			}
+			out('NO BROKEN POINT in the chain — HTML→script→bind→click→handler→AJAX→PHP all verified OK','action='+(act||'?')+' → HTTP 200 JSON success=true, message: '+(m.msg||'(none)')+'; toggle handler will now location.reload()','STI_GS_Channel_Watcher::set_enabled() / run() (PHP layer)','—','If the Watcher state did NOT change after the reload → per the rule enter toggle()/run() at the PHP layer (stage 3). Otherwise the chain is healthy.');
+		}
+		function renderAll(){
+			try{renderStatic();}catch(e0){}
+			try{renderTrace();}catch(e1){}
+			try{verdict();}catch(e2){}
+		}
+		function settle(){if(!settled){settled=true;renderAll();}}
+		if(document.readyState==='complete'){setTimeout(settle,400);}
+		else{window.addEventListener('load',settle);setTimeout(settle,2000);}
+		var rb=document.getElementById('gs-wt-diag-reset');
+		if(rb){rb.addEventListener('click',function(){events.length=0;lastClickSti=null;renderAll();});}
+		renderAll();
+	}catch(topErr){}
+	})();
+	</script>
+
 	<div class="gi-bento">
 
 		<!-- Worker control hero -->
