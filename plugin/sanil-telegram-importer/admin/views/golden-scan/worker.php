@@ -422,6 +422,49 @@ $today = $stats['today'] ?? array();
 				h3+='<details open style="margin:8px 0;border:1px solid #fda4af;border-radius:8px;background:#fff;"><summary style="cursor:pointer;padding:6px 10px;font-size:12px;font-weight:700;">📋 ORPHAN AUDIT EVIDENCE (قابل کپی)</summary><div style="padding:0 10px 10px;"><pre dir="ltr" style="background:#0f172a;color:#e2e8f0;border-radius:8px;padding:10px;font-size:11px;line-height:1.7;white-space:pre-wrap;word-break:break-all;margin:0;">'+esc(oc.audit_text||'')+'</pre></div></details>';
 				h+=h3;
 			}
+			/* 🎯 PHASE 1 — Root Cause Verification + Preflight + Line Forensics (10.12.6) */
+			var pv=d.phase1_verification;
+			if(pv&&typeof pv==='object'&&!(pv.error)){
+				var h4='<h3 style="font-size:13px;margin:12px 0 4px;">🎯 PHASE 1 — Root Cause Verification + Patch Preflight + Line Forensics (read-only)</h3>';
+				h4+='<div dir="ltr" style="font-size:11px;font-family:ui-monospace,monospace;margin-bottom:6px;">room='+pv.room+' · first_valid_id='+(pv.first_valid_id===null?'NONE':pv.first_valid_id)+' · first_valid_rank='+(pv.first_valid_rank===null?'n/a':pv.first_valid_rank)+' · orphans_before_first_valid='+(pv.orphans_before===null?'n/a':pv.orphans_before)+'</div>';
+				if(pv.batch_occupancy){
+					var bo='<table style="border-collapse:collapse;background:#fff;font-size:11px;width:100%;"><thead><tr><th style="border-bottom:2px solid #0369a1;padding:3px 6px;">Window</th><th style="border-bottom:2px solid #0369a1;padding:3px 6px;">VALID</th><th style="border-bottom:2px solid #0369a1;padding:3px 6px;">NO_ITEM</th><th style="border-bottom:2px solid #0369a1;padding:3px 6px;">EXISTING</th></tr></thead><tbody>';
+					for(var bk in pv.batch_occupancy){
+						if(!Object.prototype.hasOwnProperty.call(pv.batch_occupancy,bk)){continue;}
+						var bv=pv.batch_occupancy[bk];
+						bo+='<tr style="border-bottom:1px solid #e0f2fe;"><td style="padding:3px 6px;font-weight:700;">'+bk+'</td><td style="padding:3px 6px;text-align:center;color:#15803d;font-weight:700;">'+bv.valid+'</td><td style="padding:3px 6px;text-align:center;color:#b91c1c;font-weight:700;">'+bv.no_item+'</td><td style="padding:3px 6px;text-align:center;">'+bv.existing+'</td></tr>';
+					}
+					bo+='</tbody></table>';
+					h4+=bo;
+				}
+				h4+=section('query فعلی production + EXPLAIN (از Runtime)','<pre dir="ltr" style="background:#0f172a;color:#e2e8f0;border-radius:8px;padding:8px;font-size:10.5px;white-space:pre-wrap;word-break:break-all;margin:0;">'+esc(pv.sql_current||'')+'\n\nEXPLAIN:\n'+esc(JSON.stringify(pv.explain_current||[],null,1))+'</pre>',false);
+				var pf=pv.preflight||{};
+				if(pf.sql_fixed){
+					var h4b='<div dir="ltr" style="font-size:11px;font-weight:700;margin:8px 0 4px;color:#0369a1;">PREFLIGHT — query «پس از Patch» (Option A) — اجرا شد ولی Patch اعمال نشد: would_create_postfix='+(pf.would_create_postfix||0)+' · existing='+(pf.existing_session_postfix||0)+'</div>';
+					h4b+='<pre dir="ltr" style="background:#0f172a;color:#e2e8f0;border-radius:8px;padding:8px;font-size:10.5px;white-space:pre-wrap;word-break:break-all;margin:0 0 6px;">'+esc(pf.sql_fixed||'')+'</pre>';
+					var ft='<table style="border-collapse:collapse;background:#fff;font-size:10.5px;width:100%;"><thead><tr><th style="border-bottom:2px solid #0369a1;padding:3px 5px;">profile_item.id</th><th style="border-bottom:2px solid #0369a1;padding:3px 5px;">message_pk</th><th style="border-bottom:2px solid #0369a1;padding:3px 5px;">existing_session</th><th style="border-bottom:2px solid #0369a1;padding:3px 5px;">would_create</th></tr></thead><tbody>';
+					for(var fi=0;fi<(pf.first_candidates||[]).length;fi++){
+						var fc2=pf.first_candidates[fi];
+						ft+='<tr style="border-bottom:1px solid #e0f2fe;"><td style="padding:3px 5px;text-align:center;">'+fc2.id+'</td><td style="padding:3px 5px;text-align:center;">'+fc2.message_pk+'</td><td style="padding:3px 5px;text-align:center;">'+(fc2.existing_session===null?'—':'#'+fc2.existing_session)+'</td><td style="padding:3px 5px;text-align:center;color:'+(fc2.would_create?'#15803d':'#b45309')+';font-weight:700;">'+(fc2.would_create?'YES':'no (existing)')+'</td></tr>';
+					}
+					ft+='</tbody></table>';
+					h4b+=ft;
+					h4+=h4b;
+				}
+				var lf=pv.line_forensics||{};
+				if(lf.option_name){
+					var lf2='<div dir="ltr" style="font-size:11px;font-family:ui-monospace,monospace;background:#fff;border:1px solid #bae6fd;border-radius:8px;padding:8px;white-space:pre-wrap;word-break:break-all;">option='+esc(lf.option_name)+'\nraw_value='+esc(JSON.stringify(lf.raw_value))+' (set='+lf.option_set+')\nstate()='+esc(JSON.stringify(lf['state()']))+'\ninterpret: '+esc(lf.interpret||'')+'</div>';
+					lf2+=section('recent line logs (wp_sti_logs)',kvTable(lf.recent_line_logs||[]),false);
+					var wts='<table style="border-collapse:collapse;background:#fff;font-size:10.5px;width:100%;margin-top:6px;"><thead><tr><th style="border-bottom:2px solid #0369a1;padding:3px 5px;text-align:right;">Transition</th><th style="border-bottom:2px solid #0369a1;padding:3px 5px;text-align:right;">FILE / LINE / CALLER</th></tr></thead><tbody>';
+					var lw=lf.writers||{};
+					for(var lkw in lw){if(!Object.prototype.hasOwnProperty.call(lw,lkw)){continue;}wts+='<tr style="border-bottom:1px solid #e0f2fe;"><td dir="ltr" style="padding:3px 5px;font-family:ui-monospace,monospace;vertical-align:top;">'+esc(lkw)+'</td><td dir="ltr" style="padding:3px 5px;white-space:pre-wrap;word-break:break-all;vertical-align:top;">'+esc(lw[lkw])+'</td></tr>';}
+					wts+='</tbody></table>';
+					lf2+='<div dir="ltr" style="font-size:10.5px;margin-top:6px;"><b>blocker:</b> '+esc(lf.worker_blocker||'')+'<br><b>start gates:</b> '+esc(lf.start_gates||'')+'</div>';
+					h4+=section('PHASE 4 — Line-State Forensics (چرا line_state=STOPPED)',lf2+wts,true);
+				}
+				h4+='<details open style="margin:8px 0;border:1px solid #7dd3fc;border-radius:8px;background:#fff;"><summary style="cursor:pointer;padding:6px 10px;font-size:12px;font-weight:700;">📋 PHASE 1 EVIDENCE (قابل کپی)</summary><div style="padding:0 10px 10px;"><pre dir="ltr" style="background:#0f172a;color:#e2e8f0;border-radius:8px;padding:10px;font-size:11px;line-height:1.7;white-space:pre-wrap;word-break:break-all;margin:0;">'+esc(pv.audit_text||'')+'</pre></div></details>';
+				h+=h4;
+			}
 			h+=section('PART 9 — create_from_profile_item Path',kvTable(d.session_path),false);
 			h+=section('PART 10 — Real Session Check (sample ≤ 10)',kvTable(d.session_sample),true);
 			h+=section('PART 11 — Real Pipeline Check (last 10)',kvTable(d.pipeline_sample),false);

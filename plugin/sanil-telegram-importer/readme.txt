@@ -1,3 +1,10 @@
+== 10.12.6 ==
+* Version: 10.12.6 — Installable ZIP: `golden-importer-10.12.6.zip` (repo root).
+* 🎯 PHASE 1 ROOT-CAUSE VERIFICATION (read-only) inside the 🩺 chain-audit tool: exact current selection SQL (resolved table names) + real EXPLAIN from production · first valid candidate id + its rank + orphans before it · batch occupancy (first room/100/500: VALID vs NO_ITEM) · PATCH PREFLIGHT — the post-fix selection query (Option A: + INNER JOIN messages) executed read-only and its would_create/existing for the next batch reported BEFORE any code change · LINE-STATE FORENSICS (PHASE 4): raw `sti_gs_line_state` option (set vs unset default), state(), recent line-transition logs from wp_sti_logs, full writer inventory (set_state/transition/start/stop/finalize_pause/mark_*) with FILE/LINE/CALLER, current worker blocker (tick L225) and START gate analysis · copyable PHASE 1 EVIDENCE block.
+* NO business-logic change — this release is verification-only; the starvation fix is NOT applied yet (by design: evidence first).
+* Strictly read-only (SELECT/SHOW/EXPLAIN/get_option) — zero writes.
+* Tests: 10.12 workflow 17/17 + 10.11 regression + P0 governor — all PASS.
+
 == 10.12.5 ==
 * Version: 10.12.5 — Installable ZIP: `golden-importer-10.12.5.zip` (repo root).
 * 🧬 ORPHAN ROOT-CAUSE AUDIT (read-only) inside the 🩺 chain-audit tool: computes on the live DB — real schema (SHOW COLUMNS/INDEX) · orphan population (NO_PK / DANGLING / PROFILE_MISSING / VALID, exclusive causes) · ORPHAN_TOTAL · orphan distribution (profile_id / status / matched_keyword / month) · ORPHAN vs HEALTHY real samples (incl. same-profile) · timeline (oldest/newest orphan+valid, daily 14d) · recent production (orphans/valid in last 24h and today) · A/B/C lean from the data · full in-code write-path inventory (the ONLY 4 writers to profile_items: 2× INSERT...SELECT in Profile::run L152-169, 1× UPDATE status=queued session.php L76, 2× DELETE-by-profile profile.php L110 & channel.php L158) · copyable evidence block.

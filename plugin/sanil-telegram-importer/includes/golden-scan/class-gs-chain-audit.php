@@ -123,6 +123,7 @@ class STI_GS_Chain_Audit {
 		try { $out['telegram'] = self::part_telemgram(); } catch ( \Throwable $e ) { $out['telegram'] = array( 'error' => $e->getMessage() ); }
 		try { $out['selection_window'] = self::part14_selection_window(); } catch ( \Throwable $e ) { $out['selection_window'] = array( 'error' => $e->getMessage() ); }
 		try { $out['orphan_root_cause'] = self::part15_orphan_root_cause(); } catch ( \Throwable $e ) { $out['orphan_root_cause'] = array( 'error' => $e->getMessage() ); }
+		try { $out['phase1_verification'] = self::part16_phase1_verification( $out ); } catch ( \Throwable $e ) { $out['phase1_verification'] = array( 'error' => $e->getMessage() ); }
 
 		$out['rows']    = self::rows( $out );
 		$out['verdict'] = self::verdict( $out );
@@ -1004,6 +1005,166 @@ class STI_GS_Chain_Audit {
 				'scanner_path'     => 'scan_new_messages() (watcher L233-275) پیام نمی‌نویسد — فقط cron «sti_gs_scan_worker» زمان‌بندی می‌کند (L263-266)؛ نوشتن messages در scanner است (cron request جدا). refresh_profiles() (L305-345) فقط Profile::run را می‌زند (INSERT...SELECT روی پیام‌های موجود) — transaction ندارد، item را UPDATE نمی‌کند (جز matched_keyword)، نمی‌تواند message_pk صفر کند.',
 			),
 			'audit_text'         => $audit_text,
+		);
+	}
+
+	/* ==================== 🎯 PHASE 1 — ROOT-CAUSE VERIFICATION + PREFLIGHT (10.12.6) — read-only ====================
+	 * اثبات: query دقیق + EXPLAIN + رتبهٔ اولین candidate سالم + اشغال batchها +
+	 * preflight همان queryِ «پس از Patch» (بدون اعمال Patch) + forensics وضعیت خط (Worker STOPPED).
+	 * فقط SELECT/SHOW/EXPLAIN/get_option — صفر نوشتن.
+	 */
+
+	protected static function part16_phase1_verification( $prev = array() ) {
+		global $wpdb;
+		$items    = STI_GS_DB::profile_items_table();
+		$profiles = STI_GS_DB::profiles_table();
+		$messages = STI_GS_DB::messages_table();
+		$table    = STI_GS_DB::pipeline_items_table();
+
+		/* room واقعیِ همین دور (همان فرمول run() L188-208): */
+		$backlog = STI_GS_Channel_Watcher::backlog();
+		$cap     = STI_GS_Channel_Watcher::daily_cap();
+		$left    = $cap > 0 ? max( 0, $cap - STI_GS_Channel_Watcher::created_today() ) : PHP_INT_MAX;
+		$room    = max( 1, min( STI_GS_Channel_Watcher::batch_size(), $left, STI_GS_Channel_Watcher::backlog_limit() - $backlog ) );
+
+		/* 1) query دقیق production (create_sessions L404-414، مسیر cron): */
+		$sql_current = "SELECT pi.id
+		 FROM {$items} pi
+		 INNER JOIN {$profiles} p ON p.id = pi.profile_id
+		 WHERE pi.status = 'available'
+		   AND p.default_category_id IS NOT NULL
+		   AND p.default_category_id > 0
+		 ORDER BY pi.id ASC
+		 LIMIT " . (int) $room;
+		$explain_current = (array) $wpdb->get_results( 'EXPLAIN ' . $sql_current, ARRAY_A );
+
+		/* 2) اولین candidate سالم در کل eligible (رتبه = تعداد eligible با id کمتر + 1): */
+		$first_valid_id = (int) $wpdb->get_var( "SELECT MIN(pi.id)
+		 FROM {$items} pi
+		 INNER JOIN {$messages} m ON m.id = pi.message_pk
+		 INNER JOIN {$profiles} p ON p.id = pi.profile_id
+		 WHERE pi.status = 'available' AND p.default_category_id IS NOT NULL AND p.default_category_id > 0" );
+		$first_valid_rank     = null;
+		$orphans_before_first = null;
+		if ( $first_valid_id > 0 ) {
+			$first_valid_rank = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*)
+			 FROM {$items} pi INNER JOIN {$profiles} p ON p.id = pi.profile_id
+			 WHERE pi.status = 'available' AND p.default_category_id IS NOT NULL AND p.default_category_id > 0
+			   AND pi.id < %d", $first_valid_id ) ) + 1;
+			$orphans_before_first = $first_valid_rank - 1;
+		}
+
+		/* 3) اشغال batchها — از دادهٔ part14 (اگر موجود) یا محاسبهٔ سریع: */
+		$sw        = isset( $prev['selection_window'] ) && is_array( $prev['selection_window'] ) ? $prev['selection_window'] : array();
+		$occupancy = array();
+		foreach ( array( (int) $room, 100, 500 ) as $w ) {
+			if ( isset( $sw['windows'][ (string) $w ] ) || isset( $sw['windows'][ $w ] ) ) {
+				$wc = isset( $sw['windows'][ (string) $w ] ) ? $sw['windows'][ (string) $w ] : $sw['windows'][ $w ];
+				$occupancy[ 'first_' . $w ] = array( 'valid' => (int) ( $wc['VALID'] ?? 0 ), 'no_item' => (int) ( $wc['NO_ITEM'] ?? 0 ), 'existing' => (int) ( $wc['EXISTING_SESSION'] ?? 0 ) );
+			}
+		}
+
+		/* 4) PREFLIGHT — queryِ «پس از Patch» (Option A: + INNER JOIN messages) — بدون اعمال Patch: */
+		$sql_fixed = "SELECT pi.id
+		 FROM {$items} pi
+		 INNER JOIN {$profiles} p ON p.id = pi.profile_id
+		 INNER JOIN {$messages} m ON m.id = pi.message_pk
+		 WHERE pi.status = 'available'
+		   AND p.default_category_id IS NOT NULL
+		   AND p.default_category_id > 0
+		 ORDER BY pi.id ASC
+		 LIMIT " . (int) $room;
+		$explain_fixed = (array) $wpdb->get_results( 'EXPLAIN ' . $sql_fixed, ARRAY_A );
+		$fixed_rows    = (array) $wpdb->get_results( $sql_fixed, ARRAY_A );
+		$fixed_ids     = array();
+		foreach ( $fixed_rows as $r ) { $fixed_ids[] = (int) $r['id']; }
+		$fixed_detail  = array();
+		$would_postfix = 0;
+		$existing_pf   = 0;
+		if ( $fixed_ids ) {
+			$place  = implode( ',', array_fill( 0, count( $fixed_ids ), '%d' ) );
+			$rows3  = (array) $wpdb->get_results( $wpdb->prepare(
+				"SELECT pi.id AS pid, m.id AS message_pk, p.default_category_id
+				 FROM {$items} pi INNER JOIN {$messages} m ON m.id = pi.message_pk INNER JOIN {$profiles} p ON p.id = pi.profile_id
+				 WHERE pi.id IN ({$place})",
+				$fixed_ids
+			), ARRAY_A );
+			$mps    = array();
+			foreach ( $rows3 as $r ) { $mps[] = (int) $r['message_pk']; }
+			$sess   = array();
+			if ( $mps ) {
+				$p2   = implode( ',', array_fill( 0, count( $mps ), '%d' ) );
+				$rows = (array) $wpdb->get_results( $wpdb->prepare( "SELECT id, message_pk, state FROM {$table} WHERE message_pk IN ({$p2})", $mps ), ARRAY_A );
+				foreach ( $rows as $r ) { $sess[ (int) $r['message_pk'] ] = $r; }
+			}
+			foreach ( $rows3 as $r ) {
+				$has = isset( $sess[ (int) $r['message_pk'] ] );
+				if ( $has ) { $existing_pf++; } else { $would_postfix++; }
+				if ( count( $fixed_detail ) < $room ) {
+					$fixed_detail[] = array( 'id' => (int) $r['pid'], 'message_pk' => (int) $r['message_pk'], 'existing_session' => $has ? (int) $sess[ (int) $r['message_pk'] ]['id'] : null, 'would_create' => ! $has );
+				}
+			}
+		}
+
+		/* 5) Line-state forensics (PHASE 4 — چرا Worker STOPPED): */
+		$line_raw = get_option( 'sti_gs_line_state', '__UNSET__' );
+		$line_set = ( '__UNSET__' !== $line_raw );
+		$line_state = class_exists( 'STI_GS_Line' ) ? STI_GS_Line::state() : null;
+		$line_logs  = array();
+		$logs_table = $wpdb->prefix . 'sti_logs';
+		if ( self::table_exists( $logs_table ) ) {
+			$line_logs = (array) $wpdb->get_results( "SELECT id, level, message, created_at FROM {$logs_table}
+			 WHERE message LIKE '%خط تولید%' OR message LIKE '%GS Line%' OR message LIKE '%LINE_STATE%'
+			 ORDER BY id DESC LIMIT 20", ARRAY_A );
+		}
+		$line_forensics = array(
+			'option_name'   => 'sti_gs_line_state',
+			'raw_value'     => $line_raw,
+			'option_set'    => $line_set,
+			'state()'       => $line_state,
+			'interpret'     => $line_set
+				? 'option نوشته شده — آخرین گذار از لاگ‌های زیر'
+				: 'option اصلاً وجود ندارد → state() مقدار پیش‌فرض «STOPPED» را برمی‌گرداند (خط هنوز START نشده / option پاک شده)',
+			'recent_line_logs' => $line_logs,
+			'writers'         => array(
+				'set_state() → RUNNING (reason: START خط توسط کاربر)' => 'class-gs-line.php L103-133 (log) ← start() L141-153 ← ajax_line_start (test-wizard L938-942) ← UI #gs-line-start (automation.php L538)',
+				'set_state() → PAUSING (reason: STOP خط توسط کاربر) + finalize_pause() → STOPPED' => 'class-gs-line.php stop() L159-170 + finalize_pause L175-185 ← ajax_line_stop (L945-949) ← UI #gs-line-stop (automation.php L539)',
+				'transition() CAS: RUNNING→ERROR / ERROR→RUNNING / RUNNING→DEGRADED / DEGRADED→RUNNING' => 'class-gs-line.php L188-206 ← tick Worker (auto-worker L239-254) + Governor',
+				'default' => 'state() L49-52: get_option(«sti_gs_line_state», «STOPPED») — اگر option نباشد/نامعتبر باشد → STOPPED',
+			),
+			'worker_blocker'  => 'tick() L225: if (STOPPED === line) return — تنها gate فعلی (worker_enabled=true، active=0، eligible=38)',
+			'start_gates'     => 'start() هیچ gate حالتی ندارد (از هر state)؛ فقط check_ajax (nonce+capability)؛ سپس set_enabled(true) worker + تضمین cron + set_state(RUNNING)',
+		);
+
+		$audit_text = "PHASE 1 — ROOT-CAUSE VERIFICATION\n"
+			. 'selection_query(current) = ' . str_replace( "\n", ' ', $sql_current ) . "\n"
+			. 'EXPLAIN(current) = ' . wp_json_encode( $explain_current ) . "\n"
+			. 'first_valid_candidate_id = ' . ( $first_valid_id > 0 ? $first_valid_id : 'NONE' ) . "\n"
+			. 'first_valid_rank = ' . ( $first_valid_rank === null ? 'n/a' : $first_valid_rank ) . "\n"
+			. 'orphans_before_first_valid = ' . ( $orphans_before_first === null ? 'n/a' : $orphans_before_first ) . "\n"
+			. 'batch_occupancy = ' . wp_json_encode( $occupancy ) . "\n"
+			. '--- PREFLIGHT (post-fix query, NOT applied) ---' . "\n"
+			. 'selection_query(fixed) = ' . str_replace( "\n", ' ', $sql_fixed ) . "\n"
+			. 'EXPLAIN(fixed) = ' . wp_json_encode( $explain_fixed ) . "\n"
+			. 'fixed_first_' . count( $fixed_detail ) . ' = ' . wp_json_encode( $fixed_detail ) . "\n"
+			. 'would_create_postfix = ' . $would_postfix . ' · existing_session_postfix = ' . $existing_pf . "\n"
+			. '--- LINE FORENSICS (worker STOPPED) ---' . "\n"
+			. 'option sti_gs_line_state raw = ' . var_export( $line_raw, true ) . ' (set=' . var_export( $line_set, true ) . ')' . "\n"
+			. 'state() = ' . var_export( $line_state, true ) . "\n"
+			. 'recent_line_logs = ' . wp_json_encode( $line_logs ) . "\n"
+			. 'blocker = auto-worker tick L225 (STOPPED → return) · start() has no state gate';
+
+		return array(
+			'room'              => (int) $room,
+			'sql_current'       => $sql_current,
+			'explain_current'   => $explain_current,
+			'first_valid_id'    => $first_valid_id > 0 ? $first_valid_id : null,
+			'first_valid_rank'  => $first_valid_rank,
+			'orphans_before'    => $orphans_before_first,
+			'batch_occupancy'   => $occupancy,
+			'preflight'         => array( 'sql_fixed' => $sql_fixed, 'explain_fixed' => $explain_fixed, 'first_candidates' => $fixed_detail, 'would_create_postfix' => $would_postfix, 'existing_session_postfix' => $existing_pf ),
+			'line_forensics'    => $line_forensics,
+			'audit_text'        => $audit_text,
 		);
 	}
 
