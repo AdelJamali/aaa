@@ -121,6 +121,7 @@ class STI_GS_Chain_Audit {
 		try { $out['worker'] = self::part12_worker(); } catch ( \Throwable $e ) { $out['worker'] = array( 'error' => $e->getMessage() ); }
 		try { $out['fiber_memory'] = self::part13_fiber_memory(); } catch ( \Throwable $e ) { $out['fiber_memory'] = array( 'error' => $e->getMessage() ); }
 		try { $out['telegram'] = self::part_telemgram(); } catch ( \Throwable $e ) { $out['telegram'] = array( 'error' => $e->getMessage() ); }
+		try { $out['selection_window'] = self::part14_selection_window(); } catch ( \Throwable $e ) { $out['selection_window'] = array( 'error' => $e->getMessage() ); }
 
 		$out['rows']    = self::rows( $out );
 		$out['verdict'] = self::verdict( $out );
@@ -600,6 +601,253 @@ class STI_GS_Chain_Audit {
 			'channels_running_scan' => self::table_exists( $ch_table ) ? (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$ch_table} WHERE scan_status = 'RUNNING'" ) : null,
 			'scan_daily_budget_left'=> ( class_exists( 'STI_GS_Scan_Run' ) && method_exists( 'STI_GS_Scan_Run', 'daily_budget_left' ) ) ? STI_GS_Scan_Run::daily_budget_left() : 'n/a',
 			'last_scan_run'         => $last,
+		);
+	}
+
+	/* ==================== 🔬 SELECTION WINDOW AUDIT (10.12.4) — read-only ====================
+	 * Rیشه‌یابی NO_ITEM: ۵۰۰ کاندیدای اول (همان query انتخاب production، ORDER BY pi.id ASC)
+	 * با خواندن مستقیم message_pk از profile_items (نه از JOIN) + 3-way JOIN + existing session
+	 * + شمارش orphan در کل eligible (حکم A/B/C) + تطبیق با DB همین لحظه.
+	 * فقط SELECT/SHOW/get_option — صفر نوشتن.
+	 */
+
+	protected static function part14_selection_window() {
+		global $wpdb;
+		$items    = STI_GS_DB::profile_items_table();
+		$profiles = STI_GS_DB::profiles_table();
+		$messages = STI_GS_DB::messages_table();
+		$table    = STI_GS_DB::pipeline_items_table();
+		$W_MAX    = 500;
+
+		/* eligible کل (بدون LIMIT) + orphan کل (حکم A/B/C): */
+		$eligible_total = (int) $wpdb->get_var( $wpdb->prepare(
+			"SELECT COUNT(*) FROM {$items} pi INNER JOIN {$profiles} p ON p.id = pi.profile_id
+			 WHERE pi.status = 'available' AND p.default_category_id IS NOT NULL AND p.default_category_id > 0"
+		) );
+		$orphan_total = (int) $wpdb->get_var( $wpdb->prepare(
+			"SELECT COUNT(*) FROM {$items} pi
+			 INNER JOIN {$profiles} p ON p.id = pi.profile_id
+			 LEFT JOIN {$messages} m ON m.id = pi.message_pk
+			 WHERE pi.status = 'available' AND p.default_category_id IS NOT NULL AND p.default_category_id > 0
+			   AND m.id IS NULL"
+		) );
+		$valid_total = $eligible_total - $orphan_total;
+
+		/* همان query انتخاب production (L404-414) — فقط LIMIT 500: */
+		$cand = (array) $wpdb->get_results( $wpdb->prepare(
+			"SELECT pi.id FROM {$items} pi
+			 INNER JOIN {$profiles} p ON p.id = pi.profile_id
+			 WHERE pi.status = 'available'
+			   AND p.default_category_id IS NOT NULL
+			   AND p.default_category_id > 0
+			 ORDER BY pi.id ASC
+			 LIMIT %d",
+			$W_MAX
+		), ARRAY_A );
+		$ids = array();
+		foreach ( $cand as $c ) { $ids[] = (int) $c['id']; }
+		$n   = count( $ids );
+		if ( ! $n ) {
+			return array( 'eligible_total' => $eligible_total, 'orphan_total' => $orphan_total, 'valid_total' => $valid_total, 'scanned_candidates' => 0, 'note' => 'no candidates in window', 'audit_text' => 'SELECTION AUDIT\neligible_total = ' . $eligible_total . "\ncandidate_window = 0" );
+		}
+		$place = implode( ',', array_fill( 0, $n, '%d' ) );
+
+		/* ۱) خواندن مستقیم ردیف‌های profile_items — اثبات مقدار واقعی message_pk: */
+		$pi_rows  = (array) $wpdb->get_results( $wpdb->prepare(
+			"SELECT pi.id, pi.profile_id, pi.message_pk, pi.status, pi.matched_keyword, pi.created_at FROM {$items} WHERE pi.id IN ({$place})",
+			$ids
+		), ARRAY_A );
+		$pi_by_id = array();
+		foreach ( $pi_rows as $r ) { $pi_by_id[ (int) $r['id'] ] = $r; }
+
+		/* ۲) همان 3-way JOINِ create_from_profile_item (L25-36): */
+		$rows3 = (array) $wpdb->get_results( $wpdb->prepare(
+			"SELECT pi.id AS pid, pi.profile_id, m.id AS message_pk, m.channel_id AS msg_channel_id, m.file_code, p.id AS profile_id2, p.default_category_id, p.channel_id AS profile_channel_id
+			 FROM {$items} pi
+			 INNER JOIN {$messages} m ON m.id = pi.message_pk
+			 INNER JOIN {$profiles} p ON p.id = pi.profile_id
+			 WHERE pi.id IN ({$place})",
+			$ids
+		), ARRAY_A );
+		$found = array();
+		foreach ( $rows3 as $r ) { $found[ (int) $r['pid'] ] = $r; }
+
+		/* ۳) existing session برای message_pks پیداشده: */
+		$mps        = array();
+		foreach ( $found as $r ) { $mps[] = (int) $r['message_pk']; }
+		$sess_by_mp = array();
+		if ( $mps ) {
+			$p2    = implode( ',', array_fill( 0, count( $mps ), '%d' ) );
+			$ss    = (array) $wpdb->get_results( $wpdb->prepare(
+				"SELECT id, message_pk, state, created_at FROM {$table} WHERE message_pk IN ({$p2})",
+				$mps
+			), ARRAY_A );
+			foreach ( $ss as $r ) { $sess_by_mp[ (int) $r['message_pk'] ] = $r; }
+		}
+
+		/* ۴) برای orphanها: آیا message_pk>0 هنوز زنده است؟ (تفکیک NO_PK از DANGLING): */
+		$orphan_pks    = array();
+		$orphan_prof   = array();
+		foreach ( $ids as $id ) {
+			if ( isset( $found[ $id ] ) ) { continue; }
+			$pr = isset( $pi_by_id[ $id ] ) ? $pi_by_id[ $id ] : null;
+			if ( $pr && (int) $pr['message_pk'] > 0 ) { $orphan_pks[] = (int) $pr['message_pk']; }
+			if ( $pr ) { $orphan_prof[] = (int) $pr['profile_id']; }
+		}
+		$alive_msgs = array();
+		if ( $orphan_pks ) {
+			$p3 = implode( ',', array_fill( 0, count( $orphan_pks ), '%d' ) );
+			foreach ( (array) $wpdb->get_col( $wpdb->prepare( "SELECT id FROM {$messages} WHERE id IN ({$p3})", $orphan_pks ) ) as $mid ) { $alive_msgs[ (int) $mid ] = true; }
+		}
+		$alive_profs = array();
+		if ( $orphan_prof ) {
+			$p4 = implode( ',', array_fill( 0, count( $orphan_prof ), '%d' ) );
+			foreach ( (array) $wpdb->get_col( $wpdb->prepare( "SELECT id FROM {$profiles} WHERE id IN ({$p4})", $orphan_prof ) ) as $pid ) { $alive_profs[ (int) $pid ] = true; }
+		}
+
+		/* ۵) طبقه‌بندی هر کاندید + پنجره‌های 20/100/500 + نمونه‌ها: */
+		$counts    = array( 'NO_ITEM' => 0, 'VALID' => 0, 'EXISTING_SESSION' => 0 );
+		$win       = array( 20 => array( 'NO_ITEM' => 0, 'VALID' => 0, 'EXISTING_SESSION' => 0 ), 100 => array( 'NO_ITEM' => 0, 'VALID' => 0, 'EXISTING_SESSION' => 0 ), 500 => array( 'NO_ITEM' => 0, 'VALID' => 0, 'EXISTING_SESSION' => 0 ) );
+		$otypes    = array( 'NO_PK(message_pk=0)' => 0, 'DANGLING_PK(message row deleted)' => 0, 'PROFILE_MISSING' => 0, 'OTHER' => 0 );
+		$first_valid = null;
+		$first_valid_rank = null;
+		$first_orphan = null;
+		$sample_rows = array();
+		$rank = 0;
+		foreach ( $ids as $id ) {
+			$rank++;
+			$pr = isset( $pi_by_id[ $id ] ) ? $pi_by_id[ $id ] : null;
+			if ( isset( $found[ $id ] ) ) {
+				$r  = $found[ $id ];
+				$cl = isset( $sess_by_mp[ (int) $r['message_pk'] ] ) ? 'EXISTING_SESSION' : 'VALID';
+				if ( $cl === 'VALID' && null === $first_valid ) {
+					$first_valid      = array(
+						'profile_item_id'     => $id,
+						'profile_id'          => (int) $r['profile_id'],
+						'message_pk'          => (int) $r['message_pk'],
+						'message_exists'      => true,
+						'message_channel_id'  => (int) $r['msg_channel_id'],
+						'profile_exists'      => true,
+						'profile_channel_id'  => $r['profile_channel_id'] !== null ? (int) $r['profile_channel_id'] : null,
+						'status'              => $pr ? $pr['status'] : '?',
+						'default_category_id' => $r['default_category_id'] !== null ? (int) $r['default_category_id'] : null,
+						'existing_session'    => null,
+						'rank'                => $rank,
+					);
+					$first_valid_rank = $rank;
+				}
+			} else {
+				$cl = 'NO_ITEM';
+				if ( ! $pr || (int) $pr['message_pk'] === 0 ) {
+					$otypes['NO_PK(message_pk=0)']++;
+					$otype = 'NO_PK';
+				} elseif ( isset( $alive_msgs[ (int) $pr['message_pk'] ] ) ) {
+					/* پیام هست ولی JOIN شکست → profile (که در selection JOIN شده بود) حذف شده؟ — غیرممکن؛ ثبت OTHER: */
+					$otypes['OTHER']++;
+					$otype = 'OTHER';
+				} elseif ( ! isset( $alive_profs[ (int) $pr['profile_id'] ] ) ) {
+					$otypes['PROFILE_MISSING']++;
+					$otype = 'PROFILE_MISSING';
+				} else {
+					$otypes['DANGLING_PK(message row deleted)']++;
+					$otype = 'DANGLING_PK';
+				}
+				if ( null === $first_orphan ) {
+					$first_orphan = array(
+						'profile_item_id'     => $id,
+						'profile_id'          => $pr ? (int) $pr['profile_id'] : null,
+						'message_pk'          => $pr ? $pr['message_pk'] : null,
+						'message_exists'      => $pr && (int) $pr['message_pk'] > 0 ? ( isset( $alive_msgs[ (int) $pr['message_pk'] ] ) ? true : false ) : false,
+						'profile_exists'      => $pr ? ( isset( $alive_profs[ (int) $pr['profile_id'] ] ) ? true : false ) : false,
+						'status'              => $pr ? $pr['status'] : '?',
+						'matched_keyword'     => $pr ? $pr['matched_keyword'] : null,
+						'created_at'          => $pr ? $pr['created_at'] : null,
+						'classification'      => $otype,
+						'rank'                => $rank,
+					);
+				}
+			}
+			$counts[ $cl ]++;
+			foreach ( $win as $w => $v ) {
+				if ( $rank <= $w ) { $win[ $w ][ $cl ]++; }
+			}
+			if ( $rank <= 10 ) {
+				$sample_rows[] = array(
+					'id'           => $id,
+					'profile_id'   => $pr ? (int) $pr['profile_id'] : null,
+					'message_pk'   => $pr ? $pr['message_pk'] : null,
+					'status'       => $pr ? $pr['status'] : '?',
+					'class'        => $cl,
+					'rank'         => $rank,
+				);
+			}
+		}
+
+		/* ۶) تطبیق با DB همین لحظه (بعد از Run واقعی): */
+		$max_sess_id        = $wpdb->get_var( "SELECT MAX(id) FROM {$table}" );
+		$max_sess_created   = $wpdb->get_var( "SELECT MAX(created_at) FROM {$table}" );
+		$sess_count         = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$table}" );
+		$avail_range        = $wpdb->get_row( $wpdb->prepare(
+			"SELECT MIN(pi.id) AS min_id, MAX(pi.id) AS max_id, COUNT(*) AS c FROM {$items} pi
+			 INNER JOIN {$profiles} p ON p.id = pi.profile_id
+			 WHERE pi.status = 'available' AND p.default_category_id IS NOT NULL AND p.default_category_id > 0"
+		), ARRAY_A );
+		$reconcile = array(
+			'last_run_ts'          => (int) get_option( 'sti_gs_watcher_last_run', 0 ),
+			'watcher_stats'        => get_option( 'sti_gs_watcher_stats', array() ),
+			'sessions_count'       => $sess_count,
+			'max_session_id'       => $max_sess_id === null ? null : (int) $max_sess_id,
+			'max_session_created'  => $max_sess_created,
+			'available_range'      => $avail_range ? array( 'min_id' => (int) $avail_range['min_id'], 'max_id' => (int) $avail_range['max_id'], 'count' => (int) $avail_range['c'] ) : null,
+			'created_0_consistent' => ( (int) $max_sess_created ? false : null ),
+		);
+
+		/* ۷) حکم A/B/C + متن SELECTION AUDIT: */
+		$break = '';
+		$ev    = array();
+		if ( $eligible_total === 0 ) {
+			$break = 'SELECTION EMPTY — eligible=0';
+		} elseif ( $orphan_total >= $eligible_total ) {
+			$break = 'B — PROFILE_ITEM / MESSAGE DATA INTEGRITY';
+			$ev[]  = "همه‌ی {$eligible_total} مورد eligible، orphan هستند (orphan_total=" . $orphan_total . ') — دادهٔ source خراب است، نه ترتیب Selection.';
+		} elseif ( $orphan_total > 0 && $valid_total > 0 && ( null === $first_valid_rank || $first_valid_rank > 20 ) ) {
+			$break = 'A — SELECTION ORDER / ORPHAN STARVATION';
+			$ev[]  = "orphanها قدیمی‌ترین ردیف‌ها (کمترین id) هستند و Selection با ORDER BY pi.id ASC (L401) همیشه همان ۲۰ اول را می‌گیرد.";
+			$ev[]  = 'first_valid_candidate rank=' . ( $first_valid_rank === null ? '>500 (درون پنجره یافت نشد)' : $first_valid_rank ) . ' — یعنی window 20 هرگز به آیتم سالم نمی‌رسد.';
+			$ev[]  = 'orphan_total=' . $orphan_total . ' / eligible_total=' . $eligible_total . ' / valid_total=' . $valid_total;
+			$ev[]  = 'بعد از NO_ITEM، status ردیف تغییر نمی‌کند (فلش available→queued فقط بعد از INSERT موفق — session.php L71) و هیچ skip/offset/marking وجود ندارد (loop L421-433 فقط لاگ می‌زند).';
+		} elseif ( $orphan_total === 0 ) {
+			$break = 'NO ORPHAN STARVATION — window سالم است (بررسی مسیر create)';
+		} else {
+			$break = 'MIXED — orphanها داخل window 20 نیستند (بررسی دقیق‌تر sample_rows)';
+		}
+		$audit_text = "SELECTION AUDIT\n"
+			. 'eligible_total = ' . $eligible_total . "\n"
+			. 'candidate_window = ' . $n . ' (ORDER BY pi.id ASC — همان query production, L404-414)' . "\n"
+			. 'NO_ITEM = ' . $win[20]['NO_ITEM'] . ' (first 20) / ' . $win[100]['NO_ITEM'] . ' (first 100) / ' . $win[500]['NO_ITEM'] . ' (first ' . min( 500, $n ) . ')' . "\n"
+			. 'VALID = ' . $win[20]['VALID'] . ' / ' . $win[100]['VALID'] . ' / ' . $win[500]['VALID'] . "\n"
+			. 'EXISTING = ' . $win[20]['EXISTING_SESSION'] . ' / ' . $win[100]['EXISTING_SESSION'] . ' / ' . $win[500]['EXISTING_SESSION'] . "\n\n"
+			. 'orphan_total_in_eligible = ' . $orphan_total . ' / valid_total = ' . $valid_total . "\n"
+			. 'orphan_types(window) = ' . wp_json_encode( $otypes ) . "\n"
+			. 'first_valid_candidate = ' . ( $first_valid ? ( 'id=' . $first_valid['profile_item_id'] . ' (message_pk=' . $first_valid['message_pk'] . ', profile=' . $first_valid['profile_id'] . ', rank=' . $first_valid['rank'] . ')' ) : 'NONE in first ' . min( 500, $n ) ) . "\n\n"
+			. "FIRST HARD BREAK:\n" . $break . "\n\nEvidence:\n" . ( $ev ? implode( "\n", array_map( 'strval', $ev ) ) : 'see window counts above' ) . "\n\n"
+			. "File:\nincludes/golden-scan/class-gs-channel-watcher.php\nFunction:\nSTI_GS_Channel_Watcher::create_sessions\nLine:\n401 (ORDER BY pi.id ASC) · 404-414 (selection WHERE/LIMIT) · 421-433 (loop — reject = log only)\n"
+			. "join: includes/golden-scan/class-gs-session.php L25-36 (3-way INNER JOIN) · status flip L71 (queued only after INSERT ok)";
+
+		return array(
+			'eligible_total'     => $eligible_total,
+			'orphan_total'       => $orphan_total,
+			'valid_total'        => $valid_total,
+			'scanned_candidates' => $n,
+			'windows'            => $win,
+			'counts'             => $counts,
+			'orphan_types'       => $otypes,
+			'first_valid'        => $first_valid,
+			'first_orphan'       => $first_orphan,
+			'sample_rows'        => $sample_rows,
+			'reconcile'          => $reconcile,
+			'verdict_break'      => $break,
+			'audit_text'         => $audit_text,
 		);
 	}
 

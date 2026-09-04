@@ -338,6 +338,43 @@ $today = $stats['today'] ?? array();
 			h+=section('PART 5 — AJAX Registration (runtime hooks)',kvTable(d.ajax_registration),false);
 			h+=section('PART 7 — Real Run Path Trace',kvTable(d.run_path),true);
 			h+=section('PART 8 — create_sessions Read-Only Simulation',kvTable(d.simulation),true);
+			/* 🔬 Selection Window Audit (10.12.4) */
+			var sw=d.selection_window;
+			if(sw&&typeof sw==='object'&&!(sw.error)){
+				var h2='<h3 style="font-size:13px;margin:12px 0 4px;">🔬 Selection Window Audit (read-only — Rیشه‌یابی NO_ITEM)</h3>';
+				h2+='<div dir="ltr" style="border:2px solid #7c3aed;border-radius:8px;background:#f5f3ff;padding:8px 10px;font-size:12px;font-weight:800;margin-bottom:8px;">'+esc(sw.verdict_break||'')+'</div>';
+				h2+='<div dir="ltr" style="font-size:11px;font-family:ui-monospace,monospace;margin-bottom:6px;">eligible_total='+sw.eligible_total+' · orphan_total='+sw.orphan_total+' · valid_total='+sw.valid_total+' · scanned_candidates='+sw.scanned_candidates+'</div>';
+				if(sw.windows){
+					var wt='<table style="border-collapse:collapse;background:#fff;font-size:11px;width:100%;"><thead><tr><th style="border-bottom:2px solid #7c3aed;padding:3px 6px;text-align:right;">Window</th><th style="border-bottom:2px solid #7c3aed;padding:3px 6px;">NO_ITEM</th><th style="border-bottom:2px solid #7c3aed;padding:3px 6px;">VALID</th><th style="border-bottom:2px solid #7c3aed;padding:3px 6px;">EXISTING_SESSION</th></tr></thead><tbody>';
+					var wl=[['first 20','20'],['first 100','100'],['first 500','500']];
+					for(var wi=0;wi<wl.length;wi++){
+						var wv=sw.windows[wl[wi][1]]||{};
+						wt+='<tr style="border-bottom:1px solid #ede9fe;"><td style="padding:3px 6px;font-weight:700;">'+wl[wi][0]+'</td><td style="padding:3px 6px;text-align:center;color:#b91c1c;font-weight:700;">'+(wv.NO_ITEM||0)+'</td><td style="padding:3px 6px;text-align:center;color:#15803d;font-weight:700;">'+(wv.VALID||0)+'</td><td style="padding:3px 6px;text-align:center;">'+(wv.EXISTING_SESSION||0)+'</td></tr>';
+					}
+					wt+='</tbody></table>';
+					h2+=wt;
+				}
+				if(sw.orphan_types){h2+='<div dir="ltr" style="font-size:11px;font-family:ui-monospace,monospace;margin-top:6px;">orphan_types(window) = '+esc(JSON.stringify(sw.orphan_types))+'</div>';}
+				if(sw.sample_rows&&sw.sample_rows.length){
+					var st='<table style="border-collapse:collapse;background:#fff;font-size:10.5px;width:100%;margin-top:6px;"><thead><tr><th style="border-bottom:2px solid #7c3aed;padding:3px 5px;">rank</th><th style="border-bottom:2px solid #7c3aed;padding:3px 5px;">profile_item.id</th><th style="border-bottom:2px solid #7c3aed;padding:3px 5px;">profile_id</th><th style="border-bottom:2px solid #7c3aed;padding:3px 5px;">message_pk (real value)</th><th style="border-bottom:2px solid #7c3aed;padding:3px 5px;">status</th><th style="border-bottom:2px solid #7c3aed;padding:3px 5px;">class</th></tr></thead><tbody>';
+					for(var si=0;si<sw.sample_rows.length;si++){
+						var sr=sw.sample_rows[si];
+						st+='<tr style="border-bottom:1px solid #ede9fe;"><td style="padding:3px 5px;text-align:center;">'+sr.rank+'</td><td style="padding:3px 5px;text-align:center;">'+sr.id+'</td><td style="padding:3px 5px;text-align:center;">'+(sr.profile_id===null?'?':sr.profile_id)+'</td><td style="padding:3px 5px;text-align:center;font-weight:700;color:'+(sr.message_pk===0||sr.message_pk===null?'#b91c1c':'#15803d')+';">'+(sr.message_pk===null?'?':sr.message_pk)+'</td><td style="padding:3px 5px;text-align:center;">'+esc(sr.status)+'</td><td style="padding:3px 5px;text-align:center;color:'+(sr.class==='NO_ITEM'?'#b91c1c':'#15803d')+';font-weight:700;">'+esc(sr.class)+'</td></tr>';
+					}
+					st+='</tbody></table>';
+					h2+=section('کاندیداهای ۱ تا ۱۰ (خوانده‌شده مستقیم از profile_items — بدون JOIN)',st,false);
+				}
+				if(sw.first_orphan||sw.first_valid){
+					var cmp='<div style="display:flex;gap:8px;flex-wrap:wrap;">';
+					cmp+='<pre dir="ltr" style="flex:1;min-width:260px;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:8px;font-size:10.5px;white-space:pre-wrap;word-break:break-all;margin:0;"><b>BROKEN CANDIDATE</b>\n'+esc(JSON.stringify(sw.first_orphan||{},null,2))+'</pre>';
+					cmp+='<pre dir="ltr" style="flex:1;min-width:260px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:8px;font-size:10.5px;white-space:pre-wrap;word-break:break-all;margin:0;"><b>HEALTHY CANDIDATE</b>\n'+esc(JSON.stringify(sw.first_valid||{},null,2))+'</pre>';
+					cmp+='</div>';
+					h2+=section('BROKEN vs HEALTHY (مقایسه زنجیره کامل)',cmp,true);
+				}
+				if(sw.reconcile){h2+=section('PART 8b — Reconcile با DB همین لحظه (بعد از Run واقعی)',kvTable(sw.reconcile),false);}
+				h2+=section('📋 SELECTION AUDIT (خروجی نهایی — قابل کپی)','<pre dir="ltr" style="background:#0f172a;color:#e2e8f0;border-radius:8px;padding:10px;font-size:11px;line-height:1.7;white-space:pre-wrap;word-break:break-all;margin:0;">'+esc(sw.audit_text||'')+'</pre>',true);
+				h+=h2;
+			}
 			h+=section('PART 9 — create_from_profile_item Path',kvTable(d.session_path),false);
 			h+=section('PART 10 — Real Session Check (sample ≤ 10)',kvTable(d.session_sample),true);
 			h+=section('PART 11 — Real Pipeline Check (last 10)',kvTable(d.pipeline_sample),false);
