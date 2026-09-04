@@ -410,7 +410,12 @@
 @media (max-width: 700px) {
 	.gi-console table.gi-responsive,
 	.gi-console table.gi-responsive thead { display: block; }
-	.gi-console table.gi-responsive thead { position: absolute; inset: -9999px; }
+	/* ۱۰.۱۲ — thead مخفی‌شده با الگوی visually-hidden؛ inset:-9999px قبلی
+	 * ناحیه‌ی overflow افقی ۲۰٬۰۰ پیکسلی می‌ساخت (Zoom Out اجباری). */
+	.gi-console table.gi-responsive thead {
+		position: absolute; width: 1px; height: 1px;
+		overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
+	}
 	.gi-console table.gi-responsive tbody { display: block; }
 	.gi-console table.gi-responsive tr {
 		display: block;
@@ -928,3 +933,38 @@
 	.gi-tab { padding: 9px 12px; }
 	.gi-h1 { font-size: var(--gi-fs3); }
 }
+
+/* ── ۱۰.۱۲ — Viewport guard: هیچ عنصری خارج از Viewport ─────────────────
+ * Audit: position absolute/fixed (فقط bnav/sheet/overlay مجازند)،
+ * transform/scale/translate، overflow، max-width، flex sizing.
+ * تست عرض‌ها: 320/360/390/412/768 + دسکتاپ 1280/1440. */
+.gi-console { max-width: 100%; overflow-x: hidden; }
+.gi-console .gi-flex > *, .gi-console .gi-form-row > *, .gi-console .gi-bento > * { min-width: 0; }
+.gi-console pre, .gi-console code, .gi-console img, .gi-console svg, .gi-console video { max-width: 100%; }
+.gi-console pre { overflow-x: auto; white-space: pre-wrap; word-break: break-word; }
+.gi-console table { max-width: 100%; }
+.gi-console .gi-h1, .gi-console .gi-h1-sub, .gi-console .gi-card-title { overflow-wrap: anywhere; }
+
+/* ── ۱۰.۱۲ — Workflow Stepper (چهار سؤال UX) ─────────────────────────── */
+.gi-steps { margin-bottom: var(--gi-s5); }
+.gi-steps-list {
+	list-style: none; margin: 0; padding: 2px;
+	display: flex; gap: var(--gi-s2);
+	overflow-x: auto; scrollbar-width: thin;
+}
+.gi-step {
+	flex: 1 0 auto; display: flex; align-items: center; gap: 8px;
+	padding: 8px 10px; border-radius: 10px;
+	border: 1px solid var(--gi-border); background: var(--gi-surface-sunken);
+	font-size: var(--gi-fs0); white-space: nowrap; min-width: 0;
+}
+.gi-step-n {
+	flex: none; width: 22px; height: 22px; border-radius: 50%;
+	display: grid; place-items: center;
+	font-size: 11px; font-weight: 700;
+	background: var(--gi-bg); border: 1px solid var(--gi-border);
+}
+.gi-step.is-active { border-color: var(--gi-brand); background: var(--gi-brand-soft); font-weight: 700; }
+.gi-step.is-active .gi-step-n { background: var(--gi-brand); color: #fff; border-color: transparent; }
+.gi-step.is-done .gi-step-n { background: var(--gi-success-soft); color: var(--gi-success); border-color: transparent; }
+.gi-steps-next { margin: var(--gi-s2) 0 0; font-size: var(--gi-fs1); color: var(--gi-text-muted); }

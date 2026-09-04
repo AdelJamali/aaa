@@ -55,9 +55,48 @@ foreach ( $sessions as $it ) {
 	}
 }
 $worker_interval = (int) ( class_exists( 'STI_GS_Automation' ) ? STI_GS_Automation::get( 'worker_interval' ) : 300 );
+
+/* ۱۰.۱۲ — نمای وضعیت: ۷ سطل تصویب‌شده از stateهای واقعی (render-time).
+ * زنده‌بودن با KPIهای بالا؛ این کارت عددِ دقیقِ لحظه‌ی بارگذاری است. */
+global $wpdb;
+$gs_tbl2        = STI_GS_DB::pipeline_items_table();
+$gs_bucket_rows = (array) $wpdb->get_results( "SELECT state, COUNT(*) AS c FROM {$gs_tbl2} GROUP BY state", ARRAY_A );
+$gs_state_bucket = array(
+	'awaiting'    => array( 'SCANNED', 'BUTTON_FOUND', 'WAITING_BOT', 'CHAIN_WAITING', 'CHAIN_STEP', 'BOT_RESPONSE', 'FILE_MATCHED', 'DOWNLOAD_PENDING', 'DOWNLOADED', 'STORED', 'MEDIA_PENDING', 'MEDIA_READY' ),
+	'downloading' => array( 'DOWNLOADING' ),
+	'building'    => array( 'MEDIA_BUILDING', 'PRODUCT_BUILDING' ),
+	'in_queue'    => array( 'PRODUCT_READY', 'REVIEW_READY' ),
+	'published'   => array( 'PUBLISHED' ),
+	'review'      => array( 'REVIEW', 'NEEDS_REVIEW', 'ERROR_FILE_NOT_FOUND', 'DEAD_LETTER' ),
+	'error'       => array( 'ERROR_BUTTON', 'ERROR_CLICK', 'ERROR_BOT_TIMEOUT', 'CHAIN_FAILED', 'ERROR_MATCH', 'DOWNLOAD_FAILED', 'MEDIA_FAILED', 'PRODUCT_FAILED' ),
+	'cancelled'   => array( 'SKIPPED', 'CANCELLED' ),
+);
+$gs_buckets = array_fill_keys( array_keys( $gs_state_bucket ), 0 );
+foreach ( $gs_bucket_rows as $gs_br ) {
+	foreach ( $gs_state_bucket as $gs_bk => $gs_states ) {
+		if ( in_array( (string) $gs_br['state'], $gs_states, true ) ) {
+			$gs_buckets[ $gs_bk ] += (int) $gs_br['c'];
+		}
+	}
+}
+$gs_bucket_labels = array(
+	'awaiting'    => array( '⏳', 'منتظر پردازش' ),
+	'downloading' => array( '⬇️', 'در حال دانلود' ),
+	'building'    => array( '🏗️', 'در حال ساخت محصول' ),
+	'in_queue'    => array( '📦', 'در صف انتشار' ),
+	'published'   => array( '✅', 'منتشر شده' ),
+	'review'      => array( '🟡', 'نیازمند بازبینی' ),
+	'error'       => array( '🔴', 'خطا' ),
+);
 ?>
 <div class="gi-console" id="gi-pipeline-page" dir="rtl">
 	<?php include STI_PATH . 'admin/views/golden-scan/partial-subnav.php'; ?>
+
+	<?php
+	$gs_steps_active = 7;
+	$gs_steps_note   = 'محصول‌های منتشرشده در ووکامرس می‌نشینند — استثناها به Review می‌روند';
+	include STI_PATH . 'admin/views/golden-scan/partial-steps.php';
+	?>
 
 	<?php if ( ! empty( $data['ok'] ) ) : ?>
 
@@ -103,6 +142,25 @@ $worker_interval = (int) ( class_exists( 'STI_GS_Automation' ) ? STI_GS_Automati
 					STOP امن است: هیچ process kill نمی‌شود، داده‌ای حذف نمی‌شود؛ START ادامه‌ی واقعی است.
 					محصول تازه برای انتشار از <a href="<?php echo esc_url( admin_url( 'admin.php?page=sti-golden-scan&gs_view=publish-queue' ) ); ?>">📦 صف انتشار</a> اضافه می‌شود.
 				</div>
+			<?php endif; ?>
+		</div>
+
+		<!-- ═══ ۱۰.۱۲ — نمای وضعیت (۷ سطل واقعی) ═══ -->
+		<div class="gi-card gi-span-12">
+			<div class="gi-card-head">
+				<h2 class="gi-card-title">نمای وضعیت</h2>
+				<span class="gi-card-sub">تعداد دقیق ردیف‌ها در هر وضعیت — لحظه‌ی بارگذاری صفحه (رویدادهای زنده در بخش‌های پایین)</span>
+			</div>
+			<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:var(--gi-s4);">
+				<?php foreach ( $gs_bucket_labels as $gs_bk => $gs_bl ) : ?>
+				<div class="gi-stat gi-stat--<?php echo ( $gs_bk === 'error' && $gs_buckets[ $gs_bk ] > 0 ) ? 'warning' : ( $gs_bk === 'published' ? 'success' : 'info' ); ?>">
+					<div class="gi-stat-v gi-nums"><?php echo number_format_i18n( $gs_buckets[ $gs_bk ] ); ?></div>
+					<div class="gi-stat-l"><?php echo esc_html( $gs_bl[0] . ' ' . $gs_bl[1] ); ?></div>
+				</div>
+				<?php endforeach; ?>
+			</div>
+			<?php if ( $gs_buckets['cancelled'] > 0 ) : ?>
+				<p class="gi-card-sub" style="margin-top:var(--gi-s3);">لغو‌شده (در شش وضعیت بالا نمی‌شمارد): <b><?php echo number_format_i18n( $gs_buckets['cancelled'] ); ?></b></p>
 			<?php endif; ?>
 		</div>
 
