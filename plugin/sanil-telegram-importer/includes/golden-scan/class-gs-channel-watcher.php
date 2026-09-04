@@ -693,6 +693,218 @@ class STI_GS_Channel_Watcher {
 		return $diag;
 	}
 
+	/**
+	 * ۱۰.۱۲-RC — تشخیص خشک «افزودن به صف» (dry-run) — فقط‌خواندنی.
+	 *
+	 * مسیر عملیاتی را کلمه‌به‌کلمه و ردیف‌به‌ردیف بازمی‌سازد (همان کوئری
+	 * انتخابِ create_sessions با فیلتر دسته و ترتیب اولویت، همان دروازه‌های
+	 * create_from_profile_item) ولی **هیچ اثری ندارد**: نه Session می‌سازد،
+	 * نه وضعیت profile_item را لمس می‌کند، نه state خط، نه Worker، نه Cron.
+	 * فقط SELECT/DESCRIBE/SHOW است.
+	 *
+	 * ورودی:  $items = [ ['wc_term_id'=>12, 'count'=>50], ... ]
+	 *         (همان payload دکمه‌ی «افزودن به صف»)
+	 * خروجی:  برای هر دسته: selected / no_item / existing_session /
+	 *         would_insert + فکت‌های لایه‌ی درج + حکم بسته (verdict).
+	 */
+	public static function diagnose_publish_queue( $items ) {
+		global $wpdb;
+		$items = is_array( $items ) ? $items : array();
+
+		/* ── لایه‌ی درج: فکت‌هایی که $wpdb->insert در create_from_profile_item به آن‌ها وابسته است ── */
+		$pipeline      = STI_GS_DB::pipeline_items_table();
+		$expected_cols = array( 'profile_item_id', 'message_pk', 'channel_id', 'file_code', 'category_id', 'state', 'created_at', 'updated_at' );
+		$actual_cols   = (array) $wpdb->get_col( "DESCRIBE {$pipeline}" );
+		$indexes       = (array) $wpdb->get_results( "SHOW INDEX FROM {$pipeline}", ARRAY_A );
+		$uniq_msg      = false;
+		foreach ( $indexes as $idx ) {
+			if ( (int) ( $idx['Non_unique'] ?? 1 ) === 0 && ( $idx['Column_name'] ?? '' ) === 'message_pk' ) {
+				$uniq_msg = true;
+			}
+		}
+		$insert_layer = array(
+			'table_exists'      => (bool) $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $pipeline ) ),
+			'physical_table'    => $pipeline,
+			'missing_columns'   => array_values( array_diff( $expected_cols, $actual_cols ) ),
+			'unique_message_pk' => $uniq_msg,
+		);
+		$broken_insert = ( ! $insert_layer['table_exists'] ) || ! empty( $insert_layer['missing_columns'] );
+
+		$items_t    = STI_GS_DB::profile_items_table();
+		$profiles_t = STI_GS_DB::profiles_table();
+		$messages_t = STI_GS_DB::messages_table();
+
+		$out = array(
+			'insert_layer' => $insert_layer,
+			'categories'   => array(),
+			'totals'       => array(
+				'selected'                       => 0,
+				'sti_gs_no_item'                 => 0,
+				'existing_session'               => 0,
+				'would_create'                   => 0,
+				'sti_gs_session_insert_failed'   => 0,
+				'created_predicted'              => 0,
+			),
+		);
+
+		foreach ( $items as $it ) {
+			$cat = (int) ( $it['wc_term_id'] ?? 0 );
+			$cnt = min( 1000, max( 1, (int) ( $it['count'] ?? 0 ) ) );
+			if ( $cat < 1 ) {
+				continue;
+			}
+
+			/* عددی که UI صف انتشار برای این دسته نشان می‌دهد (همان کوئری ۲جداولی صفحه) */
+			$ui_available = (int) $wpdb->get_var( $wpdb->prepare(
+				"SELECT COUNT(*) FROM {$items_t} pi
+				 INNER JOIN {$profiles_t} p ON p.id = pi.profile_id
+				 WHERE pi.status = %s AND p.default_category_id = %d",
+				'available', $cat
+			) );
+
+			/* ۱ — کوئری انتخاب: کلمه‌به‌کلمه همان create_sessions (دسته + اولویت score DESC) */
+			$selected = (array) $wpdb->get_results( $wpdb->prepare(
+				"SELECT pi.id
+				 FROM {$items_t} pi
+				 INNER JOIN {$profiles_t} p ON p.id = pi.profile_id
+				 WHERE pi.status = %s
+				   AND p.default_category_id IS NOT NULL
+				   AND p.default_category_id > 0
+				   AND p.default_category_id = %d
+				 ORDER BY pi.score DESC, pi.id ASC
+				 LIMIT %d",
+				'available', $cat, $cnt
+			), ARRAY_A );
+			$sel_error = (string) $wpdb->last_error;
+			$sel_ids   = array();
+			foreach ( $selected as $r ) {
+				$sel_ids[] = (int) $r['id'];
+			}
+
+			/* ۲ — طبقه‌بندی ردیف‌به‌ردیف از همان دروازه‌های create_from_profile_item (batch، فقط SELECT).
+			 * هر ردیفِ انتخاب‌شده دقیقاً یکی از چهار برچسب را می‌گیرد:
+			 *   sti_gs_no_item               — پیام در جدول messages نیست
+			 *   existing_session             — Sessionی برای همان پیام هست (در مسیر واقعی «ساخته‌شده» شمرده می‌شود)
+			 *   would_create                 — درج موفق خواهد بود (لایه‌ی درج سالم)
+			 *   sti_gs_session_insert_failed — لایه‌ی درج شکسته است (جدول/ستون) */
+			$outcome_of  = array();
+			$mks_by_item = array();
+			foreach ( $sel_ids as $sid ) {
+				$outcome_of[ $sid ] = 'sti_gs_no_item';
+			}
+			if ( $sel_ids ) {
+				$in  = implode( ',', $sel_ids );
+				$oks = (array) $wpdb->get_results(
+					"SELECT pi.id, pi.message_pk FROM {$items_t} pi
+					 INNER JOIN {$messages_t} m ON m.id = pi.message_pk
+					 WHERE pi.id IN ({$in})",
+					ARRAY_A
+				);
+				foreach ( $oks as $r ) {
+					$pid                = (int) $r['id'];
+					$mks_by_item[ $pid ] = (int) $r['message_pk'];
+					$outcome_of[ $pid ]  = 'would_create';
+				}
+			}
+
+			/* ۳ — Session موجود (فقط SELECT) */
+			if ( $mks_by_item ) {
+				$mks = array_map( 'intval', array_unique( array_values( $mks_by_item ) ) );
+				$inm = implode( ',', $mks );
+				$ex  = (array) $wpdb->get_results( "SELECT DISTINCT message_pk FROM {$pipeline} WHERE message_pk IN ({$inm})", ARRAY_A );
+				$ex_set = array();
+				foreach ( $ex as $r ) {
+					$ex_set[ (int) $r['message_pk'] ] = true;
+				}
+				foreach ( $mks_by_item as $pid => $mk ) {
+					if ( isset( $ex_set[ (int) $mk ] ) ) {
+						$outcome_of[ $pid ] = 'existing_session';
+					}
+				}
+			}
+
+			/* ۴ — اعمال لایه‌ی درج: would_create → sti_gs_session_insert_failed اگر لایه شکسته باشد */
+			$tally     = array( 'sti_gs_no_item' => 0, 'existing_session' => 0, 'would_create' => 0, 'sti_gs_session_insert_failed' => 0 );
+			$items_out = array();
+			foreach ( $sel_ids as $sid ) {
+				$oc = $outcome_of[ $sid ];
+				if ( 'would_create' === $oc && $broken_insert ) {
+					$oc = 'sti_gs_session_insert_failed';
+				}
+				$tally[ $oc ]++;
+				$items_out[] = array( 'id' => $sid, 'outcome' => $oc );
+			}
+			$created_pred = $tally['existing_session'] + $tally['would_create'];
+
+			/* نمونه‌ی ۱۰ ردیف اولِ یتیم (برای سوابق اجراکننده) */
+			$no_item_sample = array();
+			foreach ( $items_out as $io ) {
+				if ( 'sti_gs_no_item' === $io['outcome'] ) {
+					$no_item_sample[] = $io['id'];
+					if ( count( $no_item_sample ) >= 10 ) {
+						break;
+					}
+				}
+			}
+
+			$out['categories'][] = array(
+				'wc_term_id'        => $cat,
+				'requested'         => $cnt,
+				'ui_available'      => $ui_available,
+				'selected'          => count( $sel_ids ),
+				'selection_error'   => $sel_error,
+				'outcomes'          => $tally,
+				'created_predicted' => $created_pred,
+				'no_item_sample'    => $no_item_sample,
+				'items'             => $items_out,
+			);
+
+			$out['totals']['selected'] += count( $sel_ids );
+			foreach ( $tally as $k => $v ) {
+				$out['totals'][ $k ] += $v;
+			}
+			$out['totals']['created_predicted'] += $created_pred;
+		}
+
+		/* ── حکم بسته: هر خروجی، دقیقاً یک ریشه دارد (هیچ تفسیری نمی‌ماند) ── */
+		$tot  = $out['totals'];
+		$errs = array();
+		foreach ( $out['categories'] as $c ) {
+			if ( '' !== (string) $c['selection_error'] ) {
+				$errs[] = (string) $c['selection_error'];
+			}
+		}
+		$S = (int) $tot['selected'];
+		$N = (int) $tot['sti_gs_no_item'];
+		$E = (int) $tot['existing_session'];
+		$C = (int) $tot['would_create'];
+		$F = (int) $tot['sti_gs_session_insert_failed'];
+		if ( $errs ) {
+			$verdict = 'P1_SELECTION_ERROR';
+		} elseif ( 0 === $S ) {
+			$verdict = 'P1_SELECTION_EMPTY';
+		} elseif ( $N === $S ) {
+			$verdict = 'P2_ORPHAN_MESSAGES';
+		} elseif ( $F === $S ) {
+			$verdict = 'P3_INSERT_LAYER';
+		} elseif ( 0 === $N && 0 === $F ) {
+			$verdict = 'SHOULD_CREATE';
+		} else {
+			$verdict = 'MIXED';
+		}
+		$out['verdict'] = $verdict;
+
+		if ( class_exists( 'STI_Logger' ) ) {
+			STI_Logger::warning( sprintf(
+				'GS Publish-DryRun: verdict=%s selected=%d no_item=%d existing=%d would_create=%d insert_failed=%d broken_insert=%s errors=%s',
+				$verdict, $S, $N, $E, $C, $F,
+				$broken_insert ? 'YES' : 'no', $errs ? implode( '|', $errs ) : 'none'
+			) );
+		}
+
+		return $out;
+	}
+
 	/* ============================== گزارش ============================== */
 
 	public static function stats() {

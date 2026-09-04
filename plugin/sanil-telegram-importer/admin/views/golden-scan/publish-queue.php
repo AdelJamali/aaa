@@ -169,8 +169,11 @@ $next_sched = (array) $wpdb->get_results(
 
 			<div class="gi-flex" style="align-items:center;gap:var(--gi-s3);flex-wrap:wrap;margin-top:var(--gi-s3);">
 				<button id="gs-pq-add" class="gi-btn gi-btn--primary">📦 افزودن به صف انتشار</button>
+				<button id="gs-pq-dryrun" class="gi-btn" title="فقط‌خواندنی — مسیر واقعی را ردیف‌به‌ردیف بازمی‌سازد (همان کوئری، همان دروازه‌ها) ولی هیچ چیزی نمی‌سازد">🔍 پیش‌نمایش دقیق (بدون ساخت)</button>
 				<span id="gs-pq-add-result" class="gi-inline-res" role="status" aria-live="polite"></span>
 			</div>
+
+			<div id="gs-pq-dryrun-panel" hidden style="margin-top:var(--gi-s4);"></div>
 		</div>
 
 		<!-- ۳) برنامه‌ی انتشار (فقط‌خواندنی) -->
@@ -357,11 +360,107 @@ $next_sched = (array) $wpdb->get_results(
 					} else {
 						$r.text('❌ ' + ((res.data && res.data.message) || 'خطا')).addClass('err');
 					}
-				}).fail(function () {
-					$r.text('❌ خطای ارتباط').addClass('err');
-				}).always(function () {
-					$btn.prop('disabled', false);
-				});
+			}).fail(function () {
+				$r.text('❌ خطای ارتباط').addClass('err');
+			}).always(function () {
+				$btn.prop('disabled', false);
+			});
+			});
+
+			/* ۱۰.۱۲-RC — تشخیص خشک (فقط‌خواندنی): یک کلیک واقعی دقیقاً چه خواهد کرد */
+			function dryrunVerdictText(v, t, il) {
+				if (v === 'P2_ORPHAN_MESSAGES') {
+					return '⛔ حکم: P2_ORPHAN_MESSAGES — ریشه: پیام‌های یتیم؛ یک کلیک واقعی همه‌ی ' + t.selected + ' ردیف انتخاب‌شده را با sti_gs_no_item رد می‌کند (صفر Session)';
+				}
+				if (v === 'P3_INSERT_LAYER') {
+					return '⛔ حکم: P3_INSERT_LAYER — ریشه: لایه‌ی درج؛ همه‌ی ' + t.selected + ' ردیف با sti_gs_session_insert_failed رد می‌شوند' +
+						((il.missing_columns && il.missing_columns.length) ? ' (ستون‌های گمشده: ' + il.missing_columns.join(', ') + ')' : ' (جدول مقصد ناموجود/غیرمعمول)');
+				}
+				if (v === 'P1_SELECTION_ERROR') {
+					return '⛔ حکم: P1_SELECTION_ERROR — خود کوئری انتخاب خطا می‌دهد (متن خطا در جدول)؛ یک کلیک واقعی ۰ ردیف انتخاب می‌کند و بی‌صدا صفر می‌شود';
+				}
+				if (v === 'P1_SELECTION_EMPTY') {
+					return '⛔ حکم: P1_SELECTION_EMPTY — کوئری انتخاب ۰ ردیف برمی‌گرداند (کوئری سالم)؛ مغایرت بین موجودی نمایشی و انتخاب';
+				}
+				if (v === 'MIXED') {
+					var parts = [];
+					if (t.sti_gs_no_item) { parts.push(t.sti_gs_no_item + ' ردیف یتیم (sti_gs_no_item)'); }
+					if (t.sti_gs_session_insert_failed) { parts.push(t.sti_gs_session_insert_failed + ' ردیف (sti_gs_session_insert_failed)'); }
+					if (t.would_create) { parts.push(t.would_create + ' ردیف ساخته‌شده (would_create)'); }
+					if (t.existing_session) { parts.push(t.existing_session + ' Session قبلی (به‌حساب ساخته‌شده)'); }
+					return '⚠ حکم: MIXED — ' + parts.join(' + ');
+				}
+				return '✅ حکم: SHOULD_CREATE — لایه‌ی درج سالم؛ با همین ورودی کلیک واقعی ' + t.created_predicted + ' مورد می‌سازد (اگر کلیک واقعی ۰ داد، ورودی یا زمان اجرا متفاوت بوده است)';
+			}
+			$('#gs-pq-dryrun').on('click', function () {
+				var $btn = $(this);
+				var $panel = $('#gs-pq-dryrun-panel');
+				var items = selected();
+				if (!items.length) {
+					$('#gs-pq-add-result').text('اول حداقل یک دسته را در جدول بالایی تیک بزنید.').addClass('err');
+					return;
+				}
+				var total = items.reduce(function (s, it) { return s + it.count; }, 0);
+				if (total > 1000) {
+					$('#gs-pq-add-result').text('مجموع هر بار حداکثر ۱۰۰۰ محصول.').addClass('err');
+					return;
+				}
+				$btn.prop('disabled', true);
+				$panel.html('<p class="gi-card-sub">در حال بازنمایی مسیر واقعی (فقط‌خواندنی؛ هیچ چیزی ساخته نمی‌شود)…</p>').prop('hidden', false);
+				post('sti_gs_publish_queue_dryrun', { items: items.map(function (it) { return { wc_term_id: it.cat, count: it.count }; }) })
+					.done(function (res) {
+						if (!res || !res.success || !res.data) {
+							$panel.html('<p class="gi-card-sub">❌ خطا در تشخیص: ' + esc((res && res.data && res.data.message) || 'نامشخص') + '</p>');
+							return;
+						}
+						var d = res.data, t = d.totals || {}, il = d.insert_layer || {};
+						var h = '<p class="gi-card-sub" style="font-weight:700;">' + esc(dryrunVerdictText(d.verdict, t, il)) + '</p>';
+						h += '<div class="gi-table-wrap"><table class="gi-table gi-responsive"><thead><tr>' +
+							'<th>دسته (term_id)</th><th>درخواستی</th><th>موجودی UI</th><th>انتخاب‌شده</th>' +
+							'<th>رد: یتیم<br><small dir="ltr">no_item</small></th>' +
+							'<th>Session قبلی<br><small dir="ltr">existing</small></th>' +
+							'<th>ساخته می‌شود<br><small dir="ltr">would_create</small></th>' +
+							'<th>رد: درج<br><small dir="ltr">insert_failed</small></th>' +
+							'<th>پیش‌بینی ساخته‌شده</th>' +
+							'</tr></thead><tbody>';
+						(d.categories || []).forEach(function (c) {
+							var o = c.outcomes || {};
+							h += '<tr>' +
+								'<td dir="ltr">' + esc(c.wc_term_id) + '</td>' +
+								'<td>' + c.requested + '</td>' +
+								'<td>' + c.ui_available + '</td>' +
+								'<td>' + c.selected + '</td>' +
+								'<td>' + (o.sti_gs_no_item || 0) + '</td>' +
+								'<td>' + (o.existing_session || 0) + '</td>' +
+								'<td>' + (o.would_create || 0) + '</td>' +
+								'<td>' + (o.sti_gs_session_insert_failed || 0) + '</td>' +
+								'<td>' + c.created_predicted + '</td>' +
+								'</tr>';
+							if (c.selection_error) {
+								h += '<tr><td colspan="9" dir="ltr" style="color:var(--gi-danger);"><code>' + esc(c.selection_error) + '</code></td></tr>';
+							}
+							if (c.no_item_sample && c.no_item_sample.length) {
+								h += '<tr><td colspan="9" dir="ltr" style="font-size:var(--gi-fs0);">نمونه‌ی profile_item‌های یتیم: ' + esc(c.no_item_sample.join(', ')) + '</td></tr>';
+							}
+							if (c.items && c.items.length) {
+								var pairs = c.items.map(function (it) { return it.id + '=' + it.outcome; }).join(', ');
+								h += '<tr><td colspan="9" dir="ltr"><details style="font-size:var(--gi-fs0);"><summary style="cursor:pointer;">برچسب هر ' + c.items.length + ' profile_item انتخاب‌شده</summary>' +
+									'<code style="display:block;white-space:pre-wrap;word-break:break-all;">' + esc(pairs) + '</code></details></td></tr>';
+							}
+						});
+						h += '</tbody></table></div>';
+						h += '<p class="gi-card-sub" style="margin-top:var(--gi-s3);">لایه‌ی درج: جدول <code dir="ltr">' + esc(il.physical_table || '—') + '</code>' +
+							' · ستون‌های گمشده: ' + ((il.missing_columns && il.missing_columns.length) ? esc(il.missing_columns.join(', ')) : 'هیچ') +
+							' · UNIQUE message_pk: ' + (il.unique_message_pk ? '✔' : '✘') +
+							' · جدول فیزیکی: ' + (il.table_exists === false ? '✘' : '✔') + '</p>';
+						$panel.html(h);
+					})
+					.fail(function () {
+						$panel.html('<p class="gi-card-sub">❌ خطای ارتباط</p>');
+					})
+					.always(function () {
+						$btn.prop('disabled', false);
+					});
 			});
 		});
 	}

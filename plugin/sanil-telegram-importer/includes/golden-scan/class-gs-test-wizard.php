@@ -44,6 +44,7 @@ class STI_GS_Test_Wizard {
 		add_action( 'wp_ajax_sti_gs_pipeline_start', array( $this, 'ajax_pipeline_start' ) );
 		add_action( 'wp_ajax_sti_gs_start_diagnostic', array( $this, 'ajax_start_diagnostic' ) );
 		add_action( 'wp_ajax_sti_gs_publish_queue_create', array( $this, 'ajax_publish_queue_create' ) );
+		add_action( 'wp_ajax_sti_gs_publish_queue_dryrun', array( $this, 'ajax_publish_queue_dryrun' ) );
 		add_action( 'wp_ajax_sti_gs_publish_queue_save_selection', array( $this, 'ajax_publish_queue_save_selection' ) );
 		/* ۱۰.۱۱ — Start/Stop + مانیتور زنده + Review زنده */
 		add_action( 'wp_ajax_sti_gs_line_start', array( $this, 'ajax_line_start' ) );
@@ -1143,6 +1144,42 @@ class STI_GS_Test_Wizard {
 	/**
 	 * ۱۰.۱۲ — ذخیره‌ی انتخاب دسته‌های انتشار (optionِ B4).
 	 */
+	/**
+	 * ۱۰.۱۲-RC — تشخیص خشک «افزودن به صف» (فقط‌خواندنی).
+	 *
+	 * همان payload دکمه‌ی «افزودن» (items[]) را می‌گیرد و گزارش می‌دهد یک
+	 * کلیک واقعی دقیقاً چه خواهد کرد — بدون هیچ اثری: نه Session،
+	 * نه state خط، نه Worker، نه Cron.
+	 */
+	public function ajax_publish_queue_dryrun() {
+		$this->check_ajax();
+		$raw   = ( isset( $_POST['items'] ) && is_array( $_POST['items'] ) ) ? (array) wp_unslash( $_POST['items'] ) : array();
+		$items = array();
+		$total = 0;
+		foreach ( $raw as $it ) {
+			if ( ! is_array( $it ) ) {
+				continue;
+			}
+			$cat = (int) ( $it['wc_term_id'] ?? 0 );
+			$cnt = (int) ( $it['count'] ?? 0 );
+			if ( $cat < 1 || $cnt < 1 || $cnt > 1000 ) {
+				continue;
+			}
+			$items[] = array( 'wc_term_id' => $cat, 'count' => $cnt );
+			$total += $cnt;
+			if ( count( $items ) >= 20 ) {
+				break;
+			}
+		}
+		if ( ! $items ) {
+			wp_send_json_error( array( 'message' => 'حداقل یک دسته با تعداد معتبر انتخاب کنید.' ), 400 );
+		}
+		if ( $total > 1000 ) {
+			wp_send_json_error( array( 'message' => 'مجموع هر بار حداکثر ۱۰۰۰ محصول.' ), 400 );
+		}
+		wp_send_json_success( STI_GS_Channel_Watcher::diagnose_publish_queue( $items ) );
+	}
+
 	public function ajax_publish_queue_save_selection() {
 		$this->check_ajax();
 		$raw  = ( isset( $_POST['categories'] ) && is_array( $_POST['categories'] ) ) ? (array) $_POST['categories'] : array();
