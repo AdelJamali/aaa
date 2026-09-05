@@ -206,13 +206,17 @@ class STI_GS_Auto_Worker {
 	/* =============================== تیک =============================== */
 
 	public static function tick() {
-		/* 10.12.9 — observability: خط تشخیصی هر تیک، قبل از هر gate. */
+		/* 10.12.9/10.12.10 — observability (P4): خط تشخیصی هر تیک، قبل از هر gate. */
 		if ( class_exists( 'STI_Logger' ) ) {
 			STI_Logger::info( sprintf(
-				'AUTO_WORKER_TICK enabled=%s line=%s active=%d',
+				'AUTO_WORKER_TICK enabled=%s line=%s safe_mode=%s halted=%s active=%d max_active=%d eligible_queue=%d',
 				var_export( self::is_enabled(), true ),
 				class_exists( 'STI_GS_Line' ) ? STI_GS_Line::state() : '?',
-				self::active_sessions()
+				var_export( ( function_exists( 'sti_v7_safe_mode' ) && sti_v7_safe_mode() ), true ),
+				var_export( ( class_exists( 'STI_GS_DB' ) && STI_GS_DB::is_halted() ), true ),
+				self::active_sessions(),
+				class_exists( 'STI_GS_Automation' ) ? (int) STI_GS_Automation::get( 'max_active_sessions' ) : 1,
+				self::eligible_count()
 			) );
 		}
 		if ( ! self::is_enabled() ) {
@@ -277,6 +281,24 @@ class STI_GS_Auto_Worker {
 	}
 
 	/**
+	 * 10.12.10 — تعداد Sessionهای قابل پردازش (دقیقاً همان شرط pick()).
+	 * برای AUTO_WORKER_TICK و self-heal — یک تعریف، دو مصرف‌کننده.
+	 */
+	public static function eligible_count() {
+		global $wpdb;
+		$table = STI_GS_DB::pipeline_items_table();
+		$now   = current_time( 'mysql' );
+		$place = implode( ',', array_fill( 0, count( self::TERMINAL ), '%s' ) );
+		return (int) $wpdb->get_var( $wpdb->prepare(
+			"SELECT COUNT(*) FROM {$table}
+			 WHERE state NOT IN ({$place})
+			   AND ( locked_until IS NULL OR locked_until < %s )
+			   AND ( next_retry_at IS NULL OR next_retry_at <= %s )",
+			array_merge( self::TERMINAL, array( $now, $now ) )
+		) );
+	}
+
+	/**
 	 * 10.12.9 — Self-healing وضعیت خط.
 	 *
 	 * Invariant: اگر worker enabled است و backlog قابل پردازش > 0 و
@@ -300,17 +322,8 @@ class STI_GS_Auto_Worker {
 			return false;
 		}
 
-		/* backlog قابل پردازش؟ — دقیقاً همان شرط pick(). */
-		$table   = STI_GS_DB::pipeline_items_table();
-		$now     = current_time( 'mysql' );
-		$place   = implode( ',', array_fill( 0, count( self::TERMINAL ), '%s' ) );
-		$backlog = (int) $wpdb->get_var( $wpdb->prepare(
-			"SELECT COUNT(*) FROM {$table}
-			 WHERE state NOT IN ({$place})
-			   AND ( locked_until IS NULL OR locked_until < %s )
-			   AND ( next_retry_at IS NULL OR next_retry_at <= %s )",
-			array_merge( self::TERMINAL, array( $now, $now ) )
-		) );
+		/* backlog قابل پردازش؟ — دقیقاً همان شرط pick() (eligible_count). */
+		$backlog = self::eligible_count();
 		if ( $backlog < 1 ) {
 			return false; // صفی برای پردازش نیست — self-heal دللیلی ندارد.
 		}
@@ -339,6 +352,7 @@ class STI_GS_Auto_Worker {
 	 * وضعیت ERROR خط می‌شود، نه Fatal.
 	 */
 	protected static function tick_inner() {
+		global $wpdb;
 		/*
 		 * فاصله‌ی خودمان را رعایت می‌کنیم حتی اگر کران هر دقیقه صدا بزند.
 		 * ۱۰.۹.۳ — نگهبان اتمیک (STI_GS_Cron_Gate) به‌جای خواندن/مقایسه/
@@ -382,7 +396,16 @@ class STI_GS_Auto_Worker {
 
 		$sessions = self::pick( self::effective_batch_size() );
 		if ( empty( $sessions ) ) {
+			if ( class_exists( 'STI_Logger' ) ) {
+				STI_Logger::info( 'AUTO_WORKER_PICK: selected=0' );
+			}
 			return;
+		}
+		/* 10.12.10 — P4: چه Sessionهایی انتخاب شدند (TEST D/E/F/G). */
+		if ( class_exists( 'STI_Logger' ) ) {
+			$pick_ids = array();
+			foreach ( $sessions as $s ) { $pick_ids[] = (int) $s['id']; }
+			STI_Logger::info( 'AUTO_WORKER_PICK: selected=' . count( $pick_ids ) . ' ids=[' . implode( ',', $pick_ids ) . ']' );
 		}
 
 		$report = array( 'advanced' => 0, 'waiting' => 0, 'failed' => 0, 'completed' => 0 );
@@ -434,6 +457,17 @@ class STI_GS_Auto_Worker {
 				'dl'  => $is_dl,
 				'prd' => ( $is_md || $is_pr ),
 			) );
+			/* 10.12.10 — P4: stage اجراشده — from/to/result (بدون secret). */
+			if ( class_exists( 'STI_Logger' ) ) {
+				$new_state = $wpdb->get_var( $wpdb->prepare(
+					"SELECT state FROM " . STI_GS_DB::pipeline_items_table() . " WHERE id = %d",
+					(int) $session['id']
+				) );
+				STI_Logger::info( sprintf(
+					'AUTO_WORKER_STAGE session=#%d from=%s to=%s result=%s',
+					(int) $session['id'], $state, ( null === $new_state ? '?' : $new_state ), $outcome
+				) );
+			}
 			if ( $is_dl ) {
 				$heavy_left--;
 			}

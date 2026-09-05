@@ -38,33 +38,40 @@ class STI_GS_Cron_Gate {
 	public static function pass( $name, $interval_sec ) {
 		global $wpdb;
 
-		$option    = 'sti_gs_gate_' . sanitize_key( $name );
-		$now       = time();
-		$threshold = $now - max( 1, (int) $interval_sec );
-
 		/*
-		 * 10.12.9 — ردیف غایب (اولین اجرا): فقط با Option API استاندارد
-		 * ساخته می‌شود. add_option() race-aware است: در رقابت، دقیقاً یک
-		 * درخواست در‌آوردن را می‌بیند؛ بقیه false برمی‌گیرند و در بازرسی
-		 * بعدی می‌بینند که ردیف حالا موجود است و به CAS UPDATE زیر می‌روند.
+		 * Fail policy (10.12.10 — آگاهانه و مستند):
+		 *   • اولین اجرای قانونی: seed idempotent با add_option() (مقدار 0)
+		 *     و بعد CAS — تیک اول همیشه رد می‌شود (by design، TEST J).
+		 *     ردیف‌ها هرگز از قبل seed نمی‌شوند تا TEST J واقعی بماند؛
+		 *     سازندهٔ طبیعی هر gate خودِ اولین pass() اوست.
+		 *   • شکست واقعی (ردیف حتی بعد از add_option ساخته نشد):
+		 *     fail-CLOSED (return false) + لاگ CRON_GATE_FAILED با
+		 *     last_error — هرگز success جعلی، هرگز ignore بی‌صدا.
+		 *   • concurrency: CAS UPDATE — فقط یکی از N درخواست موازی برنده.
 		 *
 		 * (INSERT قبلی ستون option_modified داشت — ستونی که در schema
 		 * استاندارد wp_options وجود ندارد؛ هر INSERT با SQL error شکست
 		 * می‌خورد و ردیف هرگز ساخته نمی‌شد ⇒ interval عملاً بی‌اثر می‌شد.)
 		 */
-		$exists = $wpdb->get_var( $wpdb->prepare(
-			"SELECT option_id FROM {$wpdb->options} WHERE option_name = %s",
+		$option    = 'sti_gs_gate_' . sanitize_key( $name );
+		$now       = time();
+		$threshold = $now - max( 1, (int) $interval_sec );
+
+		$prev = $wpdb->get_var( $wpdb->prepare(
+			"SELECT option_value FROM {$wpdb->options} WHERE option_name = %s",
 			$option
 		) );
-		if ( ! $exists ) {
-			/* seed = 0 → همیشه «کهنه» ⇒ اولین CAS حتماً رد می‌شود. */
+		if ( null === $prev ) {
+			/* اولین اجرا: seed = 0 → همیشه «کهنه» ⇒ اولین CAS حتماً رد می‌شود.
+			 * add_option() race-aware است: در رقابت، فقط یک درخواست
+			 * در‌آوردن را می‌بیند؛ بقیه در بازرسی دوم ردیف موجود را می‌بینند. */
 			add_option( $option, 0, '', 'no' );
-			$exists = $wpdb->get_var( $wpdb->prepare(
-				"SELECT option_id FROM {$wpdb->options} WHERE option_name = %s",
+			$prev = $wpdb->get_var( $wpdb->prepare(
+				"SELECT option_value FROM {$wpdb->options} WHERE option_name = %s",
 				$option
 			) );
-			if ( ! $exists ) {
-				/* ردیف هنوز نیست — شکست واقعی: بی‌صدا رد نمی‌شویم. */
+			if ( null === $prev ) {
+				/* شکست واقعی — fail-closed و با صدا. */
 				if ( class_exists( 'STI_Logger' ) ) {
 					STI_Logger::error( 'CRON_GATE_FAILED name=' . $name . ' reason=option_row_missing last_error=' . $wpdb->last_error );
 				}
@@ -87,6 +94,23 @@ class STI_GS_Cron_Gate {
 			$option,
 			$threshold
 		) );
-		return $affected > 0;
+		$pass = $affected > 0;
+
+		/* 10.12.10 — P4: لاگ هر pass (حداکثر یک تیک در هر hook — بدون spam). */
+		if ( class_exists( 'STI_Logger' ) ) {
+			$read_back = $wpdb->get_var( $wpdb->prepare(
+				"SELECT option_value FROM {$wpdb->options} WHERE option_name = %s",
+				$option
+			) );
+			STI_Logger::info( sprintf(
+				'CRON_GATE name=%s prev=%s write_affected=%d read_back=%s result=%s',
+				$name,
+				var_export( null === $prev ? null : (int) $prev, true ),
+				$affected,
+				var_export( null === $read_back ? null : (int) $read_back, true ),
+				$pass ? 'PASS' : 'BLOCKED'
+			) );
+		}
+		return $pass;
 	}
 }

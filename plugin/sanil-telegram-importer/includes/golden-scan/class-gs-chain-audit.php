@@ -1201,6 +1201,15 @@ class STI_GS_Chain_Audit {
 			$gates[ $g ] = null === $gv ? 'MISSING' : (string) $gv;
 		}
 
+		/* 10.12.10 — وضعیت scheduling کران (کشف cron مرده/غیرفعال): */
+		$cron = array();
+		if ( class_exists( 'STI_GS_Auto_Worker' ) ) {
+			$wts = wp_next_scheduled( STI_GS_Auto_Worker::HOOK );
+			$cron['worker'] = $wts ? array( 'next_ts' => (int) $wts, 'in_sec' => (int) $wts - time() ) : 'UNSCHEDULED';
+		}
+		$wts = wp_next_scheduled( 'sti_gs_channel_watcher' );
+		$cron['watcher'] = $wts ? array( 'next_ts' => (int) $wts, 'in_sec' => (int) $wts - time() ) : 'UNSCHEDULED';
+
 		/* آیا هنوز SQL نامعتبر option_modified در کد باقی است؟ (باید false) */
 		$code_check = array();
 		$base = defined( 'STI_PATH' ) ? STI_PATH : '';
@@ -1224,9 +1233,10 @@ class STI_GS_Chain_Audit {
 		if ( self::table_exists( $logs_table ) ) {
 			$logs = (array) $wpdb->get_results( "SELECT id, level, message, created_at FROM {$logs_table}
 			 WHERE message LIKE '%AUTO_WORKER_TICK%' OR message LIKE '%AUTO_WORKER_BLOCKED%'
-			    OR message LIKE '%LINE_START_FAILED%' OR message LIKE '%LINE_PERSISTENCE_FAILED%'
-			    OR message LIKE '%CRON_GATE_FAILED%' OR message LIKE '%AUTO_WORKER_SELFHEAL%'
-			 ORDER BY id DESC LIMIT 25", ARRAY_A );
+			    OR message LIKE '%AUTO_WORKER_PICK%' OR message LIKE '%AUTO_WORKER_STAGE%'
+			    OR message LIKE '%AUTO_WORKER_SELFHEAL%' OR message LIKE '%LINE_START_FAILED%'
+			    OR message LIKE '%LINE_PERSISTENCE%' OR message LIKE '%CRON_GATE%'
+			 ORDER BY id DESC LIMIT 40", ARRAY_A );
 		}
 
 		$verdicts = array(
@@ -1235,13 +1245,16 @@ class STI_GS_Chain_Audit {
 			'logical_matches_db'    => $match,
 			'gate_rows_present'     => ( 'MISSING' !== $gates['sti_gs_gate_watcher'] && 'MISSING' !== $gates['sti_gs_gate_auto_worker'] ),
 			'invalid_sql_removed'   => ! in_array( true, $code_check, true ),
+			'worker_cron_scheduled' => ( isset( $cron['worker'] ) && 'UNSCHEDULED' !== $cron['worker'] ),
+			'watcher_cron_scheduled'=> ( 'UNSCHEDULED' !== $cron['watcher'] ),
 		);
 
-		$audit_text = "LINE PERSISTENCE VERIFICATION (10.12.9 — read-only)\n"
+		$audit_text = "LINE PERSISTENCE VERIFICATION (10.12.10 — read-only)\n"
 			. 'option_row = ' . ( $row ? ( 'option_id=' . (int) $row['option_id'] . ' autoload=' . $row['autoload'] ) : 'MISSING' ) . "\n"
 			. 'db_value(raw) = ' . var_export( $raw_db, true ) . "\n"
 			. 'state()(logical) = ' . var_export( $logical, true ) . "\n"
 			. 'cron_gate_rows = ' . wp_json_encode( $gates ) . "\n"
+			. 'cron_scheduled = ' . wp_json_encode( $cron ) . "\n"
 			. 'invalid_option_modified_sql_present = ' . wp_json_encode( $code_check ) . "\n"
 			. 'verdicts = ' . wp_json_encode( $verdicts ) . "\n"
 			. 'recent_persistence_logs = ' . wp_json_encode( $logs );
@@ -1251,6 +1264,7 @@ class STI_GS_Chain_Audit {
 			'raw_db_value'  => $raw_db,
 			'logical_state' => $logical,
 			'cron_gates'    => $gates,
+			'cron'          => $cron,
 			'code_check'    => $code_check,
 			'verdicts'      => $verdicts,
 			'logs'          => $logs,

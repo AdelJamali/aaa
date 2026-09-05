@@ -499,8 +499,10 @@ $wt = class_exists( 'STI_GS_Channel_Watcher' ) ? STI_GS_Channel_Watcher::stats()
 				h5+=vrow('logical_matches_db — state() ≡ مقدار واقعی DB',v.logical_matches_db);
 				h5+=vrow('gate_rows_present — ردیف‌های Cron Gate موجود',v.gate_rows_present);
 				h5+=vrow('invalid_sql_removed — هیچ option_modified در کوئری واقعی',v.invalid_sql_removed);
+				h5+=vrow('worker_cron_scheduled — کران Worker schedule شده',v.worker_cron_scheduled);
+				h5+=vrow('watcher_cron_scheduled — کران Watcher schedule شده',v.watcher_cron_scheduled);
 				h5+='</tbody></table>';
-				h5+='<div dir="ltr" style="font-size:11px;font-family:ui-monospace,monospace;background:#fff;border:1px solid #bae6fd;border-radius:8px;padding:8px;margin-top:6px;white-space:pre-wrap;word-break:break-all;">db_value(raw)='+esc(JSON.stringify(lp.raw_db_value))+'\nstate()(logical)='+esc(JSON.stringify(lp.logical_state))+'\ncron_gate_rows='+esc(JSON.stringify(lp.cron_gates||{}))+'</div>';
+				h5+='<div dir="ltr" style="font-size:11px;font-family:ui-monospace,monospace;background:#fff;border:1px solid #bae6fd;border-radius:8px;padding:8px;margin-top:6px;white-space:pre-wrap;word-break:break-all;">db_value(raw)='+esc(JSON.stringify(lp.raw_db_value))+'\nstate()(logical)='+esc(JSON.stringify(lp.logical_state))+'\ncron_gate_rows='+esc(JSON.stringify(lp.cron_gates||{}))+'\ncron_scheduled='+esc(JSON.stringify(lp.cron||{}))+'</div>';
 				if((lp.logs||[]).length){h5+=section('recent persistence logs',kvTable(lp.logs||[]),false);}
 				h5+='<details open style="margin:8px 0;border:1px solid #7dd3fc;border-radius:8px;background:#fff;"><summary style="cursor:pointer;padding:6px 10px;font-size:12px;font-weight:700;">📋 LINE PERSISTENCE EVIDENCE (قابل کپی)</summary><div style="padding:0 10px 10px;"><pre dir="ltr" style="background:#0f172a;color:#e2e8f0;border-radius:8px;padding:10px;font-size:11px;line-height:1.7;white-space:pre-wrap;word-break:break-all;margin:0;">'+esc(lp.audit_text||'')+'</pre></div></details>';
 				h+=h5;

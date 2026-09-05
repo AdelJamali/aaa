@@ -98,6 +98,29 @@ class STI_GS_Line {
 	}
 
 	/**
+	 * 10.12.10 — Seed کردن idempotentِ option (رانتایم + activation).
+	 *
+	 * در هر بار load (sti_boot روی plugins_loaded — در همهٔ contextها
+	 * شامل cron) و در activation صدا زده می‌شود: اگر ردیف غایب باشد،
+	 * فقط با add_option() (STOPPED, autoload=no) ساخته می‌شود.
+	 *   • idempotent: هرگز مقدار موجود را overwrite نمی‌کند.
+	 *   • بدون هیچ SQL خام روی wp_options و بدون تغییر schema.
+	 *   • هزینه: یک get_option در هر load (در نبود ردیف، یک add_option).
+	 *
+	 * این دقیقاً همان شکاف 10.12.9 است: آن‌وقت seed فقط در activation
+	 * (که با نصب ZIP روی سایت موجود اجرا نمی‌شود) و در self-heal
+	 * (که به firingِ cron وابسته بود) رخ می‌داد.
+	 */
+	public static function maybe_seed() {
+		if ( get_option( self::OPTION, '__STI_UNSET__' ) === '__STI_UNSET__' ) {
+			add_option( self::OPTION, self::STOPPED, '', 'no' );
+			if ( class_exists( 'STI_Logger' ) ) {
+				STI_Logger::info( 'گلدن اسکن خط تولید: option «' . self::OPTION . '» با مقدار ' . self::STOPPED . ' seed شد (10.12.10).' );
+			}
+		}
+	}
+
+	/**
 	 * Recovery (10.12.9): اگر ردیف option غایب یا خراب باشد، با Option API
 	 * استانداردWordPress آن را بسازد/نرمال کند — امن و race-aware.
 	 *
@@ -144,18 +167,30 @@ class STI_GS_Line {
 		return null === $v ? false : (string) $v;
 	}
 
-	/** ثبت خطای persistence واقعی — هرگز پنهان نمی‌شود. */
-	protected static function log_persistence_failure( $op, $requested, $actual, $reason = '' ) {
-		global $wpdb;
+	/**
+	 * 10.12.10 — P4: لاگ کامل persistence (هرگز پنهان نمی‌شود).
+	 *
+	 * فیلدها: op / requested / previous / write_result / wpdb_error /
+	 * read_back / verified / reason — بدون هیچ secret/token.
+	 */
+	protected static function log_persistence( $op, $requested, $previous, $write_result, $wpdb_error, $read_back_value, $verified, $reason = '' ) {
+		$line = sprintf(
+			'LINE_PERSISTENCE op=%s requested=%s previous=%s write_result=%s wpdb_error=%s read_back=%s verified=%s reason=%s',
+			$op,
+			$requested,
+			var_export( $previous, true ),
+			var_export( (bool) $write_result, true ),
+			$wpdb_error,
+			var_export( $read_back_value, true ),
+			var_export( (bool) $verified, true ),
+			$reason
+		);
 		if ( class_exists( 'STI_Logger' ) ) {
-			STI_Logger::error( sprintf(
-				'LINE_PERSISTENCE_FAILED op=%s requested=%s actual=%s reason=%s last_error=%s',
-				$op,
-				$requested,
-				var_export( $actual, true ),
-				$reason,
-				$wpdb->last_error
-			) );
+			if ( $verified ) {
+				STI_Logger::info( $line );
+			} else {
+				STI_Logger::error( 'LINE_PERSISTENCE_FAILED ' . $line );
+			}
 		}
 	}
 
@@ -182,37 +217,56 @@ class STI_GS_Line {
 		if ( ! in_array( $to, self::STATES, true ) ) {
 			return self::state();
 		}
+		global $wpdb;
+
+		$previous = self::read_back(); // وضعیت قبل از write (برای log)
 
 		/* recovery: ردیف باید موجود باشد (add_option امن و race-aware). */
 		if ( ! self::ensure_row() ) {
-			self::log_persistence_failure( 'set_state', $to, self::read_back(), $reason );
+			self::log_persistence( 'set_state', $to, $previous, false, $wpdb->last_error, self::read_back(), false, $reason );
 			return self::state();
 		}
 
-		/* 2) WordPress Option API.
-		 * نکته: update_option وقتی مقدار تغییری نکند false برمی‌گرداند —
-		 * پس return value منبع حقیقت نیست؛ read-back است. */
-		update_option( self::OPTION, $to, 'no' );
-
-		/* 4) read-back مستقیم از دیتابیس. */
-		$actual = self::read_back();
-
-		if ( $actual !== $to ) {
-			/* 5) خطای واقعی. */
-			self::log_persistence_failure( 'set_state', $to, $actual, $reason );
-			return self::state();
+		/*
+		 * 2) WordPress Option API.
+		 * TEST K (10.12.10): fault-injection کنترل‌شده — فیلتری که true
+		 * برگرداند، write را شبیه‌سازی‌شده شکست می‌دهد (فقط برای تست؛
+		 * پیش‌فرض: هرگز فعال نیست).
+		 */
+		if ( apply_filters( 'sti_gs_line_write_fail', false ) ) {
+			$write_result = false;
+		} else {
+			$write_result = update_option( self::OPTION, $to, 'no' );
 		}
 
-		/* 7) cache فقط بعد از write تأییدشده. */
-		wp_cache_set( self::OPTION, $to, 'options' );
+		/*
+		 * 3/4) verify دوتایی:
+		 *   a) read-back مستقیم از دیتابیس (حقیقت نهایی)
+		 *   b) get_option() — همان contractی که کل سیستم می‌خواند
+		 * (نکته: update_option وقتی مقدار تغییری نکند false برمی‌گرداند —
+		 *  return value منبع حقیقت نیست؛ read-back است.)
+		 */
+		$actual_db  = self::read_back();
+		$actual_opt = get_option( self::OPTION, '__STI_UNSET__' );
+		$verified   = ( $actual_db === $to && $actual_opt === $to );
 
-		if ( '' !== $reason && class_exists( 'STI_Logger' ) ) {
-			/* خط موفقیت فقط وقتی نوشته می‌شود که واقعاً persist شده باشد. */
-			STI_Logger::info( 'گلدن اسکن خط تولید: وضعیت → ' . $to . ' (' . $reason . ')' );
+		if ( $verified ) {
+			/* 5) cache فقط بعد از write تأییدشده. */
+			wp_cache_set( self::OPTION, $to, 'options' );
+			self::log_persistence( 'set_state', $to, $previous, (bool) $write_result, $wpdb->last_error, $actual_db, true, $reason );
+			if ( '' !== $reason && class_exists( 'STI_Logger' ) ) {
+				/* خط موفقیت فقط وقتی نوشته می‌شود که واقعاً persist شده باشد. */
+				STI_Logger::info( 'گلدن اسکن خط تولید: وضعیت → ' . $to . ' (' . $reason . ')' );
+			}
+			return $to;
 		}
 
-		/* 6) مقدار واقعی برگشتی است. */
-		return $to;
+		/*
+		 * 6) شکست واقعی — پنهان نمی‌شود:
+		 *    ERROR کامل + مقدار **واقعی** برمی‌گردد (نه موردنظر).
+		 */
+		self::log_persistence( 'set_state', $to, $previous, (bool) $write_result, $wpdb->last_error, $actual_db, false, $reason );
+		return self::state();
 	}
 
 	/* ============================ START / STOP ============================ */
@@ -275,18 +329,20 @@ class STI_GS_Line {
 	 *   • وقتی دیگر قفل زنده‌ای نماند → STOPPED (finalize_pause).
 	 */
 	public static function stop() {
+		global $wpdb;
+		$previous = self::read_back();
 		if ( in_array( self::state(), array( self::RUNNING, self::DEGRADED, self::ERROR ), true ) ) {
 			self::set_state( self::PAUSING, 'STOP خط توسط کاربر' );
 		}
 		self::finalize_pause();
-		$actual = self::state();
+		$actual   = self::state();
+		$verified = in_array( $actual, array( self::PAUSING, self::STOPPED ), true );
 		/*
-		 * 10.12.9 — verify: STOP باید خط را در PAUSING (قفل زنده مانده) یا
-		 * STOPPED بگذارد؛ هر چیز دیگر = خطای persistence صریح.
+		 * 10.12.9/10.12.10 — verify (P4): STOP باید خط را در PAUSING
+		 * (قفل زنده مانده) یا STOPPED بگذارد؛ هر چیز دیگر = خطای صریح.
+		 * در هر دو حالت لاگ کامل ثبت می‌شود (TEST H).
 		 */
-		if ( ! in_array( $actual, array( self::PAUSING, self::STOPPED ), true ) ) {
-			self::log_persistence_failure( 'stop', self::PAUSING . '/' . self::STOPPED, $actual, 'STOP خط توسط کاربر' );
-		}
+		self::log_persistence( 'stop', self::PAUSING . '/' . self::STOPPED, $previous, true, $wpdb->last_error, self::read_back(), $verified, 'STOP خط توسط کاربر' );
 		return $actual;
 	}
 

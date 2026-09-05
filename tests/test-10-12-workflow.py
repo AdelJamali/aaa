@@ -204,7 +204,7 @@ check('G6 cron gate: no INSERT, first-run via add_option, no silent fail',
       and 'CRON_GATE_FAILED' in gate)
 
 check('G7 worker observability (AUTO_WORKER_TICK / BLOCKED) + self-heal with read-back',
-      'AUTO_WORKER_TICK enabled=%s line=%s active=%d' in worker
+      'AUTO_WORKER_TICK enabled=%s line=%s safe_mode=%s halted=%s active=%d max_active=%d eligible_queue=%d' in worker
       and 'AUTO_WORKER_BLOCKED: reason=line_stopped' in worker
       and 'function self_heal_line()' in worker
       and 'AUTO_WORKER_SELFHEAL_FAILED' in worker
@@ -221,6 +221,37 @@ check('G9 activation seeds the line-state option once (WP Option API)',
 check('G10 diagnostic part17 verifies persistence read-only (SELECT only)',
       'part17_line_persistence' in audit
       and "SELECT option_id, option_value, autoload FROM {$wpdb->options}" in audit)
+
+# ── 10.12.10: runtime seed + P4 observability + TEST K fault injection ─────
+check('H1 idempotent maybe_seed() (add_option only when missing; never overwrite)',
+      'function maybe_seed()' in line
+      and "add_option( self::OPTION, self::STOPPED, '', 'no' )" in line
+      and "get_option( self::OPTION, '__STI_UNSET__' ) === '__STI_UNSET__'" in line)
+
+check('H2 runtime boot seeds the option (no activation/cron dependency)',
+      'STI_GS_Line::maybe_seed()' in main)
+
+check('H3 set_state double-verified (DB read-back + get_option) with P4 fields',
+      '$actual_db  = self::read_back()' in line
+      and "$actual_opt = get_option( self::OPTION, '__STI_UNSET__' )" in line
+      and 'LINE_PERSISTENCE op=%s requested=%s previous=%s write_result=%s wpdb_error=%s read_back=%s verified=%s reason=%s' in line)
+
+check('H4 TEST K controllable fault injection (filter, default off)',
+      "apply_filters( 'sti_gs_line_write_fail', false )" in line)
+
+check('H5 cron gate P4 log + documented fail policy (fail-closed, no silent fail)',
+      'CRON_GATE name=%s prev=%s write_affected=%d read_back=%s result=%s' in gate
+      and 'fail-CLOSED' in gate
+      and 'CRON_GATE_FAILED' in gate)
+
+check('H6 worker P4 logs (tick / pick / stage) + shared eligible_count',
+      'function eligible_count()' in worker
+      and 'AUTO_WORKER_PICK: selected=' in worker
+      and 'AUTO_WORKER_STAGE session=#%d from=%s to=%s result=%s' in worker)
+
+check('H7 diagnostic part17 exposes cron scheduling (dead-cron detection)',
+      'cron_scheduled' in audit
+      and 'wp_next_scheduled( STI_GS_Auto_Worker::HOOK )' in audit)
 
 print()
 total = PASS + FAIL

@@ -1,3 +1,38 @@
+== 10.12.10 ==
+* Version: 10.12.10 — Installable ZIP: `golden-importer-10.12.10.zip` (repo root).
+* 🐛 P0.1 RUNTIME SEED (closes the 10.12.9 gap — option still MISSING on host):
+  10.12.9 seeded only at activation (never triggered by ZIP install over an existing
+  site) and via worker self-heal (depends on the worker cron firing — which did not
+  happen on the host: both cron-gate rows stayed MISSING). Now:
+  `STI_GS_Line::maybe_seed()` runs on EVERY load (`sti_boot()` on plugins_loaded —
+  admin, frontend AND cron contexts): idempotent `add_option('sti_gs_line_state',
+  'STOPPED','','no')` when missing, never overwrites an existing value, no raw SQL,
+  no schema change. After installing 10.12.10, the row exists on the first page load.
+* 🔍 P0.2 set_state() DOUBLE VERIFICATION: write → direct-DB read-back AND
+  `get_option()` must both equal the requested state; any mismatch logs
+  LINE_PERSISTENCE_FAILED (P4 fields: op/requested/previous/write_result/wpdb_error/
+  read_back/verified/reason) and returns the ACTUAL state — never a fake success.
+* 🧪 TEST K FAULT INJECTION: `apply_filters('sti_gs_line_write_fail', false)` — a
+  mu-plugin returning true simulates a failed write to verify the failure path
+  (critical log + no fake RUNNING + worker does not continue). Default: off.
+* 📊 P4 DIAGNOSTIC LOGGING (no secrets — states/ids/timestamps only):
+  - every tick: AUTO_WORKER_TICK enabled/line/safe_mode/halted/active/max_active/eligible_queue
+  - AUTO_WORKER_BLOCKED: reason=line_stopped
+  - AUTO_WORKER_PICK selected + ids · AUTO_WORKER_STAGE session=#id from/to/result
+  - CRON_GATE name/prev/write_affected/read_back/result (PASS|BLOCKED)
+  - LINE_PERSISTENCE on every set_state/stop (verified=true|false)
+* ⚖️ P1 CRON GATE — documented fail policy: first legitimate run seeds its own row
+  idempotently via add_option() (seed 0 → first CAS passes by design, TEST J);
+  real failure = fail-CLOSED + CRON_GATE_FAILED with last_error — never a silent
+  fake success. CAS concurrency unchanged.
+* 🩺 part17 diagnostic extended: cron_scheduled (worker + watcher next-tick) to
+  detect dead/unscheduled WP-Cron; new log tokens collected.
+* P2/P3 unchanged: STOPPED gate intact (no bypass), self-heal = one attempt per
+  tick via Line::start() + read-back, no storms. P5/P6: Selection/Watcher/Fiber/
+  Chain Engine untouched (backlog 110 > limit 100 keeps the watcher from creating
+  — by design, unchanged).
+* Tests: 10.12 workflow 43/43 (new H1-H7) + 10.11 regression + P0 governor — all PASS.
+
 == 10.12.9 ==
 * Version: 10.12.9 — Installable ZIP: `golden-importer-10.12.9.zip` (repo root).
 * 🐛 P0 LINE-STATE PERSISTENCE FIX (root cause of the permanent `line_state=STOPPED`):

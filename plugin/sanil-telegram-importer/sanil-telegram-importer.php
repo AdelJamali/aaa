@@ -3,7 +3,7 @@
  * Plugin Name:       Golden Importer
  * Plugin URI:        https://goldenfile.ir
  * Description:       Telegram to WooCommerce importer with Agent Bridge for large files
- * Version:           10.12.9
+ * Version:           10.12.10
  * Author:            Golden File Team
  * Text Domain:       flavor-flavor
  * Domain Path:       /languages
@@ -14,7 +14,7 @@
 if ( ! defined( 'ABSPATH' ) ) {
 exit;
 }
-define( 'STI_VERSION', '10.12.9' );
+define( 'STI_VERSION', '10.12.10' );
 define( 'STI_FILE', __FILE__ );
 define( 'STI_PATH', plugin_dir_path( __FILE__ ) );
 define( 'STI_URL', plugin_dir_url( __FILE__ ) );
@@ -354,6 +354,10 @@ STI_Bot_Modes::install();
 STI_Bot_Modes::instance();
 /* گلدن اسکن */
 if ( class_exists( 'STI_GS_DB' ) ) { STI_GS_DB::install(); }
+/* گلدن اسکن 10.12.10 — Seed idempotent وضعیت خط در هر load (plugins_loaded —
+   همهٔ contextها شامل cron)؛ مستقل از activation و بدون وابستگی به firingِ cron.
+   هرگز مقدار موجود را overwrite نمی‌کند. */
+if ( class_exists( 'STI_GS_Line' ) ) { STI_GS_Line::maybe_seed(); }
 if ( class_exists( 'STI_GS_DB' ) ) { STI_GS_DB::init_admin_notices(); }
 if ( class_exists( 'STI_AI' ) && method_exists( 'STI_AI', 'repair_provider_ids' ) && ! get_option( 'sti_ai_ids_repaired' ) ) { STI_AI::repair_provider_ids(); update_option( 'sti_ai_ids_repaired', 1, false ); }
 if ( class_exists( 'STI_GS_Test_Wizard' ) ) { new STI_GS_Test_Wizard(); }
