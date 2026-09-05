@@ -35,6 +35,7 @@ class STI_GS_Test_Wizard {
 		add_action( 'wp_ajax_sti_gs_system_check', array( $this, 'ajax_system_check' ) );
 		add_action( 'wp_ajax_sti_gs_worker_toggle', array( $this, 'ajax_worker_toggle' ) );
 		add_action( 'wp_ajax_sti_gs_worker_stats', array( $this, 'ajax_worker_stats' ) );
+		add_action( 'wp_ajax_sti_gs_env_diag', array( $this, 'ajax_env_diag' ) );
 		add_action( 'wp_ajax_sti_gs_worker_run_now', array( $this, 'ajax_worker_run_now' ) );
 		add_action( 'wp_ajax_sti_gs_worker_reset', array( $this, 'ajax_worker_reset' ) );
 		add_action( 'wp_ajax_sti_gs_worker_chain_mode', array( $this, 'ajax_worker_chain_mode' ) );
@@ -136,6 +137,16 @@ class STI_GS_Test_Wizard {
 	public function ajax_worker_stats() {
 		$this->check_ajax();
 		wp_send_json_success( STI_GS_Auto_Worker::stats() );
+	}
+
+	/**
+	 * 10.12.12-diag — snapshot read-only از context فعلی (context وب/FPM).
+	 * برای مقایسه با context اجرای MTProto (خط `ENV_DIAG` در wp_sti_logs).
+	 * هیچ تغییری ایجاد نمی‌کند.
+	 */
+	public function ajax_env_diag() {
+		$this->check_ajax();
+		wp_send_json_success( class_exists( 'STI_GS_Env_Diag' ) ? STI_GS_Env_Diag::snapshot() : array( 'error' => 'class missing' ) );
 	}
 
 	/** تغییر حالت معماری زنجیره (legacy | auto | chain) — Feature Flag ۱۰.۸. */

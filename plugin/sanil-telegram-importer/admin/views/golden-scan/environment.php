@@ -171,5 +171,54 @@ function gs_env_row( $label, $value, $status = 'pass' ) {
 			</div>
 		</div>
 
+
+	<?php
+	/* 10.12.12-diag — تشخیص‌گر read-only context اجرای MTProto.
+	 * این بخش context همین فرآیند وب (FPM) را نشان می‌دهد؛ context واقعی
+	 * اجرای MTProto (فرآیند tick/cron) در خط لاگ «ENV_DIAG» داخل wp_sti_logs
+	 * ثبت می‌شود — مقایسه‌ی این دو، SAPI split را نشان می‌دهد. */
+	$env_diag = class_exists( 'STI_GS_Env_Diag' ) ? STI_GS_Env_Diag::snapshot() : array();
+	?>
+	<?php if ( ! empty( $env_diag ) ) : ?>
+	<div class="gi-card gi-span-12">
+		<div class="gi-card-head">
+			<h2 class="gi-card-title">🔬 تشخیص context اجرای MTProto (read-only — 10.12.12-diag)</h2>
+		</div>
+		<div class="gi-table-wrap" style="border:none;border-radius:0;">
+			<table class="gi-table gi-responsive">
+				<tbody>
+					<?php
+					$df    = (string) ( $env_diag['disable_functions'] ?? '' );
+					$funcs = (array) ( $env_diag['funcs'] ?? array() );
+					$proc  = (array) ( $env_diag['proc_status'] ?? array() );
+					$src   = (array) ( $env_diag['df_source'] ?? array() );
+					gs_env_row( 'SAPI (context همین صفحه)', esc_html( (string) ( $env_diag['sapi'] ?? 'n/a' ) ), 'pass' );
+					gs_env_row( 'PHP_VERSION / INT_SIZE', esc_html( (string) ( $env_diag['php_version'] ?? 'n/a' ) ) . ' / ' . esc_html( (string) ( $env_diag['int_size'] ?? 'n/a' ) ), 'pass' );
+					gs_env_row( 'PHP_BINARY', esc_html( (string) ( $env_diag['binary'] ?? 'n/a' ) ), 'pass' );
+					gs_env_row( 'PHP_OS', esc_html( (string) ( $env_diag['os'] ?? 'n/a' ) ), 'pass' );
+					gs_env_row( 'PID فرآیند فعلی', ( null === $env_diag['pid'] ) ? 'n/a' : (string) $env_diag['pid'], 'pass' );
+					gs_env_row( 'memory_limit (runtime)', esc_html( (string) ( $env_diag['memory_limit'] ?? 'n/a' ) ), 'pass' );
+					gs_env_row( 'memory_get_usage(true)', ( null === $env_diag['mem_usage_bytes'] ) ? 'n/a' : number_format_i18n( (int) $env_diag['mem_usage_bytes'] ) . ' B', 'pass' );
+					gs_env_row( 'memory_get_peak_usage(true)', ( null === $env_diag['mem_peak_bytes'] ) ? 'n/a' : number_format_i18n( (int) $env_diag['mem_peak_bytes'] ) . ' B', 'pass' );
+					gs_env_row( 'disable_functions (runtime)', '' === $df ? 'خالی' : esc_html( $df ), '' === $df ? 'pass' : 'warn' );
+					gs_env_row( 'منبع disable_functions', esc_html( (string) ( $src['source_constant'] ?? 'n/a' ) ) . ( ( 'n/a' !== ( $src['local_value_dir'] ?? 'n/a' ) ) ? ' — ' . esc_html( (string) $src['local_value_dir'] ) : '' ), 'pass' );
+					foreach ( $funcs as $fname => $finfo ) {
+						$ok = ! empty( $finfo['callable'] );
+						gs_env_row( 'تابع ' . $fname, ( ! empty( $finfo['exists'] ) ? 'defined' : 'undefined' ) . ' / ' . ( $ok ? 'callable' : 'NOT callable' ), $ok ? 'pass' : 'fail' );
+					}
+					gs_env_row( 'extension «standard» لودشده', ! empty( $env_diag['std_ext_loaded'] ) ? 'بله' : 'خیر', ! empty( $env_diag['std_ext_loaded'] ) ? 'pass' : 'fail' );
+					gs_env_row( '/proc/self/status', empty( $proc['available'] ) ? 'UNOBSERVABLE' : ( 'VmSize=' . esc_html( (string) ( $proc['vm_size'] ?? 'n/a' ) ) . ' · VmPeak=' . esc_html( (string) ( $proc['vm_peak'] ?? 'n/a' ) ) . ' · VmRSS=' . esc_html( (string) ( $proc['vm_rss'] ?? 'n/a' ) ) . ' · Threads=' . esc_html( (string) ( $proc['threads'] ?? 'n/a' ) ) ), empty( $proc['available'] ) ? 'warn' : 'pass' );
+					?>
+				</tbody>
+			</table>
+		</div>
+		<div class="gi-card-sub" style="margin:0 var(--gi-s4) var(--gi-s4);">
+			برای context واقعی اجرای MTProto (همان فرآیند tick/cron که ممکن است Fiber mmap ENOMEM بدهد)، خط لاگ
+			<code dir="ltr">ENV_DIAG</code> را در <code dir="ltr">wp_sti_logs</code> ببینید — همان فیلدها، در همان فرآیندِ شکست‌خورده.
+			این بخش هیچ تغییری ایجاد نمی‌کند (فقط خواندن).
+		</div>
+	</div>
+	<?php endif; ?>
+
 	</div>
 </div>

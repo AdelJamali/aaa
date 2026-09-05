@@ -49,6 +49,8 @@ class STI_MTProto {
 
 	/** @var int 10.9.3 — تعداد بازیابی‌های client در این درخواست (مثل فیوز). */
 	protected static $ipc_recycles = 0;
+	/** 10.12.12-diag — ENV_DIAG یک‌بار در هر درخواست ثبت شود. */
+	protected static $env_diag_logged = false;
 
 	/**
 	 * @var int 10.9.3 — سقف بازیابی client در هر درخواست.
@@ -612,6 +614,13 @@ class STI_MTProto {
 		}
 
 		self::install_loop_guard();
+
+		/* 10.12.12-diag — ثبت read-only context همین فرآیند (همان context که
+		 * MTProto اجرا می‌شود)؛ فقط یک خط لاگ، بدون هیچ تغییر رفتار. */
+		if ( ! self::$env_diag_logged && class_exists( 'STI_GS_Env_Diag' ) ) {
+			self::$env_diag_logged = true;
+			STI_Logger::info( 'ENV_DIAG ' . wp_json_encode( STI_GS_Env_Diag::snapshot() ) );
+		}
 
 		// روی هاست‌های اشتراکی memory_limit اغلب ۱۲۸M است که برای MadelineProto
 		// (همراه وردپرس) کافی نیست — سعی کن بالا ببری (اگر هاست اجازه دهد).
