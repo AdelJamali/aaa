@@ -13,6 +13,10 @@ ROOT = os.path.join(os.path.dirname(__file__), '..', 'plugin', 'sanil-telegram-i
 WATCHER = os.path.join(ROOT, 'includes', 'golden-scan', 'class-gs-channel-watcher.php')
 PQUEUE  = os.path.join(ROOT, 'includes', 'golden-scan', 'class-gs-publish-queue.php')
 WIZARD  = os.path.join(ROOT, 'includes', 'golden-scan', 'class-gs-test-wizard.php')
+DB      = os.path.join(ROOT, 'includes', 'golden-scan', 'class-gs-db.php')
+SESSION = os.path.join(ROOT, 'includes', 'golden-scan', 'class-gs-session.php')
+AUDIT   = os.path.join(ROOT, 'includes', 'golden-scan', 'class-gs-chain-audit.php')
+WORKERV = os.path.join(ROOT, 'admin', 'views', 'golden-scan', 'worker.php')
 
 PASS = 0
 FAIL = 0
@@ -36,6 +40,10 @@ def read(p):
 watcher = read(WATCHER)
 pqueue  = read(PQUEUE)
 wizard  = read(WIZARD)
+db      = read(DB)
+session = read(SESSION)
+audit   = read(AUDIT)
+workerv = read(WORKERV)
 
 # ── B1: category filter + priority order in create_sessions ──────────────
 check('B1a create_sessions signature (3 optional params)',
@@ -111,6 +119,51 @@ check('D3 nonce/capability unchanged (check_ajax same as before)',
 
 check('D4 start_pipeline return keeps legacy keys (created/ready/worker_on/line)',
       all(k in watcher for k in ("'created'   => $created", "'ready'     => $ready", "'worker_on' => (bool) $worker_on", "'line'      =>")))
+
+# ── 10.12.8: shared eligibility contract (selection == session builder) ──
+check('E1 candidate_joins() defines both PK joins',
+      re.search(r'function candidate_joins\(\)', db) is not None
+      and "ON p.id = pi.profile_id" in db
+      and "ON m.id = pi.message_pk" in db)
+
+check('E2 selection uses the shared contract (no divergent JOIN set)',
+      'STI_GS_DB::candidate_joins()' in watcher)
+
+check('E3 session builder uses the same shared contract',
+      'STI_GS_DB::candidate_joins()' in session)
+
+check('E4 diagnostic part16 builds current+fixed from the same contract',
+      audit.count('STI_GS_DB::candidate_joins()') >= 2
+      and '$sql_fixed = $sql_current;' in audit)
+
+check('E5 selection still guards available + category (contract only adds joins)',
+      "WHERE pi.status = %s" in watcher
+      and "p.default_category_id IS NOT NULL" in watcher
+      and "p.default_category_id > 0" in watcher)
+
+def strip_comments(s):
+    s = re.sub(r'/\*.*?\*/', ' ', s, flags=re.S)
+    s = re.sub(r'//[^\n]*', ' ', s)
+    return s
+
+check('E6 no destructive statement introduced by the contract files (code only, comments excluded)',
+      all('DELETE FROM' not in strip_comments(s) and 'TRUNCATE' not in strip_comments(s)
+          and 'DROP TABLE' not in strip_comments(s) for s in (db, session, audit)))
+
+# ── 10.12.8 §24: diagnostic must not mis-report an intended-absent element ──
+check('F1 PHP render condition ($wt) is shared with the JS diagnostic',
+      '$wt ? ' in workerv and 'WT_CARD_INTENDED' in workerv
+      and '$wt = class_exists( ' in workerv)
+
+check('F2 DOM probe is deferred until the document is ready',
+      'var elT=null,elR=null,booted=false' in workerv
+      and 'if(!booted){return;}' in workerv
+      and 'function boot(){' in workerv
+      and ('DOMContentLoaded' in workerv or "document.readyState" in workerv))
+
+check('F3 intended-absent card is reported EXPECTED, not a broken chain',
+      'EXPECTED (by design)' in workerv
+      and 'WT_CARD_INTENDED===false' in workerv)
 
 print()
 total = PASS + FAIL

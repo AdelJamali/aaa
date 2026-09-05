@@ -1027,10 +1027,10 @@ class STI_GS_Chain_Audit {
 		$left    = $cap > 0 ? max( 0, $cap - STI_GS_Channel_Watcher::created_today() ) : PHP_INT_MAX;
 		$room    = max( 1, min( STI_GS_Channel_Watcher::batch_size(), $left, STI_GS_Channel_Watcher::backlog_limit() - $backlog ) );
 
-		/* 1) query دقیق production (create_sessions L404-414، مسیر cron): */
+		/* 1) query دقیق production (create_sessions — 10.12.8: قرارداد مشترک candidate_joins): */
 		$sql_current = "SELECT pi.id
 		 FROM {$items} pi
-		 INNER JOIN {$profiles} p ON p.id = pi.profile_id
+		 " . STI_GS_DB::candidate_joins() . "
 		 WHERE pi.status = 'available'
 		   AND p.default_category_id IS NOT NULL
 		   AND p.default_category_id > 0
@@ -1041,8 +1041,7 @@ class STI_GS_Chain_Audit {
 		/* 2) اولین candidate سالم در کل eligible (رتبه = تعداد eligible با id کمتر + 1): */
 		$first_valid_id = (int) $wpdb->get_var( "SELECT MIN(pi.id)
 		 FROM {$items} pi
-		 INNER JOIN {$messages} m ON m.id = pi.message_pk
-		 INNER JOIN {$profiles} p ON p.id = pi.profile_id
+		 " . STI_GS_DB::candidate_joins() . "
 		 WHERE pi.status = 'available' AND p.default_category_id IS NOT NULL AND p.default_category_id > 0" );
 		$first_valid_rank     = null;
 		$orphans_before_first = null;
@@ -1064,16 +1063,9 @@ class STI_GS_Chain_Audit {
 			}
 		}
 
-		/* 4) PREFLIGHT — queryِ «پس از Patch» (Option A: + INNER JOIN messages) — بدون اعمال Patch: */
-		$sql_fixed = "SELECT pi.id
-		 FROM {$items} pi
-		 INNER JOIN {$profiles} p ON p.id = pi.profile_id
-		 INNER JOIN {$messages} m ON m.id = pi.message_pk
-		 WHERE pi.status = 'available'
-		   AND p.default_category_id IS NOT NULL
-		   AND p.default_category_id > 0
-		 ORDER BY pi.id ASC
-		 LIMIT " . (int) $room;
+		/* 4) PREFLIGHT — 10.12.8: query production از قرارداد مشترک ساخته می‌شود؛
+		   پس از Option A، «query اصلاح‌شده» = query production (یک تعریف، سه مصرف‌کننده). */
+		$sql_fixed = $sql_current;
 		$explain_fixed = (array) $wpdb->get_results( 'EXPLAIN ' . $sql_fixed, ARRAY_A );
 		$fixed_rows    = (array) $wpdb->get_results( $sql_fixed, ARRAY_A );
 		$fixed_ids     = array();
@@ -1143,7 +1135,7 @@ class STI_GS_Chain_Audit {
 			. 'first_valid_rank = ' . ( $first_valid_rank === null ? 'n/a' : $first_valid_rank ) . "\n"
 			. 'orphans_before_first_valid = ' . ( $orphans_before_first === null ? 'n/a' : $orphans_before_first ) . "\n"
 			. 'batch_occupancy = ' . wp_json_encode( $occupancy ) . "\n"
-			. '--- PREFLIGHT (post-fix query, NOT applied) ---' . "\n"
+			. '--- PREFLIGHT (post-fix query — 10.12.8: identical to production) ---' . "\n"
 			. 'selection_query(fixed) = ' . str_replace( "\n", ' ', $sql_fixed ) . "\n"
 			. 'EXPLAIN(fixed) = ' . wp_json_encode( $explain_fixed ) . "\n"
 			. 'fixed_first_' . count( $fixed_detail ) . ' = ' . wp_json_encode( $fixed_detail ) . "\n"

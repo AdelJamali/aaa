@@ -102,6 +102,23 @@ class STI_GS_DB {
 		return $wpdb->prefix . 'sti_gs_profile_items';
 	}
 
+	/**
+	 * قرارداد مشترک «candidate معتبر» (10.12.8).
+	 *
+	 * Selection (STI_GS_Channel_Watcher::create_sessions) و Session Builder
+	 * (STI_GS_Session::create_from_profile_item) هرگز نباید تعریف متفاوتی
+	 * از «معتبر» داشته باشند: یک profile item فقط زمانی candidate معتبر
+	 * است که هم پروفایلش و هم پیامش موجود باشند. هر دو سمت دقیقاً همین
+	 * JOINها را اجرا می‌کنند؛ تعریف اگر باید عوض شود، فقط همین یک تابع
+	 * عوض می‌شود. Diagnostic (part16) هم query production را از همین
+	 * قرارداد می‌سازد تا ابزار همیشه با کد production هم‌خوان باشد.
+	 * هر دو JOIN روی PRIMARY KEY است: fan-out ندارد و ارزان است.
+	 */
+	public static function candidate_joins() {
+		return "INNER JOIN " . self::profiles_table() . " p ON p.id = pi.profile_id"
+			. "\n\t\t\t INNER JOIN " . self::messages_table() . " m ON m.id = pi.message_pk";
+	}
+
 	public static function scan_runs_table() {
 		global $wpdb;
 		return $wpdb->prefix . 'sti_gs_scan_runs';

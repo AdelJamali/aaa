@@ -3,6 +3,9 @@ if ( ! defined( 'ABSPATH' ) ) { exit; }
 $stats = STI_GS_Auto_Worker::stats();
 $queue = class_exists( 'STI_GS_Publish_Queue' ) ? STI_GS_Publish_Queue::stats() : null;
 $today = $stats['today'] ?? array();
+/* 10.12.8 — شرط PHP رندر کارت Watcher یک‌بار، بالای صفحه محاسبه می‌شود تا
+   Diagnostic script همان شرط را ببیند (هماهنگی PHP ↔ JS، §24). */
+$wt = class_exists( 'STI_GS_Channel_Watcher' ) ? STI_GS_Channel_Watcher::stats() : null;
 ?>
 <div class="gi-console" dir="rtl">
 	<?php include STI_PATH . 'admin/views/golden-scan/partial-subnav.php'; ?>
@@ -30,6 +33,9 @@ $today = $stats['today'] ?? array();
 	</div>
 	<script>
 	/* STI-TMP-DIAG v1 — read-only runtime audit of the Watcher button chain. REMOVE AFTER AUDIT. */
+	/* 10.12.8 — هم‌خوانی با شرط PHP رندر کارت (if($wt)): اگر کارت عمداً render
+	   نشده باشد، diagnostic آن را «broken chain» گزارش نکند (§24). */
+	var WT_CARD_INTENDED = <?php echo $wt ? 'true' : 'false'; ?>;
 	(function(){
 	'use strict';
 	try{
@@ -40,8 +46,7 @@ $today = $stats['today'] ?? array();
 		/* line references of the audited chain — worker.php: 517/520 buttons, 747 <script>, 749-751 post(), 755 bind helper, 758/763/771/776 binds;
 		   class-sti-admin.php: 100 enqueue / 101 localize; class-gs-test-wizard.php: 76 toggle handler / 86 run handler */
 		var LN={toggleBtn:517,runBtn:520,scriptTag:747,postFn:749,postNonce:750,fetchLine:751,bindHelper:755,bindWt:758,bindWtRun:763,bindWdRun:771,bindWdRevive:776,adminEnqueue:100,adminLocalize:101,phpToggle:76,phpRun:86};
-		var elT=document.getElementById('gs-wt-toggle'),
-		    elR=document.getElementById('gs-wt-run'),
+		var elT=null,elR=null,booted=false,
 		    events=[],selfProbe=false,settled=false,lastClickSti=null;
 		function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 		function ts(){var d=new Date(),p=function(n,l){n=String(n);while(n.length<(l||2)){n='0'+n;}return n;};return p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds())+'.'+p(d.getMilliseconds(),3);}
@@ -118,8 +123,7 @@ $today = $stats['today'] ?? array();
 				},true);
 			}finally{selfProbe=false;}
 		}
-		probe(elT,'gs-wt-toggle');
-		probe(elR,'gs-wt-run');
+		/* 10.12.8 — ثبت probe در boot()، بعد از آماده‌شدن کامل DOM. */
 
 		/* ---------- rendering ---------- */
 		function renderStatic(){
@@ -131,8 +135,8 @@ $today = $stats['today'] ?? array();
 			if(regNonProbe('gs-wd-revive')){far=LN.bindWdRevive;}
 			var rt=regNonProbe('gs-wt-toggle');
 			var h='';
-			h+=srow('۱. آیا #gs-wt-toggle در DOM وجود دارد؟',!!elT,elT?('disabled='+elT.disabled+' data-on="'+(elT.dataset?elT.dataset.on:'?')+'"'):'getElementById → null');
-			h+=srow('۲. آیا #gs-wt-run در DOM وجود دارد؟',!!elR,elR?('disabled='+elR.disabled):'getElementById → null');
+			h+=srow('۱. آیا #gs-wt-toggle در DOM وجود دارد؟',!!elT||(WT_CARD_INTENDED===false),elT?('disabled='+elT.disabled+' data-on="'+(elT.dataset?elT.dataset.on:'?')+'"'):(WT_CARD_INTENDED===false?'intentionally not rendered (PHP: $wt empty — by design)':'getElementById → null'));
+			h+=srow('۲. آیا #gs-wt-run در DOM وجود دارد؟',!!elR||(WT_CARD_INTENDED===false),elR?('disabled='+elR.disabled):(WT_CARD_INTENDED===false?'intentionally not rendered (PHP: $wt empty — by design)':'getElementById → null'));
 			h+=srow('۳. آیا STI در زمان اجرای script وجود دارد؟',st.t==='object','typeof STI = '+st.t+' (at load)');
 			h+=srow('۴. آیا STI.nonce مقدار دارد؟',!!(st.n&&st.n!=='(undefined)'),st.n);
 			h+=srow('مکمل: STI.ajaxUrl / window.ajaxurl',!!(st.u&&st.u!=='(undefined)'),st.u+' / '+(typeof window.ajaxurl==='string'&&window.ajaxurl?window.ajaxurl:'(undefined)'));
@@ -158,7 +162,11 @@ $today = $stats['today'] ?? array();
 			if(fc.length&&fc[fc.length-1].meta&&fc[fc.length-1].meta.action){act=fc[fc.length-1].meta.action;}
 			var phpRef=act.indexOf('run')>-1?LN.phpRun:LN.phpToggle;
 			if(!elT){
-				out('HTML — element #gs-wt-toggle is NOT rendered in the DOM','getElementById("gs-wt-toggle") returned null on page load','admin/views/golden-scan/worker.php',LN.toggleBtn,'check the PHP condition that wraps the Watcher card (the if/endif block above the button); the script section is fine — there is simply nothing to bind.');
+				if(WT_CARD_INTENDED===false){
+					out('EXPECTED (by design) — Watcher card intentionally NOT rendered on this page','PHP condition: $wt empty (STI_GS_Channel_Watcher::stats() returned nothing) → if($wt) skipped the card','admin/views/golden-scan/worker.php','top (header) + card block','INFO — nothing to bind is NOT a broken chain; the chain-audit DOM check agrees (card MISSING by design). No listener is registered for the absent element.');
+				}else{
+					out('HTML — element #gs-wt-toggle is NOT rendered in the DOM','getElementById("gs-wt-toggle") returned null after DOMContentLoaded (page fully parsed)','admin/views/golden-scan/worker.php',LN.toggleBtn,'check the PHP condition that wraps the Watcher card (the if/endif block above the button); the script section is fine — there is simply nothing to bind.');
+				}
 				return;
 			}
 			if(settled&&!cl&&!rt){
@@ -206,6 +214,7 @@ $today = $stats['today'] ?? array();
 			out('NO BROKEN POINT in the chain — HTML→script→bind→click→handler→AJAX→PHP all verified OK','action='+(act||'?')+' → HTTP 200 JSON success=true, message: '+(m.msg||'(none)')+'; toggle handler will now location.reload()','STI_GS_Channel_Watcher::set_enabled() / run() (PHP layer)','—','If the Watcher state did NOT change after the reload → per the rule enter toggle()/run() at the PHP layer (stage 3). Otherwise the chain is healthy.');
 		}
 		function renderAll(){
+			if(!booted){return;}
 			try{renderStatic();}catch(e0){}
 			try{renderTrace();}catch(e1){}
 			try{verdict();}catch(e2){}
@@ -215,7 +224,20 @@ $today = $stats['today'] ?? array();
 		else{window.addEventListener('load',settle);setTimeout(settle,2000);}
 		var rb=document.getElementById('gs-wt-diag-reset');
 		if(rb){rb.addEventListener('click',function(){events.length=0;lastClickSti=null;renderAll();});}
-		renderAll();
+		/* 10.12.8 — این script در markup BEFORE دکمه‌ها قرار دارد؛ getElementById در
+		   زمان parse همیشه null برمی‌گرداند (false negative «DOM = NO»). همه‌ی
+		   پروب‌های DOM به DOMContentLoaded موکول می‌شوند تا با واقعیت صفحه (و با
+		   نتیجهٔ DOM check ابزار chain-audit) هم‌خوان باشند. */
+		function boot(){
+			if(booted){return;}
+			booted=true;
+			elT=document.getElementById('gs-wt-toggle');
+			elR=document.getElementById('gs-wt-run');
+			probe(elT,'gs-wt-toggle');
+			probe(elR,'gs-wt-run');
+			renderAll();
+		}
+		if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',boot);}else{boot();}
 	}catch(topErr){}
 	})();
 	</script>
@@ -779,7 +801,7 @@ $today = $stats['today'] ?? array();
 			<div id="gs-rb-result" class="gi-mt-5"></div>
 		</div>
 
-		<?php $wt = class_exists( 'STI_GS_Channel_Watcher' ) ? STI_GS_Channel_Watcher::stats() : null; ?>
+		<?php /* $wt بالای صفحه محاسبه شده (10.12.8). */ ?>
 		<?php if ( $wt ) : ?>
 
 		<!-- Watcher -->

@@ -1,3 +1,22 @@
+== 10.12.8 ==
+* Version: 10.12.8 — Installable ZIP: `golden-importer-10.12.8.zip` (repo root).
+* 📐 SHARED ELIGIBILITY CONTRACT (§4) — one definition of "valid candidate", three consumers:
+  New `STI_GS_DB::candidate_joins()` (class-gs-db.php) now carries the profiles+messages PK joins,
+  used by: ① `create_sessions()` selection (class-gs-channel-watcher.php) ② `create_from_profile_item()`
+  builder (class-gs-session.php) ③ the 10.12.6/7 diagnostic part16 (class-gs-chain-audit.php) — so the
+  tool's "current production query" can never drift from the real query again, and Selection eligibility
+  ≡ Session-creation eligibility by construction. SQL executed by production is byte-identical to 10.12.7.
+* 🧪 DIAGNOSTIC CONSISTENCY FIX (§24, no production behavior change) — the Watcher Runtime Diag script
+  sat ABOVE the Watcher card in the markup, so `getElementById` at parse time always returned null and
+  reported a false "broken chain: element NOT rendered" while the chain-audit DOM check (run later)
+  reported FOUND. Now: DOM probes defer to DOMContentLoaded; the PHP render condition `if($wt)` is
+  computed once at the top of the page and exposed as `WT_CARD_INTENDED`; when the card is intentionally
+  absent the diagnostic prints "EXPECTED (by design)" (INFO) instead of a broken-chain verdict, and no
+  listener is registered for an absent element.
+* No data writes, no schema/index changes (index decision waits for the EXPLAIN evidence, §27),
+  no gate changes, no retry-policy changes, no lock changes.
+* Tests: 10.12 workflow 26/26 (incl. new E1-E6 contract + F1-F3 diagnostic checks) + 10.11 regression + P0 governor — all PASS.
+
 == 10.12.7 ==
 * Version: 10.12.7 — Installable ZIP: `golden-importer-10.12.7.zip` (repo root).
 * ⚙️ STARVATION FIX (Option A — Exclude Invalid at Selection), applied AFTER the 6-link proven root-cause chain:

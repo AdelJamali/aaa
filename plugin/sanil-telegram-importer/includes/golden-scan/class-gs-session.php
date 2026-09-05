@@ -22,15 +22,13 @@ class STI_GS_Session {
 	public static function create_from_profile_item( $profile_item_id ) {
 		global $wpdb;
 		$profile_item_id = (int) $profile_item_id;
-		$items_table    = STI_GS_DB::profile_items_table();
-		$messages_table = STI_GS_DB::messages_table();
-		$profiles_table = STI_GS_DB::profiles_table();
+		$items_table = STI_GS_DB::profile_items_table();
+		/* 10.12.8 — eligibility مشترک با Selection: STI_GS_DB::candidate_joins() */
 
 		$row = $wpdb->get_row( $wpdb->prepare(
 			"SELECT pi.id AS profile_item_id, pi.profile_id, m.id AS message_pk, m.channel_id, m.file_code, p.default_category_id
 			 FROM {$items_table} pi
-			 INNER JOIN {$messages_table} m ON m.id = pi.message_pk
-			 INNER JOIN {$profiles_table} p ON p.id = pi.profile_id
+			 " . STI_GS_DB::candidate_joins() . "
 			 WHERE pi.id = %d",
 			$profile_item_id
 		), ARRAY_A );
