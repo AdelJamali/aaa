@@ -636,6 +636,10 @@ class STI_MTProto {
 
 		$candidates = $this->build_settings_candidates();
 
+		/* 10.12.11 — P4 instrumentation: مقادیر حافظه دورِ ساخت client
+		 * (شواهد کمّی برای خطاهای fiber/mmap — قبل و بعد از ساخت). */
+		$mem_before = function_exists( 'memory_get_usage' ) ? memory_get_usage( true ) : 0;
+
 		$last_error = null;
 		/* 10.12.11 — فیوز تخصیص حافظه: یک‌بار در هر درخواست. */
 		static $mem_healed = false;
@@ -646,6 +650,13 @@ class STI_MTProto {
 					$mad = new \danog\MadelineProto\API( self::session_path(), $settings );
 					$this->client = $mad;
 					$this->client_error = null;
+					STI_Logger::info( sprintf(
+						'MTProto client: ساخته شد — mem_before=%d mem_after=%d mem_peak=%d limit=%s',
+						$mem_before,
+						memory_get_usage( true ),
+						memory_get_peak_usage( true ),
+						ini_get( 'memory_limit' )
+					) );
 					return $mad;
 				} catch ( \Throwable $e ) {
 					self::rpc_fatal( $e ); // 10.9.3
@@ -672,7 +683,16 @@ class STI_MTProto {
 		}
 
 		$this->client_error = $last_error;
-		STI_Logger::error( 'MTProto: ساخت client ناموفق — ' . $last_error );
+		STI_Logger::error(
+			'MTProto: ساخت client ناموفق — ' . $last_error
+			. sprintf(
+				' | mem_before=%d mem_now=%d mem_peak=%d limit=%s',
+				$mem_before,
+				memory_get_usage( true ),
+				memory_get_peak_usage( true ),
+				ini_get( 'memory_limit' )
+			)
+		);
 		return new WP_Error( 'sti_mt_client', 'ساخت client ناموفق: ' . $last_error );
 	}
 

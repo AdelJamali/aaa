@@ -95,6 +95,10 @@ check('M5b detects "fiber stack allocate failed"', "'fiber stack allocate failed
 check('M5c once-per-request fuse (static)', 'static $mem_healed = false;' in cli)
 check('M5d heals via ipc_heal on memory failure', 'خطای تخصیص حافظه' in cli and 'ipc_heal' in cli)
 check('M5e bounded retry (2 attempts per candidate)', '$attempts = 2' in cli)
+check('M5f P4 memory instrumentation around client creation',
+      '$mem_before = function_exists( \'memory_get_usage\' ) ? memory_get_usage( true ) : 0;' in cli
+      and 'mem_before=%d mem_after=%d mem_peak=%d' in cli
+      and 'mem_before=%d mem_now=%d mem_peak=%d' in cli)
 
 # M6 — diagnostic orphan flags (read-only)
 check('M6a diagnostic exposes worker_pids', "'worker_pids'             => array_map( 'intval', $pids )" in src)
