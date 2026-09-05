@@ -43,10 +43,41 @@ class STI_GS_Cron_Gate {
 		$threshold = $now - max( 1, (int) $interval_sec );
 
 		/*
-		 * compare-and-set اتمیک: فقط اگر مقدار ثبت‌شده **قدیمی‌تر از
-		 * interval** باشد، به‌روزرسانی می‌شود. CAST برای مقادیر
-		 * غیرعددیِ احتمالی (ردیف خالی/خراب) ایمن است — آنها به 0
-		 * تبدیل شده و همیشه «کهنه» محسوب می‌شوند.
+		 * 10.12.9 — ردیف غایب (اولین اجرا): فقط با Option API استاندارد
+		 * ساخته می‌شود. add_option() race-aware است: در رقابت، دقیقاً یک
+		 * درخواست در‌آوردن را می‌بیند؛ بقیه false برمی‌گیرند و در بازرسی
+		 * بعدی می‌بینند که ردیف حالا موجود است و به CAS UPDATE زیر می‌روند.
+		 *
+		 * (INSERT قبلی ستون option_modified داشت — ستونی که در schema
+		 * استاندارد wp_options وجود ندارد؛ هر INSERT با SQL error شکست
+		 * می‌خورد و ردیف هرگز ساخته نمی‌شد ⇒ interval عملاً بی‌اثر می‌شد.)
+		 */
+		$exists = $wpdb->get_var( $wpdb->prepare(
+			"SELECT option_id FROM {$wpdb->options} WHERE option_name = %s",
+			$option
+		) );
+		if ( ! $exists ) {
+			/* seed = 0 → همیشه «کهنه» ⇒ اولین CAS حتماً رد می‌شود. */
+			add_option( $option, 0, '', 'no' );
+			$exists = $wpdb->get_var( $wpdb->prepare(
+				"SELECT option_id FROM {$wpdb->options} WHERE option_name = %s",
+				$option
+			) );
+			if ( ! $exists ) {
+				/* ردیف هنوز نیست — شکست واقعی: بی‌صدا رد نمی‌شویم. */
+				if ( class_exists( 'STI_Logger' ) ) {
+					STI_Logger::error( 'CRON_GATE_FAILED name=' . $name . ' reason=option_row_missing last_error=' . $wpdb->last_error );
+				}
+				return false;
+			}
+		}
+
+		/*
+		 * compare-and-set اتمیک (بدون تغییر): فقط اگر مقدار ثبت‌شده
+		 * **قدیمی‌تر از interval** باشد، به‌روزرسانی می‌شود. تنها
+		 * درخواستی که واقعاً ردیف را آپدیت کند برنده‌ی نوبت است.
+		 * CAST برای مقادیر غیرعددی ایمن است — آنها به 0 تبدیل و
+		 * «کهنه» محسوب می‌شوند.
 		 */
 		$affected = (int) $wpdb->query( $wpdb->prepare(
 			"UPDATE {$wpdb->options} SET option_value = %d
@@ -56,30 +87,6 @@ class STI_GS_Cron_Gate {
 			$option,
 			$threshold
 		) );
-		if ( $affected > 0 ) {
-			return true;
-		}
-
-		/*
-		 * ردیف هنوز وجود ندارد (اولین اجرا): INSERT با key یکتای
-		 * option_name — در رقابت، فقط یکی از درخواست‌ها در‌آوردن را
-		 * می‌بیند و برنده می‌شود.
-		 */
-		$exists = $wpdb->get_var( $wpdb->prepare(
-			"SELECT option_id FROM {$wpdb->options} WHERE option_name = %s",
-			$option
-		) );
-		if ( ! $exists ) {
-			$wpdb->query( $wpdb->prepare(
-				"INSERT INTO {$wpdb->options} (option_name, option_value, option_modified, option_autoload)
-				 VALUES (%s, %d, %s, 'no')",
-				$option,
-				$now,
-				current_time( 'mysql' )
-			) );
-			return true;
-		}
-
-		return false;
+		return $affected > 0;
 	}
 }

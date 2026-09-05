@@ -938,6 +938,15 @@ class STI_GS_Test_Wizard {
 	public function ajax_line_start() {
 		$this->check_ajax();
 		$state = STI_GS_Line::start();
+		/* 10.12.9 — موفقیت HTTP ≠ موفقیت persistence: اگر state بعد از
+		 * write واقعاً RUNNING نیست، خطای واقعی به UI برمی‌گردد
+		 * (جزییات در لاگ: LINE_START_FAILED). */
+		if ( STI_GS_Line::RUNNING !== $state ) {
+			wp_send_json_error( array(
+				'message' => 'پایدارسازی START ناموفق — وضعیت واقعی: ' . $state . ' (لاگ: LINE_START_FAILED)',
+				'state'   => $state,
+			) );
+		}
 		wp_send_json_success( array( 'state' => $state ) );
 	}
 
@@ -945,6 +954,13 @@ class STI_GS_Test_Wizard {
 	public function ajax_line_stop() {
 		$this->check_ajax();
 		$state = STI_GS_Line::stop();
+		/* 10.12.9 — verify: STOP باید PAUSING یا STOPPED به جا بگذارد. */
+		if ( ! in_array( $state, array( STI_GS_Line::PAUSING, STI_GS_Line::STOPPED ), true ) ) {
+			wp_send_json_error( array(
+				'message' => 'پایدارسازی STOP ناموفق — وضعیت واقعی: ' . $state . ' (لاگ: LINE_PERSISTENCE_FAILED)',
+				'state'   => $state,
+			) );
+		}
 		wp_send_json_success( array( 'state' => $state ) );
 	}
 

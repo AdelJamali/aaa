@@ -206,6 +206,15 @@ class STI_GS_Auto_Worker {
 	/* =============================== تیک =============================== */
 
 	public static function tick() {
+		/* 10.12.9 — observability: خط تشخیصی هر تیک، قبل از هر gate. */
+		if ( class_exists( 'STI_Logger' ) ) {
+			STI_Logger::info( sprintf(
+				'AUTO_WORKER_TICK enabled=%s line=%s active=%d',
+				var_export( self::is_enabled(), true ),
+				class_exists( 'STI_GS_Line' ) ? STI_GS_Line::state() : '?',
+				self::active_sessions()
+			) );
+		}
 		if ( ! self::is_enabled() ) {
 			return;
 		}
@@ -223,7 +232,24 @@ class STI_GS_Auto_Worker {
 		if ( class_exists( 'STI_GS_Line' ) ) {
 			$line = STI_GS_Line::state();
 			if ( STI_GS_Line::STOPPED === $line ) {
-				return;
+				/*
+				 * 10.12.9 — self-healing (بعد از root fix persistence):
+				 *   enabled + backlog قابل پردازش + safe_mode خاموش +
+				 *   halt خاموش  ⇒  Line نباید STOPPED بماند.
+				 * self-healing جای root fix نیست؛ فقط تضمین می‌کند حالت
+				 * شکسته برای همیشه نماند. بعد از start() وضعیت read-back
+				 * و verify می‌شود؛ اگر RUNNING نشد، پردازش شروع نمی‌شود.
+				 */
+				if ( ! self::self_heal_line() ) {
+					if ( class_exists( 'STI_Logger' ) ) {
+						STI_Logger::info( 'AUTO_WORKER_BLOCKED: reason=line_stopped' );
+					}
+					return;
+				}
+				$line = STI_GS_Line::state();
+				if ( STI_GS_Line::STOPPED === $line ) {
+					return; // self-heal ناموفق — پردازش نمی‌شود
+				}
 			}
 			if ( STI_GS_Line::PAUSING === $line ) {
 				STI_GS_Line::finalize_pause();
@@ -248,6 +274,62 @@ class STI_GS_Auto_Worker {
 		if ( class_exists( 'STI_GS_Line' ) && STI_GS_Line::ERROR === STI_GS_Line::state() ) {
 			STI_GS_Line::clear_error();
 		}
+	}
+
+	/**
+	 * 10.12.9 — Self-healing وضعیت خط.
+	 *
+	 * Invariant: اگر worker enabled است و backlog قابل پردازش > 0 و
+	 * safe mode خاموش است و emergency halt خاموش است، Line نباید
+	 * STOPPED باقی بماند.
+	 *
+	 * self-healing جای root fix نیست — بعد از اصلاح persistence این
+	 * فقط تضمین است که یک حالت شکسته (مثلاً خطای write) برای همیشه
+	 * مانع اتوماسیون نشود. وضعیت بعد از start() **read-back و verify**
+	 * می‌شود؛ اگر RUNNING نشد، پردازش شروع نمی‌شود و خطای صریح ثبت می‌شود.
+	 *
+	 * @return bool true = خط RUNNING است (پردازش مجاز).
+	 */
+	protected static function self_heal_line() {
+		global $wpdb;
+
+		if ( function_exists( 'sti_v7_safe_mode' ) && sti_v7_safe_mode() ) {
+			return false;
+		}
+		if ( class_exists( 'STI_GS_DB' ) && STI_GS_DB::is_halted() ) {
+			return false;
+		}
+
+		/* backlog قابل پردازش؟ — دقیقاً همان شرط pick(). */
+		$table   = STI_GS_DB::pipeline_items_table();
+		$now     = current_time( 'mysql' );
+		$place   = implode( ',', array_fill( 0, count( self::TERMINAL ), '%s' ) );
+		$backlog = (int) $wpdb->get_var( $wpdb->prepare(
+			"SELECT COUNT(*) FROM {$table}
+			 WHERE state NOT IN ({$place})
+			   AND ( locked_until IS NULL OR locked_until < %s )
+			   AND ( next_retry_at IS NULL OR next_retry_at <= %s )",
+			array_merge( self::TERMINAL, array( $now, $now ) )
+		) );
+		if ( $backlog < 1 ) {
+			return false; // صفی برای پردازش نیست — self-heal دللیلی ندارد.
+		}
+
+		$actual = STI_GS_Line::start();
+		if ( STI_GS_Line::RUNNING !== $actual ) {
+			if ( class_exists( 'STI_Logger' ) ) {
+				STI_Logger::error( sprintf(
+					'AUTO_WORKER_SELFHEAL_FAILED: line STOPPED, start() requested=RUNNING actual=%s last_error=%s — processing شروع نمی‌شود',
+					var_export( $actual, true ),
+					$wpdb->last_error
+				) );
+			}
+			return false;
+		}
+		if ( class_exists( 'STI_Logger' ) ) {
+			STI_Logger::info( 'AUTO_WORKER_SELFHEAL: line STOPPED → RUNNING (read-back verified), backlog=' . $backlog );
+		}
+		return true;
 	}
 
 	/**

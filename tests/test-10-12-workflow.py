@@ -17,6 +17,10 @@ DB      = os.path.join(ROOT, 'includes', 'golden-scan', 'class-gs-db.php')
 SESSION = os.path.join(ROOT, 'includes', 'golden-scan', 'class-gs-session.php')
 AUDIT   = os.path.join(ROOT, 'includes', 'golden-scan', 'class-gs-chain-audit.php')
 WORKERV = os.path.join(ROOT, 'admin', 'views', 'golden-scan', 'worker.php')
+LINE    = os.path.join(ROOT, 'includes', 'golden-scan', 'class-gs-line.php')
+GATE    = os.path.join(ROOT, 'includes', 'golden-scan', 'class-gs-cron-gate.php')
+WORKER  = os.path.join(ROOT, 'includes', 'golden-scan', 'class-gs-auto-worker.php')
+MAIN    = os.path.join(ROOT, 'sanil-telegram-importer.php')
 
 PASS = 0
 FAIL = 0
@@ -44,6 +48,10 @@ db      = read(DB)
 session = read(SESSION)
 audit   = read(AUDIT)
 workerv = read(WORKERV)
+line    = read(LINE)
+gate    = read(GATE)
+worker  = read(WORKER)
+main    = read(MAIN)
 
 # ── B1: category filter + priority order in create_sessions ──────────────
 check('B1a create_sessions signature (3 optional params)',
@@ -164,6 +172,55 @@ check('F2 DOM probe is deferred until the document is ready',
 check('F3 intended-absent card is reported EXPECTED, not a broken chain',
       'EXPECTED (by design)' in workerv
       and 'WT_CARD_INTENDED===false' in workerv)
+
+# ── 10.12.9: line-state persistence P0 + cron gate P1 ────────────────────
+check('G1 no invalid option_modified SQL remains (code only, comments excluded)',
+      'option_modified' not in strip_comments(line)
+      and 'option_modified' not in strip_comments(gate))
+
+check('G2 line persistence via WP Option API (add_option/update_option) + read-back',
+      'add_option( self::OPTION' in line
+      and 'update_option( self::OPTION' in line
+      and 'function read_back()' in line
+      and 'SELECT option_value FROM {$wpdb->options}' in line)
+
+check('G3 transition is a CAS UPDATE on the existing row (no raw INSERT)',
+      'INSERT INTO {$wpdb->options}' not in strip_comments(line)
+      and 'AND option_value = %s' in line
+      and 'function ensure_row()' in line)
+
+check('G4 set_state read-back + LINE_PERSISTENCE_FAILED (no hidden failure)',
+      'LINE_PERSISTENCE_FAILED' in line
+      and 'read_back()' in line
+      and 'return $to;' in line)
+
+check('G5 start() read-back verification + LINE_START_FAILED with full context',
+      'LINE_START_FAILED' in line
+      and 'requested_state=%s actual_state=%s last_error=%s worker_enabled=%s cron_next_tick=%s' in line)
+
+check('G6 cron gate: no INSERT, first-run via add_option, no silent fail',
+      'INSERT' not in strip_comments(gate)
+      and 'add_option( $option, 0' in gate
+      and 'CRON_GATE_FAILED' in gate)
+
+check('G7 worker observability (AUTO_WORKER_TICK / BLOCKED) + self-heal with read-back',
+      'AUTO_WORKER_TICK enabled=%s line=%s active=%d' in worker
+      and 'AUTO_WORKER_BLOCKED: reason=line_stopped' in worker
+      and 'function self_heal_line()' in worker
+      and 'AUTO_WORKER_SELFHEAL_FAILED' in worker
+      and 'STI_GS_Line::RUNNING !== $actual' in worker)
+
+check('G8 ajax reports persistence failure (no false HTTP success)',
+      "wp_send_json_error( array(" in wizard
+      and 'LINE_START_FAILED' in wizard
+      and 'LINE_PERSISTENCE_FAILED' in wizard)
+
+check('G9 activation seeds the line-state option once (WP Option API)',
+      "add_option( 'sti_gs_line_state', 'STOPPED', '', 'no' )" in main)
+
+check('G10 diagnostic part17 verifies persistence read-only (SELECT only)',
+      'part17_line_persistence' in audit
+      and "SELECT option_id, option_value, autoload FROM {$wpdb->options}" in audit)
 
 print()
 total = PASS + FAIL

@@ -487,6 +487,24 @@ $wt = class_exists( 'STI_GS_Channel_Watcher' ) ? STI_GS_Channel_Watcher::stats()
 				h4+='<details open style="margin:8px 0;border:1px solid #7dd3fc;border-radius:8px;background:#fff;"><summary style="cursor:pointer;padding:6px 10px;font-size:12px;font-weight:700;">📋 PHASE 1 EVIDENCE (قابل کپی)</summary><div style="padding:0 10px 10px;"><pre dir="ltr" style="background:#0f172a;color:#e2e8f0;border-radius:8px;padding:10px;font-size:11px;line-height:1.7;white-space:pre-wrap;word-break:break-all;margin:0;">'+esc(pv.audit_text||'')+'</pre></div></details>';
 				h+=h4;
 			}
+			/* 🔐 LINE PERSISTENCE VERIFICATION (10.12.9) — read-back از wp_options */
+			var lp=d.line_persistence;
+			if(lp&&typeof lp==='object'&&!lp.error){
+				var h5='<h3 style="font-size:13px;margin:12px 0 4px;">🔐 LINE PERSISTENCE VERIFICATION — read-back مستقیم از wp_options (10.12.9, read-only)</h3>';
+				var v=lp.verdicts||{};
+				function vrow(name,val){var ok=(val===true);return '<tr style="border-bottom:1px solid #e0f2fe;"><td dir="ltr" style="padding:3px 6px;font-family:ui-monospace,monospace;">'+name+'</td><td dir="ltr" style="padding:3px 6px;text-align:center;font-weight:700;color:'+(ok===null?'#b45309':(ok?'#15803d':'#b91c1c'))+';">'+(ok===null?'n/a':(ok?'PASS':'FAIL'))+'</td></tr>';}
+				h5+='<table style="border-collapse:collapse;background:#fff;font-size:11px;width:100%;"><thead><tr><th style="border-bottom:2px solid #0369a1;padding:3px 6px;text-align:right;">Verification</th><th style="border-bottom:2px solid #0369a1;padding:3px 6px;">نتیجه</th></tr></thead><tbody>';
+				h5+=vrow('row_exists — ردیف sti_gs_line_state در wp_options',v.row_exists);
+				h5+=vrow('db_value_valid — مقدار DB یکی از 5 state معتبر',v.db_value_valid);
+				h5+=vrow('logical_matches_db — state() ≡ مقدار واقعی DB',v.logical_matches_db);
+				h5+=vrow('gate_rows_present — ردیف‌های Cron Gate موجود',v.gate_rows_present);
+				h5+=vrow('invalid_sql_removed — هیچ option_modified در کوئری واقعی',v.invalid_sql_removed);
+				h5+='</tbody></table>';
+				h5+='<div dir="ltr" style="font-size:11px;font-family:ui-monospace,monospace;background:#fff;border:1px solid #bae6fd;border-radius:8px;padding:8px;margin-top:6px;white-space:pre-wrap;word-break:break-all;">db_value(raw)='+esc(JSON.stringify(lp.raw_db_value))+'\nstate()(logical)='+esc(JSON.stringify(lp.logical_state))+'\ncron_gate_rows='+esc(JSON.stringify(lp.cron_gates||{}))+'</div>';
+				if((lp.logs||[]).length){h5+=section('recent persistence logs',kvTable(lp.logs||[]),false);}
+				h5+='<details open style="margin:8px 0;border:1px solid #7dd3fc;border-radius:8px;background:#fff;"><summary style="cursor:pointer;padding:6px 10px;font-size:12px;font-weight:700;">📋 LINE PERSISTENCE EVIDENCE (قابل کپی)</summary><div style="padding:0 10px 10px;"><pre dir="ltr" style="background:#0f172a;color:#e2e8f0;border-radius:8px;padding:10px;font-size:11px;line-height:1.7;white-space:pre-wrap;word-break:break-all;margin:0;">'+esc(lp.audit_text||'')+'</pre></div></details>';
+				h+=h5;
+			}
 			h+=section('PART 9 — create_from_profile_item Path',kvTable(d.session_path),false);
 			h+=section('PART 10 — Real Session Check (sample ≤ 10)',kvTable(d.session_sample),true);
 			h+=section('PART 11 — Real Pipeline Check (last 10)',kvTable(d.pipeline_sample),false);

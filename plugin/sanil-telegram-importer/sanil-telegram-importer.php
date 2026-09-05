@@ -3,7 +3,7 @@
  * Plugin Name:       Golden Importer
  * Plugin URI:        https://goldenfile.ir
  * Description:       Telegram to WooCommerce importer with Agent Bridge for large files
- * Version:           10.12.8
+ * Version:           10.12.9
  * Author:            Golden File Team
  * Text Domain:       flavor-flavor
  * Domain Path:       /languages
@@ -14,7 +14,7 @@
 if ( ! defined( 'ABSPATH' ) ) {
 exit;
 }
-define( 'STI_VERSION', '10.12.8' );
+define( 'STI_VERSION', '10.12.9' );
 define( 'STI_FILE', __FILE__ );
 define( 'STI_PATH', plugin_dir_path( __FILE__ ) );
 define( 'STI_URL', plugin_dir_url( __FILE__ ) );
@@ -274,6 +274,11 @@ if ( class_exists( 'STI_Bot_Modes' ) ) { STI_Bot_Modes::install(); }
 if ( class_exists( 'STI_AutoCat' ) ) { STI_AutoCat::install(); }
 /* گلدن اسکن — جدول‌های مستقل */
 if ( class_exists( 'STI_GS_DB' ) ) { STI_GS_DB::install(); }
+/* گلدن اسکن 10.12.9 — وضعیت خط تولید: یک‌بار، با Option API استاندارد
+   (autoload=no). رانتایم هم ensure_row() را به‌عنوان recovery دارد. */
+if ( false === get_option( 'sti_gs_line_state', false ) ) {
+	add_option( 'sti_gs_line_state', 'STOPPED', '', 'no' );
+}
 if ( ! wp_next_scheduled( 'sti_cleanup_cron' ) ) {
 wp_schedule_event( time(), 'daily', 'sti_cleanup_cron' );
 }

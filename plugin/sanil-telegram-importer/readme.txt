@@ -1,3 +1,35 @@
+== 10.12.9 ==
+* Version: 10.12.9 — Installable ZIP: `golden-importer-10.12.9.zip` (repo root).
+* 🐛 P0 LINE-STATE PERSISTENCE FIX (root cause of the permanent `line_state=STOPPED`):
+  `STI_GS_Line::transition()` and `set_state()` used `INSERT INTO wp_options
+  (option_name, option_value, option_modified, option_autoload)` — `option_modified`
+  does NOT exist in the standard wp_options schema, so every INSERT failed with a
+  SQL error, the option was never persisted, `state()` always returned the default
+  STOPPED and the worker was permanently blocked at tick L225. All such INSERTs are
+  removed. New persistence: activation seeds the option once via `add_option()`
+  (autoload=no) · runtime recovery via `ensure_row()` (race-aware WP Option API) ·
+  `transition()` = conditional UPDATE (CAS) on the existing row only ·
+  `set_state()` = `update_option()` + DB read-back; mismatch logs LINE_PERSISTENCE_FAILED
+  and is NOT hidden from callers; object cache syncs only after a confirmed write.
+  `start()` now read-back-verifies RUNNING and logs LINE_START_FAILED
+  (requested/actual/last_error/worker_enabled/cron_next_tick) on failure; the AJAX
+  handlers report a real error instead of a false HTTP success.
+* 🐛 P1 CRON-GATE FIX: same invalid INSERT removed from `STI_GS_Cron_Gate::pass()`;
+  first-run now seeds the gate row via `add_option()` (race-aware) and the CAS
+  UPDATE (interval enforcement) is unchanged; a still-missing row logs
+  CRON_GATE_FAILED instead of failing silently.
+* 🔎 P1 OBSERVABILITY: every worker tick logs `AUTO_WORKER_TICK enabled=… line=…
+  active=…`; a stopped line logs `AUTO_WORKER_BLOCKED: reason=line_stopped`.
+*  P1 SELF-HEALING (after the root fix, not instead of it): worker enabled +
+  processable backlog > 0 + safe mode off + halt off ⇒ the worker may call
+  `STI_GS_Line::start()` but read-back-verifies RUNNING; if not RUNNING it does NOT
+  process and logs AUTO_WORKER_SELFHEAL_FAILED.
+* 🩺 New read-only diagnostic (Worker → Runtime): LINE PERSISTENCE VERIFICATION —
+  raw wp_options row, DB value vs logical state(), cron-gate rows, invalid-SQL code
+  check, recent persistence logs, copyable evidence.
+* No ALTER TABLE, no destructive migration, no gate/lock/retry/state-machine changes.
+* Tests: 10.12 workflow 36/36 (new G1-G10) + 10.11 regression + P0 governor — all PASS.
+
 == 10.12.8 ==
 * Version: 10.12.8 — Installable ZIP: `golden-importer-10.12.8.zip` (repo root).
 * 📐 SHARED ELIGIBILITY CONTRACT (§4) — one definition of "valid candidate", three consumers:

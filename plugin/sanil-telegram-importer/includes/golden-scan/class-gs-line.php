@@ -18,12 +18,24 @@ if ( ! defined( 'ABSPATH' ) ) { exit; }
  *   ERROR     — آخرین تیک Worker با خطا تمام شد؛ تا تیک بعدی که
  *               موفق شود، خط روی ERROR می‌ماند (خودترمیمی).
  *
- * ذخیره‌سازی **اتومیک** است — الگوی همین Cron_Gate:
- *   • transition() = یک UPDATE شرطی (compare-and-set) روی wp_options.
- *     خواندن/مقایسه/نوشتن جدا نیست؛ مقایسه داخل همان جمله‌ی UPDATE
- *     در دیتابیس انجام می‌شود → race/TOCTOU وجود ندارد.
- *   • set_state()  = یک جمله‌ی واحد (INSERT یا UPDATE) برای عمل
- *     صریح کاربر (START/STOP).
+ * ذخیره‌سازی **اتومیک و سازگار با WordPress** (10.12.9):
+ *   • ردیف option در activation یک‌بار با add_option() ساخته می‌شود
+ *     (autoload=no)؛ مسیر recovery در رانتایم = ensure_row() — امن و
+ *     race-aware، فقط با Option API استاندارد.
+ *   • transition() = یک UPDATE شرطی (compare-and-set) روی **ردیف موجود**.
+ *     مقایسه داخل همان جمله‌ی UPDATE در دیتابیس انجام می‌شود → race/TOCTOU
+ *     وجود ندارد.
+ *   • set_state()  = update_option() + **read-back از دیتابیس**؛ فقط بعد
+ *     از write تأییدشده cache sync می‌شود و شکست به صورت ERROR واقعی
+ *     ثبت و به caller منتقل می‌گردد.
+ *
+ *   ⚠️ 10.12.9 — ریشه‌یابی P0: نسخه‌های قبلی برای ردیفِ غایب از
+ *   `INSERT INTO wp_options (option_name, option_value, option_modified,
+ *   option_autoload)` استفاده می‌کردند؛ ستون `option_modified` در schema
+ *   استاندارد wp_options وجود ندارد و هر INSERT با SQL error شکست
+ *   می‌خورد — یعنی وضعیت هرگز persist نمی‌شد و state() همیشه پیش‌فرض
+ *   STOPPED را برمی‌گرداند. این الگو حذف شد؛ هیچ INSERT خام روی
+ *   wp_options باقی نمانده است.
  *
  * STOP هیچ داده‌ای حذف نمی‌کند، Worker را غیرفعال نمی‌کند و کران را
  * نمی‌بندد — فقط «نوبت‌دهی» متوقف می‌شود. START یک continuation واقعی
@@ -52,7 +64,13 @@ class STI_GS_Line {
 	}
 
 	/**
-	 * گذار اتمیک compare-and-set.
+	 * گذار اتمیک compare-and-set (10.12.9 — persistence سازگار).
+	 *
+	 * فقط UPDATE شرطی روی **ردیف موجود**؛ مقایسه داخل همان UPDATE در
+	 * دیتابیس انجام می‌شود (بدون TOCTOU). اگر ردیف غایب باشد، اول با
+	 * ensure_row() از طریق Option API استاندارد ساخته می‌شود.
+	 * (مسیر INSERT خام با ستون option_modified حذف شد — آن ستون در
+	 * schema استاندارد wp_options وجود ندارد و هر write شکست می‌خورد.)
 	 *
 	 * @param string $from وضعیت مورد انتظار
 	 * @param string $to   وضعیت جدید
@@ -62,33 +80,10 @@ class STI_GS_Line {
 		if ( ! in_array( $from, self::STATES, true ) || ! in_array( $to, self::STATES, true ) ) {
 			return false;
 		}
-		global $wpdb;
-
-		$exists = $wpdb->get_var( $wpdb->prepare(
-			"SELECT option_id FROM {$wpdb->options} WHERE option_name = %s", self::OPTION
-		) );
-
-		if ( ! $exists ) {
-			/*
-			 * ردیف هنوز وجود ندارد → وضعیت فعلی پیش‌فرض (STOPPED) است.
-			 * INSERT با key یکتای option_name: در رقابت فقط یک درخواست
-			 * در‌آوردن را می‌بیند؛ بقیه false برمی‌گردانند.
-			 */
-			if ( self::STOPPED !== $from ) {
-				return false;
-			}
-			$ok = $wpdb->query( $wpdb->prepare(
-				"INSERT INTO {$wpdb->options} (option_name, option_value, option_modified, option_autoload)
-				 VALUES (%s, %s, %s, 'no')",
-				self::OPTION, $to, current_time( 'mysql' )
-			) );
-			if ( false === $ok ) {
-				return false;
-			}
-			/* ۱۰.۱۲-RC: همگام‌سازی object cache با نوشتنِ خام (همان set_state). */
-			wp_cache_set( self::OPTION, $to, 'options' );
-			return true;
+		if ( ! self::ensure_row() ) {
+			return false;
 		}
+		global $wpdb;
 
 		$affected = (int) $wpdb->query( $wpdb->prepare(
 			"UPDATE {$wpdb->options} SET option_value = %s
@@ -96,46 +91,127 @@ class STI_GS_Line {
 			$to, self::OPTION, $from
 		) );
 		if ( $affected > 0 ) {
-			/* ۱۰.۱۲-RC: همگام‌سازی object cache با نوشتنِ خام (همان set_state). */
+			/* object cache فقط بعد از write موفق sync می‌شود. */
 			wp_cache_set( self::OPTION, $to, 'options' );
 		}
 		return $affected > 0;
 	}
 
 	/**
-	 * تنظیم صریح (یک جمله‌ی واحد — بدون خواندن/مقایسه‌ی جدا).
-	 * فقط برای عمل صریح کاربر (START/STOP) و نه برای گذارهای شرطی.
+	 * Recovery (10.12.9): اگر ردیف option غایب یا خراب باشد، با Option API
+	 * استانداردWordPress آن را بسازد/نرمال کند — امن و race-aware.
+	 *
+	 * add_option() در رقابت فقط برای یک درخواست true برمی‌گرداند؛ بقیه
+	 * فقط می‌بینند که ردیف حالا وجود دارد (idempotent). هیچ INSERT خام
+	 * روی wp_options انجام نمی‌شود.
+	 *
+	 * @return bool true = ردیف موجود است (قبلاً یا تازه ساخته‌شده).
+	 */
+	public static function ensure_row() {
+		$current = get_option( self::OPTION, '__STI_UNSET__' );
+		if ( '__STI_UNSET__' === $current ) {
+			add_option( self::OPTION, self::STOPPED, '', 'no' );
+			/* در رقابت، درخواست دیگر ممکن است ساخته باشد — دوباره بخوان. */
+			$current = get_option( self::OPTION, '__STI_UNSET__' );
+			return '__STI_UNSET__' !== $current;
+		}
+		if ( ! in_array( $current, self::STATES, true ) ) {
+			/*
+			 * مقدار نامعتبر (ردیف خراب از write شکست‌خوردهٔ قدیمی): به همان
+			 * مقدار منطقی که state() همیشه برایش برمی‌گرداند نرمال شود تا
+			 * قرارداد CAS معتبر بماند.
+			 */
+			update_option( self::OPTION, self::STOPPED, 'no' );
+			wp_cache_set( self::OPTION, self::STOPPED, 'options' );
+			if ( class_exists( 'STI_Logger' ) ) {
+				STI_Logger::warning( 'گلدن اسکن خط تولید: مقدار option نامعتبر بود (' . var_export( $current, true ) . ') — نرمال شد به ' . self::STOPPED );
+			}
+		}
+		return true;
+	}
+
+	/**
+	 * مقدار **واقعی** option را مستقیم از دیتابیس بخواند (نه از cache) —
+	 * تنها منبع حقیقت برای سؤال «آیا واقعاً persist شد؟».
+	 *
+	 * @return string|false مقدار ذخیره‌شده؛ false اگر ردیف وجود نداشته باشد.
+	 */
+	public static function read_back() {
+		global $wpdb;
+		$v = $wpdb->get_var( $wpdb->prepare(
+			"SELECT option_value FROM {$wpdb->options} WHERE option_name = %s", self::OPTION
+		) );
+		return null === $v ? false : (string) $v;
+	}
+
+	/** ثبت خطای persistence واقعی — هرگز پنهان نمی‌شود. */
+	protected static function log_persistence_failure( $op, $requested, $actual, $reason = '' ) {
+		global $wpdb;
+		if ( class_exists( 'STI_Logger' ) ) {
+			STI_Logger::error( sprintf(
+				'LINE_PERSISTENCE_FAILED op=%s requested=%s actual=%s reason=%s last_error=%s',
+				$op,
+				$requested,
+				var_export( $actual, true ),
+				$reason,
+				$wpdb->last_error
+			) );
+		}
+	}
+
+	/**
+	 * تنظیم صریح (10.12.9 — قرارداد persistence، فقط برای عمل صریح کاربر):
+	 *
+	 *   1. مقدار state را validate کند.
+	 *   2. با WordPress Option API ذخیره کند (update_option روی ردیف موجود؛
+	 *      ردیف غایب پیش‌تر با ensure_row()/add_option() ساخته می‌شود).
+	 *   3. نتیجهٔ persistence را بررسی کند.
+	 *   4. بعد از write، state را دوباره **read-back** کند (مستقیم از DB).
+	 *   5. اگر مقدار واقعی ≠ موردنظر باشد → ERROR واقعی ثبت شود
+	 *      (LINE_PERSISTENCE_FAILED با last_error).
+	 *   6. شکست از caller پنهان نمی‌شود: مقدار برگشتی، وضعیت واقعی است،
+	 *      نه مقدار درخواستی.
+	 *   7. object cache فقط بعد از write موفق synchronize شود.
+	 *
+	 * (INSERT خام با ستون option_modified حذف شد — schema غیرواقعی بود.)
+	 *
+	 * @return string وضعیت واقعی پس از write.
 	 */
 	public static function set_state( $to, $reason = '' ) {
+		/* 1) validate */
 		if ( ! in_array( $to, self::STATES, true ) ) {
 			return self::state();
 		}
-		global $wpdb;
 
-		$exists = $wpdb->get_var( $wpdb->prepare(
-			"SELECT option_id FROM {$wpdb->options} WHERE option_name = %s", self::OPTION
-		) );
-		if ( $exists ) {
-			$ok = $wpdb->query( $wpdb->prepare(
-				"UPDATE {$wpdb->options} SET option_value = %s WHERE option_name = %s",
-				$to, self::OPTION
-			) );
-		} else {
-			$ok = $wpdb->query( $wpdb->prepare(
-				"INSERT INTO {$wpdb->options} (option_name, option_value, option_modified, option_autoload)
-				 VALUES (%s, %s, %s, 'no')",
-				self::OPTION, $to, current_time( 'mysql' )
-			) );
+		/* recovery: ردیف باید موجود باشد (add_option امن و race-aware). */
+		if ( ! self::ensure_row() ) {
+			self::log_persistence_failure( 'set_state', $to, self::read_back(), $reason );
+			return self::state();
 		}
-		if ( false !== $ok ) {
-			/* ۱۰.۱۲-RC: همگام‌سازی object cache با نوشتنِ خام — همان قراردادِ
-			 * update_option(). بدون این، خواننده‌های get_option() در هاست با
-			 * cache پایدار (Redis/Memcached) ممکن است مقدار کهنه را ببینند. */
-			wp_cache_set( self::OPTION, $to, 'options' );
+
+		/* 2) WordPress Option API.
+		 * نکته: update_option وقتی مقدار تغییری نکند false برمی‌گرداند —
+		 * پس return value منبع حقیقت نیست؛ read-back است. */
+		update_option( self::OPTION, $to, 'no' );
+
+		/* 4) read-back مستقیم از دیتابیس. */
+		$actual = self::read_back();
+
+		if ( $actual !== $to ) {
+			/* 5) خطای واقعی. */
+			self::log_persistence_failure( 'set_state', $to, $actual, $reason );
+			return self::state();
 		}
+
+		/* 7) cache فقط بعد از write تأییدشده. */
+		wp_cache_set( self::OPTION, $to, 'options' );
+
 		if ( '' !== $reason && class_exists( 'STI_Logger' ) ) {
+			/* خط موفقیت فقط وقتی نوشته می‌شود که واقعاً persist شده باشد. */
 			STI_Logger::info( 'گلدن اسکن خط تولید: وضعیت → ' . $to . ' (' . $reason . ')' );
 		}
+
+		/* 6) مقدار واقعی برگشتی است. */
 		return $to;
 	}
 
@@ -165,8 +241,28 @@ class STI_GS_Line {
 			}
 		}
 
-		self::set_state( self::RUNNING, 'START خط توسط کاربر' );
-		return self::state();
+		$actual = self::set_state( self::RUNNING, 'START خط توسط کاربر' );
+
+		/*
+		 * 10.12.9 — read-back: موفقیت HTTP ≠ موفقیت persistence.
+		 * اگر state بعد از write واقعاً RUNNING نیست، خطای صریح با
+		 * تمام زمینه‌ها ثبت می‌شود و به caller منتقل می‌گردد.
+		 */
+		if ( self::RUNNING !== $actual ) {
+			global $wpdb;
+			$next_tick = class_exists( 'STI_GS_Auto_Worker' ) ? wp_next_scheduled( STI_GS_Auto_Worker::HOOK ) : false;
+			if ( class_exists( 'STI_Logger' ) ) {
+				STI_Logger::error( sprintf(
+					'LINE_START_FAILED requested_state=%s actual_state=%s last_error=%s worker_enabled=%s cron_next_tick=%s',
+					self::RUNNING,
+					var_export( $actual, true ),
+					$wpdb->last_error,
+					class_exists( 'STI_GS_Auto_Worker' ) ? var_export( STI_GS_Auto_Worker::is_enabled(), true ) : 'n/a',
+					$next_tick ? (int) $next_tick : 'none'
+				) );
+			}
+		}
+		return $actual;
 	}
 
 	/**
@@ -183,7 +279,15 @@ class STI_GS_Line {
 			self::set_state( self::PAUSING, 'STOP خط توسط کاربر' );
 		}
 		self::finalize_pause();
-		return self::state();
+		$actual = self::state();
+		/*
+		 * 10.12.9 — verify: STOP باید خط را در PAUSING (قفل زنده مانده) یا
+		 * STOPPED بگذارد؛ هر چیز دیگر = خطای persistence صریح.
+		 */
+		if ( ! in_array( $actual, array( self::PAUSING, self::STOPPED ), true ) ) {
+			self::log_persistence_failure( 'stop', self::PAUSING . '/' . self::STOPPED, $actual, 'STOP خط توسط کاربر' );
+		}
+		return $actual;
 	}
 
 	/** PAUSING → STOPPED فقط وقتی دیگر Session با قفل زنده‌ای نباشد. */

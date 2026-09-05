@@ -124,6 +124,7 @@ class STI_GS_Chain_Audit {
 		try { $out['selection_window'] = self::part14_selection_window(); } catch ( \Throwable $e ) { $out['selection_window'] = array( 'error' => $e->getMessage() ); }
 		try { $out['orphan_root_cause'] = self::part15_orphan_root_cause(); } catch ( \Throwable $e ) { $out['orphan_root_cause'] = array( 'error' => $e->getMessage() ); }
 		try { $out['phase1_verification'] = self::part16_phase1_verification( $out ); } catch ( \Throwable $e ) { $out['phase1_verification'] = array( 'error' => $e->getMessage() ); }
+		try { $out['line_persistence'] = self::part17_line_persistence(); } catch ( \Throwable $e ) { $out['line_persistence'] = array( 'error' => $e->getMessage() ); }
 
 		$out['rows']    = self::rows( $out );
 		$out['verdict'] = self::verdict( $out );
@@ -1157,6 +1158,103 @@ class STI_GS_Chain_Audit {
 			'preflight'         => array( 'sql_fixed' => $sql_fixed, 'explain_fixed' => $explain_fixed, 'first_candidates' => $fixed_detail, 'would_create_postfix' => $would_postfix, 'existing_session_postfix' => $existing_pf ),
 			'line_forensics'    => $line_forensics,
 			'audit_text'        => $audit_text,
+		);
+	}
+
+	/**
+	 * 10.12.9 — Line Persistence Verification (read-only).
+	 *
+	 * بعد از اصلاح P0 (حذف SQL نامعتبر option_modified) روی هاست اثبات می‌کند:
+	 *   1) آیا ردیف option در wp_options واقعاً وجود دارد؟
+	 *   2) آیا مقدار DB معتبر است و با state() منطقی هم‌خوان است؟
+	 *   3) ردیف‌های Cron Gate (watcher + auto_worker) موجود/قدیمی؟
+	 *   4) آیا هنوز SQL نامعتبر option_modified در کد باقی است؟ (باید نه)
+	 *   5) لاگ‌های diagnostic تازه (AUTO_WORKER_TICK / BLOCKED /
+	 *      LINE_START_FAILED / LINE_PERSISTENCE_FAILED / SELFHEAL).
+	 * فقط SELECT/get_option — صفر نوشتن.
+	 */
+	protected static function part17_line_persistence() {
+		global $wpdb;
+
+		$states = array( 'STOPPED', 'RUNNING', 'PAUSING', 'DEGRADED', 'ERROR' );
+
+		$row = $wpdb->get_row( $wpdb->prepare(
+			"SELECT option_id, option_value, autoload FROM {$wpdb->options} WHERE option_name = %s", 'sti_gs_line_state'
+		), ARRAY_A );
+		$raw_db    = $row ? (string) $row['option_value'] : false;
+		$logical   = class_exists( 'STI_GS_Line' ) ? STI_GS_Line::state() : null;
+		$db_valid  = in_array( $raw_db, $states, true );
+
+		/* هم‌خوانی: مقدار معتبر باید دقیقاً برابر state() باشد؛
+		 * مقدار نامعتبر باید به STOPPED منطقی map شود. */
+		$match = null;
+		if ( $row ) {
+			$match = $db_valid ? ( $logical === $raw_db ) : ( $logical === 'STOPPED' );
+		}
+
+		/* ردیف‌های Cron Gate (watcher + auto_worker): */
+		$gates = array();
+		foreach ( array( 'sti_gs_gate_watcher', 'sti_gs_gate_auto_worker' ) as $g ) {
+			$gv = $wpdb->get_var( $wpdb->prepare(
+				"SELECT option_value FROM {$wpdb->options} WHERE option_name = %s", $g
+			) );
+			$gates[ $g ] = null === $gv ? 'MISSING' : (string) $gv;
+		}
+
+		/* آیا هنوز SQL نامعتبر option_modified در کد باقی است؟ (باید false) */
+		$code_check = array();
+		$base = defined( 'STI_PATH' ) ? STI_PATH : '';
+		foreach ( array(
+			'includes/golden-scan/class-gs-line.php',
+			'includes/golden-scan/class-gs-cron-gate.php',
+		) as $f ) {
+			$has = false;
+			if ( is_file( $base . $f ) ) {
+				$code = (string) file_get_contents( $base . $f );
+				/* فقط در کوئری‌های واقعی (نه کامنت) نگاه کن: */
+				$code = preg_replace( array( '~/\*.*?\*/~s', '~//[^\n]*~' ), ' ', $code );
+				$has = ( false !== strpos( $code, 'option_modified' ) );
+			}
+			$code_check[ $f ] = $has;
+		}
+
+		/* لاگ‌های diagnostic تازه: */
+		$logs_table = $wpdb->prefix . 'sti_logs';
+		$logs = array();
+		if ( self::table_exists( $logs_table ) ) {
+			$logs = (array) $wpdb->get_results( "SELECT id, level, message, created_at FROM {$logs_table}
+			 WHERE message LIKE '%AUTO_WORKER_TICK%' OR message LIKE '%AUTO_WORKER_BLOCKED%'
+			    OR message LIKE '%LINE_START_FAILED%' OR message LIKE '%LINE_PERSISTENCE_FAILED%'
+			    OR message LIKE '%CRON_GATE_FAILED%' OR message LIKE '%AUTO_WORKER_SELFHEAL%'
+			 ORDER BY id DESC LIMIT 25", ARRAY_A );
+		}
+
+		$verdicts = array(
+			'row_exists'            => (bool) $row,
+			'db_value_valid'        => $db_valid,
+			'logical_matches_db'    => $match,
+			'gate_rows_present'     => ( 'MISSING' !== $gates['sti_gs_gate_watcher'] && 'MISSING' !== $gates['sti_gs_gate_auto_worker'] ),
+			'invalid_sql_removed'   => ! in_array( true, $code_check, true ),
+		);
+
+		$audit_text = "LINE PERSISTENCE VERIFICATION (10.12.9 — read-only)\n"
+			. 'option_row = ' . ( $row ? ( 'option_id=' . (int) $row['option_id'] . ' autoload=' . $row['autoload'] ) : 'MISSING' ) . "\n"
+			. 'db_value(raw) = ' . var_export( $raw_db, true ) . "\n"
+			. 'state()(logical) = ' . var_export( $logical, true ) . "\n"
+			. 'cron_gate_rows = ' . wp_json_encode( $gates ) . "\n"
+			. 'invalid_option_modified_sql_present = ' . wp_json_encode( $code_check ) . "\n"
+			. 'verdicts = ' . wp_json_encode( $verdicts ) . "\n"
+			. 'recent_persistence_logs = ' . wp_json_encode( $logs );
+
+		return array(
+			'row'           => $row,
+			'raw_db_value'  => $raw_db,
+			'logical_state' => $logical,
+			'cron_gates'    => $gates,
+			'code_check'    => $code_check,
+			'verdicts'      => $verdicts,
+			'logs'          => $logs,
+			'audit_text'    => $audit_text,
 		);
 	}
 
