@@ -637,15 +637,37 @@ class STI_MTProto {
 		$candidates = $this->build_settings_candidates();
 
 		$last_error = null;
+		/* 10.12.11 — فیوز تخصیص حافظه: یک‌بار در هر درخواست. */
+		static $mem_healed = false;
 		foreach ( $candidates as $settings ) {
-			try {
-				$mad = new \danog\MadelineProto\API( self::session_path(), $settings );
-				$this->client = $mad;
-				$this->client_error = null;
-				return $mad;
-			} catch ( \Throwable $e ) {
-				self::rpc_fatal( $e ); // 10.9.3
-				$last_error = $e->getMessage();
+			$attempts = 2; // اگر خطای تخصیص حافظه بود، بعد از پاکسازی worker یتیم یک‌بار دیگر
+			while ( $attempts-- > 0 ) {
+				try {
+					$mad = new \danog\MadelineProto\API( self::session_path(), $settings );
+					$this->client = $mad;
+					$this->client_error = null;
+					return $mad;
+				} catch ( \Throwable $e ) {
+					self::rpc_fatal( $e ); // 10.9.3
+					$last_error = $e->getMessage();
+					$low        = mb_strtolower( (string) $last_error );
+					$mem_fail   = ( false !== strpos( $low, 'cannot allocate memory' )
+						|| false !== strpos( $low, 'fiber stack allocate failed' )
+						|| ( false !== strpos( $low, 'mmap' ) && false !== strpos( $low, 'allocat' ) ) );
+					if ( $mem_fail && ! $mem_healed ) {
+						/* 10.12.11 — «Fiber stack allocate failed: mmap failed:
+						 * Cannot allocate memory (12)» یعنی حافظه‌ی کمیتِ هاست تمام
+						 * شده — روی این سیستم عمدتاً به‌خاطر انباشته‌شدن worker های
+						 * یتیمِ IPC. یک‌بار همه‌ی worker های همین سشن را ببند
+						 * (حافظه آزاد می‌شود) و همین کاندیدا را دوباره بساز؛ اگر
+						 * هنوز نشد، خطا به retry ladder می‌رود (تلاش بعدی با
+						 * حافظه‌ی آزاد‌شده — نه حلقه‌ی بی‌پایان داخل همین درخواست). */
+						$mem_healed = true;
+						self::ipc_heal( 'client: خطای تخصیص حافظه (mmap) — پاکسازی worker یتیم' );
+					} else {
+						break; // خطای غیرحافظه‌ای یا فیوز مصرف‌شده — کاندیدای بعدی
+					}
+				}
 			}
 		}
 
@@ -2310,6 +2332,14 @@ class STI_MTProto {
 	/**
 	 * متوقف کردن client فعلی و آزاد کردن پروسس‌های پس‌زمینه (IPC worker).
 	 * در پایان هر درخواست AJAX صدا زده می‌شود تا worker ها orphan نشوند.
+	 *
+	 * 10.12.11 — نکته‌ی مهم (اثبات‌شده از سورس phar): در MadelineProto v9
+	 * کلاس عمومی `danog\MadelineProto\API` متد `stop()` عمومی **ندارد** — پس
+	 * گارد `method_exists` اینجا عملی no-op است و client فقط null می‌شود.
+	 * worker واقعی (فرآیند `MadelineProto worker <session>` بدون
+	 * idle-timeout) فقط با `ipc_heal()` (kill با دامنه‌ی سشن + پاک‌سازی state)
+	 * یا مرگ طبیعی فاصله‌دار قابل آزادسازی است — به‌همین‌دلیل
+	 * `ipc_worker_pids()` هر دو الگوی cmdline را می‌شناسد.
 	 */
 	public static function stop_client() {
 		try {
@@ -2416,11 +2446,48 @@ class STI_MTProto {
 	}
 
 	/**
+	 * 10.12.11 — PIDهای زنده‌ی worker های IPC **مربوط به سشن این سایت**.
+	 *
+	 * چرا دو الگو؟ worker در دو حالت cmdline متفاوت زنده است:
+	 *   1. `php ... madeline-ipc <session_dir> <startupId>` — cmdline اولیه
+	 *      (ProcessRunner) تا لحظه‌ی اجرای cli_set_process_title؛
+	 *   2. `MadelineProto worker <session_dir>` — عنوانی که خودِ phar بلافاصله
+	 *      بعد از شروع worker با cli_set_process_title() بازنویسی می‌کند
+	 *      (در WebRunner هم cmdline از همان ابتدا همین عنوان است، چون worker
+	 *      از یک self-HTTP request داخل FPM متولد می‌شود).
+	 *
+	 * نسخه‌ی 10.9.3 فقط الگوی ۱ را می‌گرفت — پس عملاً همیشه (بعد از rename)
+	 * صفر برمی‌گشت: ipc_heal() هیچ فرآیندی نمی‌کُشت و worker های یتیم
+	 * (بدون idle-timeout در phar) تا ابد زنده می‌ماندند.
+	 *
+	 * @return int[] لیست PID (خالی = بدون shell یا بدون worker زنده).
+	 */
+	public static function ipc_worker_pids() {
+		if ( ! function_exists( 'exec' ) || ! is_callable( 'exec' ) ) {
+			return array();
+		}
+		$escaped = preg_quote( self::session_path(), '/' );
+		$found   = array();
+		foreach ( array( 'madeline-ipc ' . $escaped, 'MadelineProto worker ' . $escaped ) as $pattern ) {
+			$out = array();
+			@exec( 'pgrep -f ' . escapeshellarg( $pattern ) . ' 2>/dev/null', $out );
+			foreach ( (array) $out as $pid ) {
+				$pid = (int) $pid;
+				if ( $pid > 1 ) {
+					$found[ $pid ] = true;
+				}
+			}
+		}
+		return array_keys( $found );
+	}
+
+	/**
 	 * 10.9.3 — شمارش worker های madeline-ipc **مربوط به سشن این سایت**.
 	 *
-	 * دامنه‌ی شمارش دقیقاً مسیر اچ‌شده‌ی سشن این سایت است؛ روی هاست
-	 * اشتراکی هر سایت دیگر با سشن خودش worker خودش را دارد و نباید
-	 * دست‌خورده باشد.
+	 * دامنه‌ی شمارش دقیقاً مسیر سشن این سایت است؛ روی هاست اشتراکی هر سایت
+	 * دیگر با سشن خودش worker خودش را دارد و نباید دست‌خورده باشد.
+	 * 10.12.11: با هر دو الگوی cmdline (قبل و بعد از rename فرآیند) —
+	 * قبل از ۱۰.۱۲.۱۱ این شمارش عملاً همیشه صفر بود.
 	 *
 	 * @return int تعداد (یا -1 اگر shell در دسترس نباشد).
 	 */
@@ -2428,10 +2495,7 @@ class STI_MTProto {
 		if ( ! function_exists( 'exec' ) || ! is_callable( 'exec' ) ) {
 			return -1;
 		}
-		$pattern = 'madeline-ipc ' . self::session_path();
-		$out     = array();
-		@exec( 'pgrep -f ' . escapeshellarg( $pattern ) . ' 2>/dev/null | wc -l', $out );
-		return isset( $out[0] ) ? (int) trim( $out[0] ) : -1;
+		return count( self::ipc_worker_pids() );
 	}
 
 	/**
@@ -2459,15 +2523,23 @@ class STI_MTProto {
 				return; // هیچ ادعایی از worker در حال اجرا
 			}
 			$age = time() - (int) @filemtime( $state );
-			if ( $age < 30 * MINUTE_IN_SECONDS ) {
-				return; // تازه — احتمالاً در حال راه‌اندازی/خاموشی سالم
-			}
 			$count = self::ipc_worker_count();
+			if ( $count > 1 ) {
+				/* 10.12.11 — چند worker زنده برای یک سشن = worker های یتیم
+				 * (فایل state فقط آخرین worker را می‌شناسد؛ بقیه برای همیشه
+				 * زنده می‌مانند چون phar بدون idle-timeout است). پیش از
+				 * اولین RPC همه را با دامنه‌ی سشن ببند تا حافظه آزاد شود. */
+				self::ipc_heal( 'preflight: ' . $count . ' worker زنده برای یک سشن (orphan cleanup)' );
+				return;
+			}
 			if ( $count > 0 ) {
-				return; // worker زنده است — دست نزن
+				return; // یک worker زنده — حالت عادی reuse؛ دست نزن
 			}
 			if ( -1 === $count ) {
 				return; // بدون shell نمی‌توان قاطع بود — فقط گزارش
+			}
+			if ( $age < 30 * MINUTE_IN_SECONDS ) {
+				return; // state تازه و worker مرده — خودِ phar connect/تلاش بعدی را مدیریت می‌کند
 			}
 			self::ipc_heal( 'preflight: state ' . (int) ( $age / 60 ) . ' دقیقه‌ای بدون worker' );
 		} catch ( \Throwable $e ) {
@@ -2499,29 +2571,31 @@ class STI_MTProto {
 			return $report;
 		}
 
-		$pattern = 'madeline-ipc ' . $dir;
-		$killed  = 0;
+		/* 10.12.11 — ترتیب حیاتی: **اول** همه‌ی worker های زنده (با هر دو
+		 * الگوی cmdline — قبل و بعد از rename عنوان فرآیند) بسته و مرگشان
+		 * verify شود، **آنگاه** فایل‌های IPC پاک شوند. نسخه‌ی قبلی فایل‌ها را
+		 * حذف می‌کرد در حالی که worker زنده دیده نمی‌شد (عنوان فرآیند rename
+		 * شده بود) → worker زنده برای همیشه یتیم می‌ماند (phar بدون
+		 * idle-timeout است) و هیچ client بعدی نمی‌توانست به سوکت حذف‌شده‌اش
+		 * برسد؛ بعد از هر بار یک worker جدید متولد می‌شد و حافظه انباشته می‌شد. */
+		$before = array();
+		$killed = 0;
 		if ( function_exists( 'exec' ) && is_callable( 'exec' ) ) {
-			$pids = array();
-			@exec( 'pgrep -f ' . escapeshellarg( $pattern ) . ' 2>/dev/null', $pids );
-			foreach ( (array) $pids as $pid ) {
-				$pid = (int) $pid;
-				if ( $pid > 1 ) {
-					@exec( 'kill ' . $pid . ' 2>/dev/null' );
-					$killed++;
-				}
+			$before = self::ipc_worker_pids();
+			foreach ( $before as $pid ) {
+				@exec( 'kill ' . (int) $pid . ' 2>/dev/null' );
 			}
-			sleep( 1 );
-			$pids2 = array();
-			@exec( 'pgrep -f ' . escapeshellarg( $pattern ) . ' 2>/dev/null', $pids2 );
-			foreach ( (array) $pids2 as $pid ) {
-				$pid = (int) $pid;
-				if ( $pid > 1 ) {
-					@exec( 'kill -9 ' . $pid . ' 2>/dev/null' );
+			if ( $before ) {
+				sleep( 1 );
+				$left = self::ipc_worker_pids();
+				foreach ( $left as $pid ) {
+					@exec( 'kill -9 ' . (int) $pid . ' 2>/dev/null' );
 				}
+				$killed = count( $before );
 			}
 		}
 		$report['killed'] = $killed;
+		$report['pids']   = array_map( 'intval', $before );
 
 		$gone = 0;
 		foreach ( array( 'ipc', 'callback.ipc', 'ipcState.php', 'lock' ) as $f ) {
@@ -2535,9 +2609,10 @@ class STI_MTProto {
 		self::stop_client();
 		$report['ok'] = true;
 		STI_Logger::warning( sprintf(
-			'MTProto: ترمیم IPC (%s) — %d worker بسته شد، %d فایل فرسوده پاک شد.',
+			'MTProto: ترمیم IPC (%s) — %d worker بسته شد (pids=%s)، %d فایل فرسوده پاک شد.',
 			$reason,
 			$killed,
+			$before ? implode( ',', $before ) : '-',
 			$gone
 		) );
 		return $report;
@@ -2564,6 +2639,7 @@ class STI_MTProto {
 		}
 
 		$required_php = self::phar_php_requirement();
+		$pids         = $dir_ok ? self::ipc_worker_pids() : array();
 		$di = array(
 			'session_dir'       => $dir,
 			'session_dir_ok'    => $dir_ok,
@@ -2571,6 +2647,13 @@ class STI_MTProto {
 			'callback_socket'   => $csock,
 			'ipc_state_age_s'   => $state_s,
 			'worker_count'      => $dir_ok ? self::ipc_worker_count() : -1,
+			/* 10.12.11 — شواهد یتیم (فقط خواندنی):
+			 * multi_worker: بیش از یک worker زنده برای یک سشن = انباشت یتیم؛
+			 * stale_state_live_worker: state کهنه (>30 دقیقه) در حالی که worker
+			 * زنده است = worker خارج از مدیریت state. */
+			'worker_pids'             => array_map( 'intval', $pids ),
+			'multi_worker'            => count( $pids ) > 1,
+			'stale_state_live_worker' => ( null !== $state_s && $state_s > 30 * MINUTE_IN_SECONDS && count( $pids ) > 0 ),
 			'phar_installed'    => self::engine_installed(),
 			'phar_size'         => self::engine_installed() ? (int) @filesize( self::phar_path() ) : 0,
 			'phar_required_php' => $required_php,

@@ -1,3 +1,38 @@
+== 10.12.11 ==
+* Version: 10.12.11 — Installable ZIP: `golden-importer-10.12.11.zip` (repo root).
+* 🐛 MTProto IPC WORKER LIFECYCLE (root cause of ERROR_CLICK /
+  «Fiber stack allocate failed: mmap failed: Cannot allocate memory (12)»):
+  Proven from the phar source (madeline81.phar): the IPC worker loop
+  (`Server::waitShutdown()`) has NO idle timeout — a worker only exits on an
+  explicit stop, and the v9 public `API` class has NO `stop()` method (so
+  `stop_client()`'s method_exists guard is a no-op). The worker also renames
+  its process title to `MadelineProto worker <session>` (cli_set_process_title),
+  while the plugin's pgrep pattern only matched `madeline-ipc <session>` —
+  so `ipc_worker_count()` was effectively always 0: `ipc_heal()` deleted the
+  IPC socket/state files of a LIVE worker (making it permanently unreachable)
+  without killing it, and the next request spawned a NEW worker. Orphaned
+  workers (each a full PHP + phar + MTProto session, WebRunner path even holds
+  an FPM child slot with set_time_limit(-1)) accumulated until the host's
+  memory commit was exhausted → fiber stack mmap ENOMEM in client().
+* FIX (class-sti-mtproto.php only, no memory_limit change, no schema, no gate
+  removed):
+  - `ipc_worker_pids()`: matches BOTH cmdline patterns (pre/post rename),
+    regex-escaped, session-dir-scoped (shared-host safe, no global pkill).
+  - `ipc_worker_count()`: derived from the helper (was always 0 before).
+  - `ipc_heal()`: KILL (SIGTERM→verify→SIGKILL) BEFORE deleting IPC files;
+    reports killed PIDs in the log.
+  - `ipc_preflight()`: >1 live worker for one session ⇒ orphan cleanup before
+    the first RPC (stale-state rule unchanged).
+  - `client()`: once-per-request fuse — on a memory/mmap allocation failure it
+    runs ipc_heal() (frees orphan memory) and retries the candidate once;
+    otherwise the error flows to the retry ladder as before.
+  - `ipc_diagnostic()`: read-only `worker_pids`, `multi_worker`,
+    `stale_state_live_worker` flags for the health dashboard.
+* Unchanged: Selection/Watcher, Chain Engine, Retry ladder, Line/Cron gates,
+  download/publish flows, wp_options schema.
+* Tests: new 10.12.11 MTProto IPC static suite 25/25 + 10.12 workflow 43/43
+  + 10.11 regression + P0 governor — ALL PASS.
+
 == 10.12.10 ==
 * Version: 10.12.10 — Installable ZIP: `golden-importer-10.12.10.zip` (repo root).
 * 🐛 P0.1 RUNTIME SEED (closes the 10.12.9 gap — option still MISSING on host):
