@@ -146,7 +146,13 @@ class STI_GS_Test_Wizard {
 	 */
 	public function ajax_env_diag() {
 		$this->check_ajax();
-		wp_send_json_success( class_exists( 'STI_GS_Env_Diag' ) ? STI_GS_Env_Diag::snapshot() : array( 'error' => 'class missing' ) );
+		if ( ! class_exists( 'STI_GS_Env_Diag' ) ) {
+			wp_send_json_success( array( 'error' => 'class missing' ) );
+		}
+		$snap = STI_GS_Env_Diag::snapshot();
+		/* 10.12.15-diag — context حافظه‌ی OS همین فرآیند (read-only) */
+		$snap['oom_context'] = STI_GS_Env_Diag::oom_context();
+		wp_send_json_success( $snap );
 	}
 
 	/** تغییر حالت معماری زنجیره (legacy | auto | chain) — Feature Flag ۱۰.۸. */

@@ -64,6 +64,8 @@ class STI_MTProto {
 	protected static $ipc_recycles = 0;
 	/** 10.12.12-diag — ENV_DIAG یک‌بار در هر درخواست ثبت شود. */
 	protected static $env_diag_logged = false;
+	/** 10.12.15-diag — OOM_DIAG (read-only) حداکثر یک‌بار در هر درخواست. */
+	protected static $oom_diag_logged = false;
 
 	/**
 	 * @var int 10.9.3 — سقف بازیابی client در هر درخواست.
@@ -717,6 +719,22 @@ class STI_MTProto {
 				ini_get( 'memory_limit' )
 			)
 		);
+
+		/* 10.12.15-diag — OOM_DIAG (فقط read-only، بدون هیچ تغییر): در لحظه‌ی
+		 * شکست تخصیص حافظه، context OS همان فرآیند را ثبت می‌کند:
+		 * /proc/meminfo (MemAvailable/swap/commit)، /proc/self/status
+		 * (VmSize/VmPeak/VmRSS/VmHWM/Threads)، /proc/self/limits (RLIMIT) و
+		 * cgroup (v2/v1) — برای تعیین اینکه کدام سقف mmap را رد می‌کند. */
+		$last_low = mb_strtolower( (string) $last_error );
+		if ( ! self::$oom_diag_logged
+			&& class_exists( 'STI_GS_Env_Diag' )
+			&& ( false !== strpos( $last_low, 'cannot allocate memory' )
+				|| false !== strpos( $last_low, 'fiber stack allocate failed' )
+				|| ( false !== strpos( $last_low, 'mmap' ) && false !== strpos( $last_low, 'allocat' ) ) ) ) {
+			self::$oom_diag_logged = true;
+			STI_Logger::error( 'OOM_DIAG ' . wp_json_encode( STI_GS_Env_Diag::oom_context() ) );
+		}
+
 		return new WP_Error( 'sti_mt_client', 'ساخت client ناموفق: ' . $last_error );
 	}
 

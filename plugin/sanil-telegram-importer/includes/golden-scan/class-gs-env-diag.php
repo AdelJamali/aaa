@@ -82,6 +82,90 @@ class STI_GS_Env_Diag {
 	}
 
 	/**
+	 * oom_context() — read-only OS-level memory context in the CURRENT process
+	 * (triage for «Fiber stack allocate failed: mmap failed: Cannot allocate
+	 * memory»). فقط خواندن: fopen('rb')/file_get_contents — بدون process
+	 * creation، بدون unlink/kill، بدون هیچ state/config mutation.
+	 * هر فایل ناخوانا به‌صراحت 'unreadable' گزارش می‌شود (ادعایی زده نمی‌شود).
+	 *
+	 * @return array
+	 */
+	public static function oom_context() {
+		$meminfo = self::proc_kv(
+			'/proc/meminfo',
+			array( 'MemTotal', 'MemFree', 'MemAvailable', 'SwapTotal', 'SwapFree', 'CommitLimit', 'Committed_AS' )
+		);
+		$status = self::proc_kv(
+			'/proc/self/status',
+			array( 'Name', 'VmSize', 'VmPeak', 'VmRSS', 'VmHWM', 'Threads' )
+		);
+		$limits = self::proc_kv(
+			'/proc/self/limits',
+			array( 'Max address space', 'Max processes', 'Max open files', 'Max resident set', 'Max locked memory' )
+		);
+		$cgroup = array( 'raw' => 'unreadable', 'v2' => null, 'v1' => null );
+
+		$rawcg = @file_get_contents( '/proc/self/cgroup' );
+		if ( $rawcg !== false ) {
+			$cgroup['raw'] = rtrim( (string) $rawcg );
+		}
+
+		/* cgroup v2 */
+		$v2max = @file_get_contents( '/sys/fs/cgroup/memory.max' );
+		$v2cur = @file_get_contents( '/sys/fs/cgroup/memory.current' );
+		$v2evt = @file_get_contents( '/sys/fs/cgroup/memory.events' );
+		if ( $v2max !== false || $v2cur !== false ) {
+			$cgroup['v2'] = array(
+				'memory_max'     => ( $v2max === false ) ? 'unreadable' : rtrim( (string) $v2max ),
+				'memory_current' => ( $v2cur === false ) ? 'unreadable' : rtrim( (string) $v2cur ),
+				'memory_events'  => ( $v2evt === false ) ? 'unreadable' : trim( (string) $v2evt ),
+			);
+		}
+
+		/* cgroup v1 fallback: مسیر کنترلر memory از /proc/self/cgroup */
+		if ( null === $cgroup['v2'] && is_string( $cgroup['raw'] ) && '' !== $cgroup['raw'] ) {
+			$cg_path = null;
+			foreach ( explode( "\n", $cgroup['raw'] ) as $cg_line ) {
+				$cg_parts = explode( ':', $cg_line, 3 );
+				if ( count( $cg_parts ) === 3 && ( '' === $cg_parts[1] || false !== strpos( $cg_parts[1], 'memory' ) ) ) {
+					$cg_path = $cg_parts[2];
+					break;
+				}
+			}
+			if ( null !== $cg_path ) {
+				$cg_base   = '/sys/fs/cgroup/memory' . ( '/' === $cg_path ? '' : $cg_path );
+				$cg_lim    = @file_get_contents( $cg_base . '/memory.limit_in_bytes' );
+				$cg_use    = @file_get_contents( $cg_base . '/memory.usage_in_bytes' );
+				$cg_fal    = @file_get_contents( $cg_base . '/memory.failcnt' );
+				$cg_maxuse = @file_get_contents( $cg_base . '/memory.max_usage_in_bytes' );
+				if ( $cg_lim !== false || $cg_use !== false ) {
+					$cgroup['v1'] = array(
+						'path'                 => $cg_path,
+						'limit_in_bytes'       => ( $cg_lim === false ) ? 'unreadable' : rtrim( (string) $cg_lim ),
+						'usage_in_bytes'       => ( $cg_use === false ) ? 'unreadable' : rtrim( (string) $cg_use ),
+						'failcnt'              => ( $cg_fal === false ) ? 'unreadable' : rtrim( (string) $cg_fal ),
+						'max_usage_in_bytes'   => ( $cg_maxuse === false ) ? 'unreadable' : rtrim( (string) $cg_maxuse ),
+					);
+				}
+			}
+		}
+
+		return array(
+			'meminfo' => $meminfo,
+			'status'  => $status,
+			'limits'  => $limits,
+			'cgroup'  => $cgroup,
+			'sapi'    => PHP_SAPI,
+			'pid'     => function_exists( 'getmypid' ) ? getmypid() : null,
+			'ts'      => current_time( 'mysql' ),
+		);
+	}
+
+	/**
+	 * خواندن read-only key: value از فایل /proc — فقط fopen('rb').
+	 * مقادیر raw (با واحد، مثلاً kB) برمی‌گردند؛ تفسیر با داده‌های دیگر.
+	 */
+	/**
 	 * /proc/self/status — فقط خواندن (بدون ترمینال). اگر در دسترس نباشد
 	 * صریحاً `available=false` گزارش می‌دهد (ادعایی بر سر VmSize نمی‌رود).
 	 */
@@ -106,6 +190,29 @@ class STI_GS_Env_Diag {
 		$out['vm_peak']   = $wanted['VmPeak'];
 		$out['vm_rss']    = $wanted['VmRSS'];
 		$out['threads']   = $wanted['Threads'];
+		return $out;
+	}
+
+	private static function proc_kv( $path, array $keys ) {
+		$out = array( 'available' => false );
+		$fp  = @fopen( $path, 'rb' );
+		if ( ! $fp ) {
+			return $out;
+		}
+		while ( ( $line = fgets( $fp, 512 ) ) !== false ) {
+			foreach ( $keys as $k ) {
+				/* /proc/meminfo و /proc/self/status: «Key: value» — و
+				 * /proc/self/limits جدول است: «Key   soft   hard   unit». */
+				if ( 0 === strpos( $line, $k ) ) {
+					$val = ltrim( substr( $line, strlen( $k ) ), ':' );
+					if ( '' !== trim( $val ) ) {
+						$out[ $k ] = trim( $val );
+					}
+				}
+			}
+		}
+		fclose( $fp );
+		$out['available'] = true;
 		return $out;
 	}
 }
