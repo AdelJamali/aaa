@@ -32,8 +32,8 @@ calls = re.findall(r'\b(exec|proc_open|shell_exec|system|passthru|popen|escapesh
 check('D2 no shell function CALLS in diag code', len(calls) == 0, str(calls))
 
 # D3: version consistency 10.12.12
-check('D3a header version', 'Version:           10.12.13' in main)
-check('D3b STI_VERSION', "define( 'STI_VERSION', '10.12.13' )" in main)
+check('D3a header version', 'Version:           10.12.14' in main)
+check('D3b STI_VERSION', "define( 'STI_VERSION', '10.12.14' )" in main)
 
 # D4: loader + ajax registration + handler
 check('D4a require_once env-diag', "require_once STI_PATH . 'includes/golden-scan/class-gs-env-diag.php';" in main)

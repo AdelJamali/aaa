@@ -73,7 +73,7 @@ check('M2b old single-pattern wc -l count removed', old_count not in src)
 heal = src[src.find('public static function ipc_heal('):]
 heal = heal[:heal.find('public static function ipc_diagnostic(')]
 kill_pos = heal.find("kill ' . (int) $pid")
-unlink_pos = heal.find("foreach ( array( 'ipc', 'callback.ipc', 'ipcState.php', 'lock' )")
+unlink_pos = heal.find("@unlink( $p )")  # 10.12.14: first real unlink (visibility-guard above performs none)
 check('M3a heal kills workers first', kill_pos > -1)
 check('M3b heal deletes files second (kill < unlink)', -1 < kill_pos < unlink_pos)
 check('M3c heal verifies death before SIGKILL (second pid sweep)', heal.count('ipc_worker_pids()') >= 2)

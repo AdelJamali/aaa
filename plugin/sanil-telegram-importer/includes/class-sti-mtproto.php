@@ -1,6 +1,19 @@
 <?php
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
+/* 10.12.14 — RC FIX #1 (failure دقیق: «Call to undefined function
+ * escapeshellarg()» در log madeline — موقعیت: phar → ProcessRunner::start()
+ * → Amp\Process\escapeArgument → \escapeshellarg — **قبل** از proc_open و
+ * **قبل** از ایجاد worker). تابع جزء ext/standard است ولی در context اجرای
+ * برخی هاست‌ها اصلاً در symbol table نیست (شواهد runtime: «undefined»، نه
+ * «disabled»). پیاده‌سازی POSIX دقیق: single-quote + escape گیومه‌های درونی
+ * به شکل '\''. فقط در صورت نبود تعریف می‌شود — روی هاست‌های سالم صفر اثر. */
+if ( ! function_exists( 'escapeshellarg' ) ) {
+	function escapeshellarg( $string ) {
+		return "'" . str_replace( "'", "'\\''", (string) $string ) . "'";
+	}
+}
+
 /**
  * STI MTProto — اتصال با اکانت شخصی تلگرام (MadelineProto)
  *
@@ -660,7 +673,8 @@ class STI_MTProto {
 					$this->client = $mad;
 					$this->client_error = null;
 					STI_Logger::info( sprintf(
-						'MTProto client: ساخته شد — mem_before=%d mem_after=%d mem_peak=%d limit=%s',
+						'MTProto client: ساخته شد — pid=%d mem_before=%d mem_after=%d mem_peak=%d limit=%s',
+						function_exists( 'getmypid' ) ? getmypid() : 0,
 						$mem_before,
 						memory_get_usage( true ),
 						memory_get_peak_usage( true ),
@@ -695,7 +709,8 @@ class STI_MTProto {
 		STI_Logger::error(
 			'MTProto: ساخت client ناموفق — ' . $last_error
 			. sprintf(
-				' | mem_before=%d mem_now=%d mem_peak=%d limit=%s',
+				' | pid=%d mem_before=%d mem_now=%d mem_peak=%d limit=%s',
+				function_exists( 'getmypid' ) ? getmypid() : 0,
 				$mem_before,
 				memory_get_usage( true ),
 				memory_get_peak_usage( true ),
@@ -2600,6 +2615,32 @@ class STI_MTProto {
 			return $report;
 		}
 
+		/* 10.12.14 — RC FIX #2 (failure دقیق: «ترمیم IPC (rpc_fatal / client:
+		 * mmap) — 0 worker بسته شد (pids=-)، N فایل فرسوده پاک شد» — یعنی
+		 * فایل‌های IPC بدون هیچ visibility از worker حذف می‌شدند). اگر exec
+		 * در دسترس نباشد، وضعیت worker **نامشخص** است: فایل‌ها ممکن است
+		 * متعلق به worker زنده‌ای باشند که ما نمی‌بینیم (مثلاً WebRunner
+		 * داخل FPM). حذف کورِ `ipc/lock/ipcState` در این حالت endpoint را
+		 * مرده نگه می‌دارد/می‌سازد. رفتار لازم: نامشخص = بدون unlink،
+		 * بدون cleanup، فقط diagnostic. */
+		if ( ! ( function_exists( 'exec' ) && is_callable( 'exec' ) ) ) {
+			$present = array();
+			foreach ( array( 'ipc', 'callback.ipc', 'ipcState.php', 'lock' ) as $f ) {
+				if ( file_exists( $dir . '/' . $f ) ) {
+					$present[] = $f;
+				}
+			}
+			$report['ok']      = false;
+			$report['skipped'] = 'worker_state_unknown — exec unavailable: no unlink, no cleanup';
+			STI_Logger::warning( sprintf(
+				'MTProto: ترمیم IPC لغو شد (%s) — وضعیت worker نامشخص (exec در دسترس نیست): هیچ فایلی حذف نشد. فایل‌های موجود: [%s]. pid=%d',
+				$reason,
+				$present ? implode( ', ', $present ) : 'هیچ',
+				function_exists( 'getmypid' ) ? getmypid() : 0
+			) );
+			return $report;
+		}
+
 		/* 10.12.11 — ترتیب حیاتی: **اول** همه‌ی worker های زنده (با هر دو
 		 * الگوی cmdline — قبل و بعد از rename عنوان فرآیند) بسته و مرگشان
 		 * verify شود، **آنگاه** فایل‌های IPC پاک شوند. نسخه‌ی قبلی فایل‌ها را
@@ -2669,6 +2710,30 @@ class STI_MTProto {
 
 		$required_php = self::phar_php_requirement();
 		$pids         = $dir_ok ? self::ipc_worker_pids() : array();
+
+		/* 10.12.14 — Task D (فقط خواندنی): fingerprint از startMe attempts —
+		 * phar برای هر تلاش، bootstrap `madeline-ipc-<suffix>.php` می‌کوبد
+		 * (ProcessRunner → sys temp dir، WebRunner → web root) و فقط در
+		 * shutdown-function پاکش می‌کند؛ انباشت = مرگ غیرعادی فرآیندها. */
+		$leftovers = array( 'webroot' => 0, 'tmpdir' => 0, 'sample' => '', 'newest_age_s' => null );
+		$dirs_check = array(
+			'webroot' => ( defined( 'ABSPATH' ) ? untrailingslashit( ABSPATH ) : '' ),
+			'tmpdir'  => ( function_exists( 'sys_get_temp_dir' ) ? sys_get_temp_dir() : '' ),
+		);
+		foreach ( $dirs_check as $lk => $ldir ) {
+			if ( '' === $ldir || ! is_dir( $ldir ) ) { continue; }
+			$lfiles = glob( $ldir . '/madeline-ipc-*.php' );
+			$lfiles = is_array( $lfiles ) ? $lfiles : array();
+			$leftovers[ $lk ] = count( $lfiles );
+			if ( $lfiles ) {
+				$leftovers['sample'] = $lk . ':' . basename( $lfiles[0] );
+				$lmt = (int) @filemtime( $lfiles[0] );
+				if ( $lmt && ( null === $leftovers['newest_age_s'] || ( time() - $lmt ) < $leftovers['newest_age_s'] ) ) {
+					$leftovers['newest_age_s'] = time() - $lmt;
+				}
+			}
+		}
+
 		$di = array(
 			'session_dir'       => $dir,
 			'session_dir_ok'    => $dir_ok,
@@ -2692,6 +2757,11 @@ class STI_MTProto {
 			'memory_usage'      => function_exists( 'memory_get_usage' ) ? memory_get_usage( true ) : 0,
 			'memory_peak'       => function_exists( 'memory_get_peak_usage' ) ? memory_get_peak_usage( true ) : 0,
 			'shell_available'   => function_exists( 'exec' ) && is_callable( 'exec' ),
+			'proc_open_available' => function_exists( 'proc_open' ) && is_callable( 'proc_open' ),
+			/* 10.12.14 — Task D: pid + ipc path + runner-fingerprint (read-only) */
+			'pid'               => function_exists( 'getmypid' ) ? getmypid() : null,
+			'ipc_path'          => $dir,
+			'ipc_leftovers'     => $leftovers,
 		);
 		return $di;
 	}
