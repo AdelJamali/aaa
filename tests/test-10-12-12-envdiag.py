@@ -32,8 +32,8 @@ calls = re.findall(r'\b(exec|proc_open|shell_exec|system|passthru|popen|escapesh
 check('D2 no shell function CALLS in diag code', len(calls) == 0, str(calls))
 
 # D3: version consistency 10.12.12
-check('D3a header version', 'Version:           10.12.12' in main)
-check('D3b STI_VERSION', "define( 'STI_VERSION', '10.12.12' )" in main)
+check('D3a header version', 'Version:           10.12.13' in main)
+check('D3b STI_VERSION', "define( 'STI_VERSION', '10.12.13' )" in main)
 
 # D4: loader + ajax registration + handler
 check('D4a require_once env-diag', "require_once STI_PATH . 'includes/golden-scan/class-gs-env-diag.php';" in main)
@@ -66,6 +66,48 @@ check('D10d env page shows peak', "memory_get_peak_usage(true)" in envp)
 
 # D9: proc_status read-only (fopen rb only)
 check('D9 /proc read-only', "fopen( '/proc/self/status', 'rb' )" in diag and 'fwrite' not in code)
+
+
+# D11: PHP8 syntax guard — no unparenthesized nested ternary (a?b:c?d:e)
+def _nested_ternary(line):
+    import re as _re2
+    code = _re2.sub(r'//.*', '', line)
+    code = code.replace('<?php', ' ').replace('?>', ' ').replace('::', ' ')
+    if ') :' in code or ') :' in code:  # alt-syntax if/foreach — not ternary
+        return False
+    depth = 0; i = 0; n = len(code); in_str = None
+    events = []
+    while i < n:
+        c = code[i]
+        if in_str:
+            if c == in_str and code[i-1] != '\\': in_str = None
+        else:
+            if c in ('"', "'"): in_str = c
+            elif c in '([{': depth += 1
+            elif c in ')]}': depth -= 1
+            elif depth == 0:
+                if c == '?': events.append('?')
+                elif c == ':' and (i == 0 or code[i-1] != '='): events.append(':')
+                elif c == ',': events.append(',')
+        i += 1
+    for k, ch in enumerate(events):
+        if ch != ':': continue
+        for ch2 in events[k+1:]:
+            if ch2 == '?': return True
+            if ch2 in (':', ','): break
+    return False
+
+_BUGGY_REGRESSION = "'k' => ( A ) ? 'x' : ( B ) ? 'y' : 'z'"
+_FIXED_OK = "'k' => ( A ) ? 'x' : ( ( B ) ? 'y' : 'z' )"
+check('D11a detector catches the original bug', _nested_ternary(_BUGGY_REGRESSION) is True)
+check('D11b detector passes the fixed form', _nested_ternary(_FIXED_OK) is False)
+_bad_lines = [(ln, l.strip()[:80]) for ln, l in enumerate(diag.splitlines(), 1) if _nested_ternary(l)]
+check('D11c diag file clean', len(_bad_lines) == 0, str(_bad_lines))
+_other = {}
+for _f, _lbl in ((main, 'main'), (mt, 'mtproto'), (tw, 'test-wizard'), (envp, 'environment')):
+    _h = [ln for ln, l in enumerate(_f.splitlines(), 1) if _nested_ternary(l)]
+    if _h: _other[_lbl] = _h
+check('D11d changed files clean', len(_other) == 0, str(_other))
 
 print()
 if FAILS:

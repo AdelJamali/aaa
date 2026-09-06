@@ -77,7 +77,7 @@ class STI_GS_Env_Diag {
 			'option'            => isset( $e['option'] ) ? ( 'ini_get_all[' . (string) $e['option'] . ']' ) : 'n/a',
 			'local_value_dir'   => isset( $e['local_value_dir'] ) ? (string) $e['local_value_dir'] : 'n/a',
 			'global_value'      => isset( $e['global_value'] ) ? (string) $e['global_value'] : 'n/a',
-			'source_constant'   => ( defined( 'INI_SYSTEM' ) && isset( $e['option'] ) && $e['option'] === INI_SYSTEM ) ? 'INI_SYSTEM' : ( defined( 'INI_USER' ) && isset( $e['option'] ) && $e['option'] === INI_USER ) ? 'INI_USER' : 'OTHER',
+			'source_constant'   => ( defined( 'INI_SYSTEM' ) && isset( $e['option'] ) && $e['option'] === INI_SYSTEM ) ? 'INI_SYSTEM' : ( ( defined( 'INI_USER' ) && isset( $e['option'] ) && $e['option'] === INI_USER ) ? 'INI_USER' : 'OTHER' ),
 		);
 	}
 
