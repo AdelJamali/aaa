@@ -378,6 +378,24 @@ class STI_GS_System_Check {
 			? (string) STI_MTProto::instance()->auth_state()
 			: 'unknown';
 
+		/* 10.12.16 — RULE 9: «وارد نشده‌اید» فقط وقتی درست است که client
+		 * واقعاً ساخته و وضعیت بررسی شده باشد. اگر ساخت client شکست خورده،
+		 * علت واقعی نمایش داده می‌شود تا خطای اصلی پنهان نماند. این فقط
+		 * متنِ گزارش است؛ هیچ تصمیم اجرایی به آن وابسته نیست. */
+		if ( method_exists( 'STI_MTProto', 'auth_state_report' ) ) {
+			$report = STI_MTProto::instance()->auth_state_report( $state );
+			if ( ! empty( $report['construction_failed'] ) ) {
+				$out[] = self::row(
+					'تلگرام',
+					'ورود اکانت',
+					self::FAIL,
+					'CLIENT_CONSTRUCTION_FAILED — اتصال قابل بررسی نیست (وضعیت ورود نامعلوم است، نه «خارج‌شده»). علت واقعی: '
+						. mb_substr( (string) ( $report['error'] ?? 'نامشخص' ), 0, 200 )
+				);
+				return $out;
+			}
+		}
+
 		$labels = array(
 			'logged_in'     => array( self::PASS, 'وارد شده‌اید' ),
 			'awaiting_code' => array( self::WARN, 'منتظر کد ورود — از «تنظیمات تلگرام» ورود را کامل کنید' ),

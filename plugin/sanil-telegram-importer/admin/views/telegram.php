@@ -254,9 +254,12 @@ settings_errors( 'sti' );
 	function renderStatus(d) {
 		if (!d) { return; }
 		var lines = [];
+		// 10.12.16 — RULE 9: اگر ساخت client شکست خورده، «ورود نشده» گمراه‌کننده
+		// است؛ علت واقعی نمایش داده می‌شود (خطای اصلی پنهان نمی‌شود).
 		lines.push('<strong>وضعیت:</strong> ' +
 			(d.state === 'logged_in' ? '<span style="color:#16a34a">✅ وارد شده‌اید</span>' :
 			d.state === 'awaiting_code' ? '<span style="color:#d97706">⏳ منتظر کد ورود</span>' :
+			d.construction_failed ? '<span style="color:#dc2626">⚠️ اتصال قابل بررسی نیست — CLIENT_CONSTRUCTION_FAILED</span>' :
 			'<span style="color:#666">ورود نشده</span>'));
 
 		lines.push('<strong>موتور MadelineProto:</strong> ' +

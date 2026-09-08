@@ -51,6 +51,17 @@ class STI_MTProto {
 	/** @var string|null آخرین خطای client (برای نمایش در پنل). */
 	protected $client_error = null;
 
+	/**
+	 * 10.12.16 — RULE 9: آیا آخرین تلاش ساخت client شکست خورد؟
+	 *
+	 * فقط پرچم نمایشی است: مقدار بازگشتی auth_state() و هیچ تصمیم اجرایی
+	 * دیگری به آن وابسته نیست (جریان احراز هویت طبق RULE 1 دست‌نخورده).
+	 * هدف: UI بتواند «وارد نشده‌اید» را از «اتصال قابل بررسی نبود» تفکیک کند.
+	 *
+	 * @var bool
+	 */
+	protected $client_construction_failed = false;
+
 	/** @var string نام موقتِ منتظرِ کد ورود. */
 	const PENDING_KEY = 'sti_mt_pending';
 
@@ -708,6 +719,9 @@ class STI_MTProto {
 		}
 
 		$this->client_error = $last_error;
+		/* 10.12.16 — RULE 9: فقط علامت‌گذاری برای نمایش؛ هیچ مسیر اجرایی
+		 * به این پرچم شاخه نمی‌زند. */
+		$this->client_construction_failed = true;
 		STI_Logger::error(
 			'MTProto: ساخت client ناموفق — ' . $last_error
 			. sprintf(
@@ -725,14 +739,36 @@ class STI_MTProto {
 		 * /proc/meminfo (MemAvailable/swap/commit)، /proc/self/status
 		 * (VmSize/VmPeak/VmRSS/VmHWM/Threads)، /proc/self/limits (RLIMIT) و
 		 * cgroup (v2/v1) — برای تعیین اینکه کدام سقف mmap را رد می‌کند. */
-		$last_low = mb_strtolower( (string) $last_error );
-		if ( ! self::$oom_diag_logged
-			&& class_exists( 'STI_GS_Env_Diag' )
-			&& ( false !== strpos( $last_low, 'cannot allocate memory' )
-				|| false !== strpos( $last_low, 'fiber stack allocate failed' )
-				|| ( false !== strpos( $last_low, 'mmap' ) && false !== strpos( $last_low, 'allocat' ) ) ) ) {
-			self::$oom_diag_logged = true;
-			STI_Logger::error( 'OOM_DIAG ' . wp_json_encode( STI_GS_Env_Diag::oom_context() ) );
+		/* 10.12.16 — RULE 3/4/5: کل بلوک تشخیصی در try/catch است تا هیچ
+		 * خطای تشخیصی، خطای اصلی ($last_error) را overwrite نکند یا مسیر
+		 * return پایین را نشکند. گیت الگوی حافظه **حذف نشده** — فقط
+		 * نتیجه‌اش (matched/skipped + دلیل) ثبت می‌شود تا با شاهد معلوم
+		 * شود گیت مقصر هست یا نه. */
+		try {
+			if ( ! self::$oom_diag_logged
+				&& class_exists( 'STI_GS_Env_Diag' )
+				&& ( ! class_exists( 'STI_GS_Flags' ) || STI_GS_Flags::on( 'oom_diag' ) ) ) {
+
+				self::$oom_diag_logged = true;
+
+				$gate = STI_GS_Env_Diag::oom_gate_probe( (string) $last_error );
+				$ctx  = STI_GS_Env_Diag::oom_context_safe();
+
+				$ctx['oom_gate_result'] = $gate['result'];
+				$ctx['oom_gate_reason'] = $gate['reason'];
+				/* متن خام خطا برای بازرسی — بدون هیچ تغییر در خودِ خطا. */
+				$ctx['error_message_raw']   = mb_substr( (string) $last_error, 0, 400 );
+				$ctx['error_class_matched'] = $gate['matched'];
+
+				STI_Logger::error( 'OOM_DIAG ' . wp_json_encode( $ctx ) );
+			}
+		} catch ( \Throwable $diag_error ) {
+			/* RULE 3: خطای اصلی حفظ می‌شود؛ شکست تشخیص فقط یک هشدار است. */
+			try {
+				STI_Logger::warning( 'OOM_DIAG ثبت نشد (خطای خودِ کد تشخیصی، بدون اثر بر خطای اصلی): ' . $diag_error->getMessage() );
+			} catch ( \Throwable $ignored ) {
+				// حتی logger هم اگر شکست خورد، مسیر اصلی نباید متوقف شود.
+			}
 		}
 
 		return new WP_Error( 'sti_mt_client', 'ساخت client ناموفق: ' . $last_error );
@@ -928,6 +964,32 @@ class STI_MTProto {
 
 		update_option( $cache_key, array( 'state' => $state, 'ts' => time() ), false );
 		return $state;
+	}
+
+	/**
+	 * 10.12.16 — RULE 9: گزارش تفکیک‌شده‌ی وضعیت، فقط برای نمایش.
+	 *
+	 * auth_state() عمداً دست‌نخورده می‌ماند (RULE 1: جریان احراز هویت). این
+	 * متد چیزی تصمیم نمی‌گیرد و هیچ مسیر اجرایی به آن شاخه نمی‌زند؛ فقط به
+	 * UI می‌گوید آیا «وارد نشده‌اید» یک واقعیتِ بررسی‌شده است یا صرفاً
+	 * نتیجه‌ی شکست ساخت client (RULE 9).
+	 *
+	 * @param string|null $state وضعیتِ از پیش محاسبه‌شده؛ اگر داده شود
+	 *                           auth_state() دوباره صدا زده نمی‌شود (بدون
+	 *                           بار اضافه — RULE 2).
+	 * @return array{state:string, display_state:string, construction_failed:bool, error:string|null}
+	 */
+	public function auth_state_report( $state = null ) {
+		if ( null === $state ) {
+			$state = $this->auth_state();
+		}
+		$failed = ( $this->client_construction_failed && 'logged_in' !== $state );
+		return array(
+			'state'               => $state,
+			'display_state'       => $failed ? 'CLIENT_CONSTRUCTION_FAILED' : $state,
+			'construction_failed' => $failed,
+			'error'               => $failed ? $this->client_error : null,
+		);
 	}
 
 	/** پاک کردن کش وضعیت (بعد از ورود/خروج). */
@@ -2815,8 +2877,13 @@ class STI_MTProto {
 
 			$state = $mt->auth_state();
 			$account = ( 'logged_in' === $state ) ? $mt->account_info() : null;
+			/* 10.12.16 — RULE 9: کلیدهای افزودنی برای تفکیک نمایش؛ کلید
+			 * 'state' با همان معنای قبلی باقی می‌ماند (سازگاری کامل). */
+			$report = $mt->auth_state_report( $state );
 
 			self::ajax_reply( 'success', array(
+				'display_state'       => $report['display_state'],
+				'construction_failed' => $report['construction_failed'],
 				'configured'     => self::is_configured(),
 				'php'            => PHP_VERSION,
 				'composer'       => self::site_has_composer(),

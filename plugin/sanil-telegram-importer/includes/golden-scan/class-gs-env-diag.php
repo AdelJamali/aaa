@@ -91,6 +91,10 @@ class STI_GS_Env_Diag {
 	 * @return array
 	 */
 	public static function oom_context() {
+		/* 10.12.16 — RULE 4: هر خطای خواندن اینجا جمع می‌شود و هرگز به بیرون
+		 * پرتاب نمی‌شود؛ مسیر اصلی (خطای MTProto) دست‌نخورده می‌ماند. */
+		$read_errors = array();
+
 		$meminfo = self::proc_kv(
 			'/proc/meminfo',
 			array( 'MemTotal', 'MemFree', 'MemAvailable', 'SwapTotal', 'SwapFree', 'CommitLimit', 'Committed_AS' )
@@ -99,9 +103,13 @@ class STI_GS_Env_Diag {
 			'/proc/self/status',
 			array( 'Name', 'VmSize', 'VmPeak', 'VmRSS', 'VmHWM', 'Threads' )
 		);
+		/* 10.12.16 — RULE 6: «Max data size» = RLIMIT_DATA. از کرنل 4.7
+		 * (commit 84638335900f «mm: rework virtual memory accounting») این
+		 * سقف، mapهای private anonymous — یعنی دقیقاً stack یک Fiber — را
+		 * هم محدود می‌کند، پس برای تفکیک A/B/C لازم است. */
 		$limits = self::proc_kv(
 			'/proc/self/limits',
-			array( 'Max address space', 'Max processes', 'Max open files', 'Max resident set', 'Max locked memory' )
+			array( 'Max address space', 'Max data size', 'Max processes', 'Max open files', 'Max resident set', 'Max locked memory' )
 		);
 		$cgroup = array( 'raw' => 'unreadable', 'v2' => null, 'v1' => null );
 
@@ -150,15 +158,117 @@ class STI_GS_Env_Diag {
 			}
 		}
 
+		/* 10.12.16 — RULE 6: شمارش نگاشت‌های حافظه‌ی همین فرآیند و سقف کرنل.
+		 * mmap با ENOMEM شکست می‌خورد وقتی تعداد VMAها به vm.max_map_count
+		 * برسد — حتی اگر RAM آزاد باشد. هر Fiber دو VMA می‌سازد (ناحیه +
+		 * guard page). بدون این دو عدد، «سقف شمارشی» از «کمبود حجمی» قابل
+		 * تفکیک نیست. فقط خواندن. */
+		$maps_count     = 'unreadable';
+		$max_map_count  = 'unreadable';
+
+		$maps_raw = @file_get_contents( '/proc/self/maps' );
+		if ( false === $maps_raw ) {
+			$read_errors[] = '/proc/self/maps: unreadable';
+		} else {
+			$maps_count = substr_count( (string) $maps_raw, "\n" );
+		}
+
+		$mmc_raw = @file_get_contents( '/proc/sys/vm/max_map_count' );
+		if ( false === $mmc_raw ) {
+			$read_errors[] = '/proc/sys/vm/max_map_count: unreadable';
+		} else {
+			$max_map_count = trim( (string) $mmc_raw );
+		}
+
+		/* RULE 6: rlimit_data به‌صورت فیلد مستقل (علاوه بر limits) — اگر
+		 * /proc/self/limits خوانده نشد، صریحاً 'unreadable'، نه حدس. */
+		$rlimit_data = ( isset( $limits['Max data size'] ) && '' !== $limits['Max data size'] )
+			? $limits['Max data size']
+			: 'unreadable';
+
+		foreach ( array( 'meminfo' => $meminfo, 'status' => $status, 'limits' => $limits ) as $k => $blk ) {
+			if ( empty( $blk['available'] ) ) {
+				$read_errors[] = $k . ': unreadable';
+			}
+		}
+		if ( 'unreadable' === $cgroup['raw'] ) {
+			$read_errors[] = '/proc/self/cgroup: unreadable';
+		}
+
+		/* 10.12.16 — RULE 8: ipc_heal فقط گزارش می‌شود، هرگز تغییر نمی‌کند.
+		 * شاهد: class-sti-mtproto.php ipc_heal() وقتی exec در دسترس نباشد
+		 * با «worker_state_unknown» برمی‌گردد و هیچ کاری نمی‌کند — پس مسیر
+		 * «آزادسازی حافظه» در چنین محیطی بی‌اثر است. */
+		$exec_ok            = ( function_exists( 'exec' ) && is_callable( 'exec' ) );
+		$ipc_heal_possible  = $exec_ok;
+		$ipc_heal_reason    = $exec_ok ? 'exec_available' : 'exec_disabled';
+
 		return array(
-			'meminfo' => $meminfo,
-			'status'  => $status,
-			'limits'  => $limits,
-			'cgroup'  => $cgroup,
-			'sapi'    => PHP_SAPI,
-			'pid'     => function_exists( 'getmypid' ) ? getmypid() : null,
-			'ts'      => current_time( 'mysql' ),
+			'meminfo'                 => $meminfo,
+			'status'                  => $status,
+			'limits'                  => $limits,
+			'cgroup'                  => $cgroup,
+			'maps_count'              => $maps_count,
+			'max_map_count'           => $max_map_count,
+			'rlimit_data'             => $rlimit_data,
+			'ipc_heal_possible'       => $ipc_heal_possible,
+			'ipc_heal_reason'         => $ipc_heal_reason,
+			'diagnostic_read_errors'  => $read_errors,
+			'sapi'                    => PHP_SAPI,
+			'pid'                     => function_exists( 'getmypid' ) ? getmypid() : null,
+			'ts'                      => current_time( 'mysql' ),
 		);
+	}
+
+	/**
+	 * 10.12.16 — پوشش امن oom_context() طبق RULE 3 + RULE 4.
+	 *
+	 * هر Throwable داخل کد تشخیصی اینجا گرفته می‌شود و به‌صورت داده برمی‌گردد؛
+	 * هرگز به مسیر اصلی (خطای MTProto) نشت نمی‌کند و آن را overwrite نمی‌کند.
+	 *
+	 * @return array
+	 */
+	public static function oom_context_safe() {
+		try {
+			return self::oom_context();
+		} catch ( \Throwable $diag_error ) {
+			return array(
+				'diagnostic_failed'      => true,
+				'diagnostic_read_errors' => array( 'oom_context: ' . $diag_error->getMessage() ),
+				'sapi'                   => PHP_SAPI,
+				'pid'                    => function_exists( 'getmypid' ) ? getmypid() : null,
+			);
+		}
+	}
+
+	/**
+	 * 10.12.16 — RULE 5: نتیجه‌ی گیت الگوی حافظه، بدون حذف خود گیت.
+	 *
+	 * ادعای بیرونی («گیت هرگز شلیک نمی‌کند») هنوز اثبات نشده است؛ پس رفتار
+	 * گیت دست‌نخورده می‌ماند و فقط نتیجه‌اش ثبت می‌شود تا با شاهد — نه با
+	 * حدس — معلوم شود گیت مقصر هست یا نه.
+	 *
+	 * @param string $error_message متن خطای واقعی (بدون تغییر).
+	 * @return array{matched:bool, result:string, reason:string}
+	 */
+	public static function oom_gate_probe( $error_message ) {
+		$low = function_exists( 'mb_strtolower' )
+			? mb_strtolower( (string) $error_message )
+			: strtolower( (string) $error_message );
+
+		if ( '' === trim( $low ) ) {
+			return array( 'matched' => false, 'result' => 'skipped', 'reason' => 'empty_error_message' );
+		}
+		if ( false !== strpos( $low, 'cannot allocate memory' ) ) {
+			return array( 'matched' => true, 'result' => 'matched', 'reason' => 'contains_cannot_allocate_memory' );
+		}
+		if ( false !== strpos( $low, 'fiber stack allocate failed' ) ) {
+			return array( 'matched' => true, 'result' => 'matched', 'reason' => 'contains_fiber_stack_allocate_failed' );
+		}
+		if ( false !== strpos( $low, 'mmap' ) && false !== strpos( $low, 'allocat' ) ) {
+			return array( 'matched' => true, 'result' => 'matched', 'reason' => 'contains_mmap_and_allocat' );
+		}
+		return array( 'matched' => false, 'result' => 'skipped', 'reason' => 'no_pattern_match' );
 	}
 
 	/**

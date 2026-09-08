@@ -150,8 +150,9 @@ class STI_GS_Test_Wizard {
 			wp_send_json_success( array( 'error' => 'class missing' ) );
 		}
 		$snap = STI_GS_Env_Diag::snapshot();
-		/* 10.12.15-diag — context حافظه‌ی OS همین فرآیند (read-only) */
-		$snap['oom_context'] = STI_GS_Env_Diag::oom_context();
+		/* 10.12.15-diag — context حافظه‌ی OS همین فرآیند (read-only)
+		 * 10.12.16 — نسخه‌ی safe: خطای تشخیصی هرگز به بیرون نشت نمی‌کند. */
+		$snap['oom_context'] = STI_GS_Env_Diag::oom_context_safe();
 		wp_send_json_success( $snap );
 	}
 
