@@ -1,0 +1,656 @@
+diff --git a/plugin/sanil-telegram-importer/admin/views/telegram.php b/plugin/sanil-telegram-importer/admin/views/telegram.php
+index 2fd25cc..43326a9 100644
+--- a/plugin/sanil-telegram-importer/admin/views/telegram.php
++++ b/plugin/sanil-telegram-importer/admin/views/telegram.php
+@@ -254,9 +254,12 @@ settings_errors( 'sti' );
+ 	function renderStatus(d) {
+ 		if (!d) { return; }
+ 		var lines = [];
++		// 10.12.16 — RULE 9: اگر ساخت client شکست خورده، «ورود نشده» گمراه‌کننده
++		// است؛ علت واقعی نمایش داده می‌شود (خطای اصلی پنهان نمی‌شود).
+ 		lines.push('<strong>وضعیت:</strong> ' +
+ 			(d.state === 'logged_in' ? '<span style="color:#16a34a">✅ وارد شده‌اید</span>' :
+ 			d.state === 'awaiting_code' ? '<span style="color:#d97706">⏳ منتظر کد ورود</span>' :
++			d.construction_failed ? '<span style="color:#dc2626">⚠️ اتصال قابل بررسی نیست — CLIENT_CONSTRUCTION_FAILED</span>' :
+ 			'<span style="color:#666">ورود نشده</span>'));
+ 
+ 		lines.push('<strong>موتور MadelineProto:</strong> ' +
+diff --git a/plugin/sanil-telegram-importer/includes/class-sti-mtproto.php b/plugin/sanil-telegram-importer/includes/class-sti-mtproto.php
+index 2f18ade..436f11a 100644
+--- a/plugin/sanil-telegram-importer/includes/class-sti-mtproto.php
++++ b/plugin/sanil-telegram-importer/includes/class-sti-mtproto.php
+@@ -51,6 +51,17 @@ class STI_MTProto {
+ 	/** @var string|null آخرین خطای client (برای نمایش در پنل). */
+ 	protected $client_error = null;
+ 
++	/**
++	 * 10.12.16 — RULE 9: آیا آخرین تلاش ساخت client شکست خورد؟
++	 *
++	 * فقط پرچم نمایشی است: مقدار بازگشتی auth_state() و هیچ تصمیم اجرایی
++	 * دیگری به آن وابسته نیست (جریان احراز هویت طبق RULE 1 دست‌نخورده).
++	 * هدف: UI بتواند «وارد نشده‌اید» را از «اتصال قابل بررسی نبود» تفکیک کند.
++	 *
++	 * @var bool
++	 */
++	protected $client_construction_failed = false;
++
+ 	/** @var string نام موقتِ منتظرِ کد ورود. */
+ 	const PENDING_KEY = 'sti_mt_pending';
+ 
+@@ -708,6 +719,9 @@ class STI_MTProto {
+ 		}
+ 
+ 		$this->client_error = $last_error;
++		/* 10.12.16 — RULE 9: فقط علامت‌گذاری برای نمایش؛ هیچ مسیر اجرایی
++		 * به این پرچم شاخه نمی‌زند. */
++		$this->client_construction_failed = true;
+ 		STI_Logger::error(
+ 			'MTProto: ساخت client ناموفق — ' . $last_error
+ 			. sprintf(
+@@ -725,14 +739,36 @@ class STI_MTProto {
+ 		 * /proc/meminfo (MemAvailable/swap/commit)، /proc/self/status
+ 		 * (VmSize/VmPeak/VmRSS/VmHWM/Threads)، /proc/self/limits (RLIMIT) و
+ 		 * cgroup (v2/v1) — برای تعیین اینکه کدام سقف mmap را رد می‌کند. */
+-		$last_low = mb_strtolower( (string) $last_error );
+-		if ( ! self::$oom_diag_logged
+-			&& class_exists( 'STI_GS_Env_Diag' )
+-			&& ( false !== strpos( $last_low, 'cannot allocate memory' )
+-				|| false !== strpos( $last_low, 'fiber stack allocate failed' )
+-				|| ( false !== strpos( $last_low, 'mmap' ) && false !== strpos( $last_low, 'allocat' ) ) ) ) {
+-			self::$oom_diag_logged = true;
+-			STI_Logger::error( 'OOM_DIAG ' . wp_json_encode( STI_GS_Env_Diag::oom_context() ) );
++		/* 10.12.16 — RULE 3/4/5: کل بلوک تشخیصی در try/catch است تا هیچ
++		 * خطای تشخیصی، خطای اصلی ($last_error) را overwrite نکند یا مسیر
++		 * return پایین را نشکند. گیت الگوی حافظه **حذف نشده** — فقط
++		 * نتیجه‌اش (matched/skipped + دلیل) ثبت می‌شود تا با شاهد معلوم
++		 * شود گیت مقصر هست یا نه. */
++		try {
++			if ( ! self::$oom_diag_logged
++				&& class_exists( 'STI_GS_Env_Diag' )
++				&& ( ! class_exists( 'STI_GS_Flags' ) || STI_GS_Flags::on( 'oom_diag' ) ) ) {
++
++				self::$oom_diag_logged = true;
++
++				$gate = STI_GS_Env_Diag::oom_gate_probe( (string) $last_error );
++				$ctx  = STI_GS_Env_Diag::oom_context_safe();
++
++				$ctx['oom_gate_result'] = $gate['result'];
++				$ctx['oom_gate_reason'] = $gate['reason'];
++				/* متن خام خطا برای بازرسی — بدون هیچ تغییر در خودِ خطا. */
++				$ctx['error_message_raw']   = mb_substr( (string) $last_error, 0, 400 );
++				$ctx['error_class_matched'] = $gate['matched'];
++
++				STI_Logger::error( 'OOM_DIAG ' . wp_json_encode( $ctx ) );
++			}
++		} catch ( \Throwable $diag_error ) {
++			/* RULE 3: خطای اصلی حفظ می‌شود؛ شکست تشخیص فقط یک هشدار است. */
++			try {
++				STI_Logger::warning( 'OOM_DIAG ثبت نشد (خطای خودِ کد تشخیصی، بدون اثر بر خطای اصلی): ' . $diag_error->getMessage() );
++			} catch ( \Throwable $ignored ) {
++				// حتی logger هم اگر شکست خورد، مسیر اصلی نباید متوقف شود.
++			}
+ 		}
+ 
+ 		return new WP_Error( 'sti_mt_client', 'ساخت client ناموفق: ' . $last_error );
+@@ -930,6 +966,32 @@ class STI_MTProto {
+ 		return $state;
+ 	}
+ 
++	/**
++	 * 10.12.16 — RULE 9: گزارش تفکیک‌شده‌ی وضعیت، فقط برای نمایش.
++	 *
++	 * auth_state() عمداً دست‌نخورده می‌ماند (RULE 1: جریان احراز هویت). این
++	 * متد چیزی تصمیم نمی‌گیرد و هیچ مسیر اجرایی به آن شاخه نمی‌زند؛ فقط به
++	 * UI می‌گوید آیا «وارد نشده‌اید» یک واقعیتِ بررسی‌شده است یا صرفاً
++	 * نتیجه‌ی شکست ساخت client (RULE 9).
++	 *
++	 * @param string|null $state وضعیتِ از پیش محاسبه‌شده؛ اگر داده شود
++	 *                           auth_state() دوباره صدا زده نمی‌شود (بدون
++	 *                           بار اضافه — RULE 2).
++	 * @return array{state:string, display_state:string, construction_failed:bool, error:string|null}
++	 */
++	public function auth_state_report( $state = null ) {
++		if ( null === $state ) {
++			$state = $this->auth_state();
++		}
++		$failed = ( $this->client_construction_failed && 'logged_in' !== $state );
++		return array(
++			'state'               => $state,
++			'display_state'       => $failed ? 'CLIENT_CONSTRUCTION_FAILED' : $state,
++			'construction_failed' => $failed,
++			'error'               => $failed ? $this->client_error : null,
++		);
++	}
++
+ 	/** پاک کردن کش وضعیت (بعد از ورود/خروج). */
+ 	public function clear_state_cache() {
+ 		if ( ! self::is_configured() ) {
+@@ -2815,8 +2877,13 @@ class STI_MTProto {
+ 
+ 			$state = $mt->auth_state();
+ 			$account = ( 'logged_in' === $state ) ? $mt->account_info() : null;
++			/* 10.12.16 — RULE 9: کلیدهای افزودنی برای تفکیک نمایش؛ کلید
++			 * 'state' با همان معنای قبلی باقی می‌ماند (سازگاری کامل). */
++			$report = $mt->auth_state_report( $state );
+ 
+ 			self::ajax_reply( 'success', array(
++				'display_state'       => $report['display_state'],
++				'construction_failed' => $report['construction_failed'],
+ 				'configured'     => self::is_configured(),
+ 				'php'            => PHP_VERSION,
+ 				'composer'       => self::site_has_composer(),
+diff --git a/plugin/sanil-telegram-importer/includes/golden-scan/class-gs-env-diag.php b/plugin/sanil-telegram-importer/includes/golden-scan/class-gs-env-diag.php
+index 342e5fa..20c928d 100644
+--- a/plugin/sanil-telegram-importer/includes/golden-scan/class-gs-env-diag.php
++++ b/plugin/sanil-telegram-importer/includes/golden-scan/class-gs-env-diag.php
+@@ -91,6 +91,10 @@ class STI_GS_Env_Diag {
+ 	 * @return array
+ 	 */
+ 	public static function oom_context() {
++		/* 10.12.16 — RULE 4: هر خطای خواندن اینجا جمع می‌شود و هرگز به بیرون
++		 * پرتاب نمی‌شود؛ مسیر اصلی (خطای MTProto) دست‌نخورده می‌ماند. */
++		$read_errors = array();
++
+ 		$meminfo = self::proc_kv(
+ 			'/proc/meminfo',
+ 			array( 'MemTotal', 'MemFree', 'MemAvailable', 'SwapTotal', 'SwapFree', 'CommitLimit', 'Committed_AS' )
+@@ -99,9 +103,13 @@ class STI_GS_Env_Diag {
+ 			'/proc/self/status',
+ 			array( 'Name', 'VmSize', 'VmPeak', 'VmRSS', 'VmHWM', 'Threads' )
+ 		);
++		/* 10.12.16 — RULE 6: «Max data size» = RLIMIT_DATA. از کرنل 4.7
++		 * (commit 84638335900f «mm: rework virtual memory accounting») این
++		 * سقف، mapهای private anonymous — یعنی دقیقاً stack یک Fiber — را
++		 * هم محدود می‌کند، پس برای تفکیک A/B/C لازم است. */
+ 		$limits = self::proc_kv(
+ 			'/proc/self/limits',
+-			array( 'Max address space', 'Max processes', 'Max open files', 'Max resident set', 'Max locked memory' )
++			array( 'Max address space', 'Max data size', 'Max processes', 'Max open files', 'Max resident set', 'Max locked memory' )
+ 		);
+ 		$cgroup = array( 'raw' => 'unreadable', 'v2' => null, 'v1' => null );
+ 
+@@ -150,17 +158,119 @@ class STI_GS_Env_Diag {
+ 			}
+ 		}
+ 
++		/* 10.12.16 — RULE 6: شمارش نگاشت‌های حافظه‌ی همین فرآیند و سقف کرنل.
++		 * mmap با ENOMEM شکست می‌خورد وقتی تعداد VMAها به vm.max_map_count
++		 * برسد — حتی اگر RAM آزاد باشد. هر Fiber دو VMA می‌سازد (ناحیه +
++		 * guard page). بدون این دو عدد، «سقف شمارشی» از «کمبود حجمی» قابل
++		 * تفکیک نیست. فقط خواندن. */
++		$maps_count     = 'unreadable';
++		$max_map_count  = 'unreadable';
++
++		$maps_raw = @file_get_contents( '/proc/self/maps' );
++		if ( false === $maps_raw ) {
++			$read_errors[] = '/proc/self/maps: unreadable';
++		} else {
++			$maps_count = substr_count( (string) $maps_raw, "\n" );
++		}
++
++		$mmc_raw = @file_get_contents( '/proc/sys/vm/max_map_count' );
++		if ( false === $mmc_raw ) {
++			$read_errors[] = '/proc/sys/vm/max_map_count: unreadable';
++		} else {
++			$max_map_count = trim( (string) $mmc_raw );
++		}
++
++		/* RULE 6: rlimit_data به‌صورت فیلد مستقل (علاوه بر limits) — اگر
++		 * /proc/self/limits خوانده نشد، صریحاً 'unreadable'، نه حدس. */
++		$rlimit_data = ( isset( $limits['Max data size'] ) && '' !== $limits['Max data size'] )
++			? $limits['Max data size']
++			: 'unreadable';
++
++		foreach ( array( 'meminfo' => $meminfo, 'status' => $status, 'limits' => $limits ) as $k => $blk ) {
++			if ( empty( $blk['available'] ) ) {
++				$read_errors[] = $k . ': unreadable';
++			}
++		}
++		if ( 'unreadable' === $cgroup['raw'] ) {
++			$read_errors[] = '/proc/self/cgroup: unreadable';
++		}
++
++		/* 10.12.16 — RULE 8: ipc_heal فقط گزارش می‌شود، هرگز تغییر نمی‌کند.
++		 * شاهد: class-sti-mtproto.php ipc_heal() وقتی exec در دسترس نباشد
++		 * با «worker_state_unknown» برمی‌گردد و هیچ کاری نمی‌کند — پس مسیر
++		 * «آزادسازی حافظه» در چنین محیطی بی‌اثر است. */
++		$exec_ok            = ( function_exists( 'exec' ) && is_callable( 'exec' ) );
++		$ipc_heal_possible  = $exec_ok;
++		$ipc_heal_reason    = $exec_ok ? 'exec_available' : 'exec_disabled';
++
+ 		return array(
+-			'meminfo' => $meminfo,
+-			'status'  => $status,
+-			'limits'  => $limits,
+-			'cgroup'  => $cgroup,
+-			'sapi'    => PHP_SAPI,
+-			'pid'     => function_exists( 'getmypid' ) ? getmypid() : null,
+-			'ts'      => current_time( 'mysql' ),
++			'meminfo'                 => $meminfo,
++			'status'                  => $status,
++			'limits'                  => $limits,
++			'cgroup'                  => $cgroup,
++			'maps_count'              => $maps_count,
++			'max_map_count'           => $max_map_count,
++			'rlimit_data'             => $rlimit_data,
++			'ipc_heal_possible'       => $ipc_heal_possible,
++			'ipc_heal_reason'         => $ipc_heal_reason,
++			'diagnostic_read_errors'  => $read_errors,
++			'sapi'                    => PHP_SAPI,
++			'pid'                     => function_exists( 'getmypid' ) ? getmypid() : null,
++			'ts'                      => current_time( 'mysql' ),
+ 		);
+ 	}
+ 
++	/**
++	 * 10.12.16 — پوشش امن oom_context() طبق RULE 3 + RULE 4.
++	 *
++	 * هر Throwable داخل کد تشخیصی اینجا گرفته می‌شود و به‌صورت داده برمی‌گردد؛
++	 * هرگز به مسیر اصلی (خطای MTProto) نشت نمی‌کند و آن را overwrite نمی‌کند.
++	 *
++	 * @return array
++	 */
++	public static function oom_context_safe() {
++		try {
++			return self::oom_context();
++		} catch ( \Throwable $diag_error ) {
++			return array(
++				'diagnostic_failed'      => true,
++				'diagnostic_read_errors' => array( 'oom_context: ' . $diag_error->getMessage() ),
++				'sapi'                   => PHP_SAPI,
++				'pid'                    => function_exists( 'getmypid' ) ? getmypid() : null,
++			);
++		}
++	}
++
++	/**
++	 * 10.12.16 — RULE 5: نتیجه‌ی گیت الگوی حافظه، بدون حذف خود گیت.
++	 *
++	 * ادعای بیرونی («گیت هرگز شلیک نمی‌کند») هنوز اثبات نشده است؛ پس رفتار
++	 * گیت دست‌نخورده می‌ماند و فقط نتیجه‌اش ثبت می‌شود تا با شاهد — نه با
++	 * حدس — معلوم شود گیت مقصر هست یا نه.
++	 *
++	 * @param string $error_message متن خطای واقعی (بدون تغییر).
++	 * @return array{matched:bool, result:string, reason:string}
++	 */
++	public static function oom_gate_probe( $error_message ) {
++		$low = function_exists( 'mb_strtolower' )
++			? mb_strtolower( (string) $error_message )
++			: strtolower( (string) $error_message );
++
++		if ( '' === trim( $low ) ) {
++			return array( 'matched' => false, 'result' => 'skipped', 'reason' => 'empty_error_message' );
++		}
++		if ( false !== strpos( $low, 'cannot allocate memory' ) ) {
++			return array( 'matched' => true, 'result' => 'matched', 'reason' => 'contains_cannot_allocate_memory' );
++		}
++		if ( false !== strpos( $low, 'fiber stack allocate failed' ) ) {
++			return array( 'matched' => true, 'result' => 'matched', 'reason' => 'contains_fiber_stack_allocate_failed' );
++		}
++		if ( false !== strpos( $low, 'mmap' ) && false !== strpos( $low, 'allocat' ) ) {
++			return array( 'matched' => true, 'result' => 'matched', 'reason' => 'contains_mmap_and_allocat' );
++		}
++		return array( 'matched' => false, 'result' => 'skipped', 'reason' => 'no_pattern_match' );
++	}
++
+ 	/**
+ 	 * خواندن read-only key: value از فایل /proc — فقط fopen('rb').
+ 	 * مقادیر raw (با واحد، مثلاً kB) برمی‌گردند؛ تفسیر با داده‌های دیگر.
+diff --git a/plugin/sanil-telegram-importer/includes/golden-scan/class-gs-flags.php b/plugin/sanil-telegram-importer/includes/golden-scan/class-gs-flags.php
+index 4a78500..969196b 100644
+--- a/plugin/sanil-telegram-importer/includes/golden-scan/class-gs-flags.php
++++ b/plugin/sanil-telegram-importer/includes/golden-scan/class-gs-flags.php
+@@ -64,6 +64,11 @@ class STI_GS_Flags {
+ 				'default' => 1,
+ 				'note'    => 'بدون آن، Channel Watcher می‌تواند در یک روز هزاران Session بسازد.',
+ 			),
++			'oom_diag' => array(
++				'label'   => 'تشخیص ENOMEM/Fiber (فقط خواندنی)',
++				'default' => 1,
++				'note'    => 'در لحظه‌ی شکست ساخت client، شمارش نگاشت‌های حافظه و سقف‌های کرنل را ثبت می‌کند. هیچ رفتاری را تغییر نمی‌دهد؛ فقط شواهد جمع می‌کند.',
++			),
+ 		);
+ 	}
+ 
+diff --git a/plugin/sanil-telegram-importer/includes/golden-scan/class-gs-system-check.php b/plugin/sanil-telegram-importer/includes/golden-scan/class-gs-system-check.php
+index 49532a4..ab87261 100644
+--- a/plugin/sanil-telegram-importer/includes/golden-scan/class-gs-system-check.php
++++ b/plugin/sanil-telegram-importer/includes/golden-scan/class-gs-system-check.php
+@@ -378,6 +378,24 @@ class STI_GS_System_Check {
+ 			? (string) STI_MTProto::instance()->auth_state()
+ 			: 'unknown';
+ 
++		/* 10.12.16 — RULE 9: «وارد نشده‌اید» فقط وقتی درست است که client
++		 * واقعاً ساخته و وضعیت بررسی شده باشد. اگر ساخت client شکست خورده،
++		 * علت واقعی نمایش داده می‌شود تا خطای اصلی پنهان نماند. این فقط
++		 * متنِ گزارش است؛ هیچ تصمیم اجرایی به آن وابسته نیست. */
++		if ( method_exists( 'STI_MTProto', 'auth_state_report' ) ) {
++			$report = STI_MTProto::instance()->auth_state_report( $state );
++			if ( ! empty( $report['construction_failed'] ) ) {
++				$out[] = self::row(
++					'تلگرام',
++					'ورود اکانت',
++					self::FAIL,
++					'CLIENT_CONSTRUCTION_FAILED — اتصال قابل بررسی نیست (وضعیت ورود نامعلوم است، نه «خارج‌شده»). علت واقعی: '
++						. mb_substr( (string) ( $report['error'] ?? 'نامشخص' ), 0, 200 )
++				);
++				return $out;
++			}
++		}
++
+ 		$labels = array(
+ 			'logged_in'     => array( self::PASS, 'وارد شده‌اید' ),
+ 			'awaiting_code' => array( self::WARN, 'منتظر کد ورود — از «تنظیمات تلگرام» ورود را کامل کنید' ),
+diff --git a/plugin/sanil-telegram-importer/includes/golden-scan/class-gs-test-wizard.php b/plugin/sanil-telegram-importer/includes/golden-scan/class-gs-test-wizard.php
+index e8fe4ac..56d8d73 100644
+--- a/plugin/sanil-telegram-importer/includes/golden-scan/class-gs-test-wizard.php
++++ b/plugin/sanil-telegram-importer/includes/golden-scan/class-gs-test-wizard.php
+@@ -150,8 +150,9 @@ class STI_GS_Test_Wizard {
+ 			wp_send_json_success( array( 'error' => 'class missing' ) );
+ 		}
+ 		$snap = STI_GS_Env_Diag::snapshot();
+-		/* 10.12.15-diag — context حافظه‌ی OS همین فرآیند (read-only) */
+-		$snap['oom_context'] = STI_GS_Env_Diag::oom_context();
++		/* 10.12.15-diag — context حافظه‌ی OS همین فرآیند (read-only)
++		 * 10.12.16 — نسخه‌ی safe: خطای تشخیصی هرگز به بیرون نشت نمی‌کند. */
++		$snap['oom_context'] = STI_GS_Env_Diag::oom_context_safe();
+ 		wp_send_json_success( $snap );
+ 	}
+ 
+diff --git a/plugin/sanil-telegram-importer/sanil-telegram-importer.php b/plugin/sanil-telegram-importer/sanil-telegram-importer.php
+index b1c5f11..f58d888 100644
+--- a/plugin/sanil-telegram-importer/sanil-telegram-importer.php
++++ b/plugin/sanil-telegram-importer/sanil-telegram-importer.php
+@@ -3,7 +3,7 @@
+  * Plugin Name:       Golden Importer
+  * Plugin URI:        https://goldenfile.ir
+  * Description:       Telegram to WooCommerce importer with Agent Bridge for large files
+- * Version:           10.12.15
++ * Version:           10.12.16
+  * Author:            Golden File Team
+  * Text Domain:       flavor-flavor
+  * Domain Path:       /languages
+@@ -14,7 +14,7 @@
+ if ( ! defined( 'ABSPATH' ) ) {
+ exit;
+ }
+-define( 'STI_VERSION', '10.12.15' );
++define( 'STI_VERSION', '10.12.16' );
+ define( 'STI_FILE', __FILE__ );
+ define( 'STI_PATH', plugin_dir_path( __FILE__ ) );
+ define( 'STI_URL', plugin_dir_url( __FILE__ ) );
+diff --git a/tests/test-10-12-12-envdiag.py b/tests/test-10-12-12-envdiag.py
+index ebf8630..336dd48 100644
+--- a/tests/test-10-12-12-envdiag.py
++++ b/tests/test-10-12-12-envdiag.py
+@@ -32,8 +32,8 @@ calls = re.findall(r'\b(exec|proc_open|shell_exec|system|passthru|popen|escapesh
+ check('D2 no shell function CALLS in diag code', len(calls) == 0, str(calls))
+ 
+ # D3: version consistency 10.12.12
+-check('D3a header version', 'Version:           10.12.15' in main)
+-check('D3b STI_VERSION', "define( 'STI_VERSION', '10.12.15' )" in main)
++check('D3a header version', 'Version:           10.12.16' in main)
++check('D3b STI_VERSION', "define( 'STI_VERSION', '10.12.16' )" in main)
+ 
+ # D4: loader + ajax registration + handler
+ check('D4a require_once env-diag', "require_once STI_PATH . 'includes/golden-scan/class-gs-env-diag.php';" in main)
+diff --git a/tests/test-10-12-14-fixes.py b/tests/test-10-12-14-fixes.py
+index a56ed84..8660943 100644
+--- a/tests/test-10-12-14-fixes.py
++++ b/tests/test-10-12-14-fixes.py
+@@ -26,8 +26,8 @@ mt     = (ROOT / 'includes' / 'class-sti-mtproto.php').read_text(encoding='utf-8
+ mtcode = strip_code(mt)
+ 
+ # version
+-check('V1 header 10.12.14', 'Version:           10.12.15' in main)
+-check('V2 STI_VERSION 10.12.14', "define( 'STI_VERSION', '10.12.15' )" in main)
++check('V1 header 10.12.14', 'Version:           10.12.16' in main)
++check('V2 STI_VERSION 10.12.14', "define( 'STI_VERSION', '10.12.16' )" in main)
+ 
+ # FIX #1 — escapeshellarg polyfill (failure: Call to undefined function escapeshellarg)
+ check('F1a polyfill present', "if ( ! function_exists( 'escapeshellarg' ) )" in mtcode)
+diff --git a/tests/test-10-12-15-oomdiag.py b/tests/test-10-12-15-oomdiag.py
+index 102fafc..215353a 100644
+--- a/tests/test-10-12-15-oomdiag.py
++++ b/tests/test-10-12-15-oomdiag.py
+@@ -29,7 +29,7 @@ diag   = (ROOT / 'includes' / 'golden-scan' / 'class-gs-env-diag.php').read_text
+ diagc  = strip_code(diag)
+ tw     = (ROOT / 'includes' / 'golden-scan' / 'class-gs-test-wizard.php').read_text(encoding='utf-8')
+ 
+-check('V1 version 10.12.15', "define( 'STI_VERSION', '10.12.15' )" in main and 'Version:           10.12.15' in main)
++check('V1 version 10.12.16', "define( 'STI_VERSION', '10.12.16' )" in main and 'Version:           10.12.16' in main)
+ 
+ # OOM context content
+ check('O1 meminfo keys', all(k in diag for k in
+@@ -52,8 +52,10 @@ check('O8 no process/mutation calls in oom region', len(hits) == 0, str(hits))
+ check('O9 only rb reads (2 fopen total, both rb)', diagc.count('fopen') == 2 and diagc.count(", 'rb' )") == 2)
+ 
+ # OOM_DIAG log wiring in client()
+-check('O10 OOM_DIAG logged on memory-pattern failure',
+-      "STI_Logger::error( 'OOM_DIAG ' . wp_json_encode( STI_GS_Env_Diag::oom_context() ) );" in mtcode)
++check('O10 OOM_DIAG logged at client() failure (10.12.16: safe wrapper + gate probe)',
++      "STI_Logger::error( 'OOM_DIAG ' . wp_json_encode( $ctx ) );" in mtcode
++      and 'STI_GS_Env_Diag::oom_context_safe()' in mtcode
++      and 'STI_GS_Env_Diag::oom_gate_probe(' in mtcode)
+ check('O11 once-per-request guard', 'self::$oom_diag_logged = true;' in mtcode and 'protected static $oom_diag_logged = false;' in mt)
+ check('O12 gated on memory pattern (not on every error)',
+       'cannot allocate memory' in mtcode and 'fiber stack allocate failed' in mtcode)
+@@ -64,7 +66,8 @@ ri = mtcode.find("return new WP_Error( 'sti_mt_client'")
+ check('O13 placement: failure-log < OOM_DIAG < return', fi > -1 and fi < oi < ri, f'{fi} < {oi} < {ri}')
+ 
+ # AJAX surface (additive)
+-check('O14 ajax returns oom_context', "$snap['oom_context'] = STI_GS_Env_Diag::oom_context();" in tw)
++check('O14 ajax returns oom_context (safe variant)',
++      "$snap['oom_context'] = STI_GS_Env_Diag::oom_context_safe();" in tw)
+ 
+ # L78 regression (10.12.12 fatal) — parenthesized form must remain
+ check('O15 L78 still parenthesized', ": ( ( defined( 'INI_USER' )" in diag)
+diff --git a/tests/test-10-12-16-oomdiag2.py b/tests/test-10-12-16-oomdiag2.py
+new file mode 100644
+index 0000000..1855921
+--- /dev/null
++++ b/tests/test-10-12-16-oomdiag2.py
+@@ -0,0 +1,203 @@
++#!/usr/bin/env python3
++"""10.12.16 — diagnostic-only patch. Static verification of each RULE.
++
++RULE 0/2  observability only, no new execution path, no behavior change
++RULE 1    forbidden subsystems untouched
++RULE 3    original error preserved, never overwritten
++RULE 4    every diagnostic path wrapped in try/catch(\\Throwable)
++RULE 5    memory-pattern gate NOT removed; its result is recorded
++RULE 6    maps_count / max_map_count / rlimit_data / diagnostic_read_errors
++RULE 7    Vm* + Mem*/Swap*/Commit* fields present
++RULE 8    ipc_heal behavior unchanged; possibility recorded
++RULE 9    UI can distinguish CLIENT_CONSTRUCTION_FAILED from not_logged
++RULE 10   feature flag oom_diag, default true, disables new diagnostics
++"""
++import re, sys, pathlib
++
++ROOT = pathlib.Path(__file__).resolve().parent.parent / 'plugin' / 'sanil-telegram-importer'
++FAILS = []
++
++def check(name, cond, detail=''):
++    print(('PASS' if cond else 'FAIL'), '-', name, ('| ' + detail if detail and not cond else ''))
++    if not cond:
++        FAILS.append(name)
++
++def strip_code(src):
++    src = re.sub(r'/\*.*?\*/', '', src, flags=re.S)
++    src = re.sub(r'//.*', '', src)
++    return src
++
++main  = (ROOT / 'sanil-telegram-importer.php').read_text(encoding='utf-8')
++mt    = (ROOT / 'includes' / 'class-sti-mtproto.php').read_text(encoding='utf-8')
++mtc   = strip_code(mt)
++diag  = (ROOT / 'includes' / 'golden-scan' / 'class-gs-env-diag.php').read_text(encoding='utf-8')
++diagc = strip_code(diag)
++flags = (ROOT / 'includes' / 'golden-scan' / 'class-gs-flags.php').read_text(encoding='utf-8')
++tw    = (ROOT / 'includes' / 'golden-scan' / 'class-gs-test-wizard.php').read_text(encoding='utf-8')
++sc    = (ROOT / 'includes' / 'golden-scan' / 'class-gs-system-check.php').read_text(encoding='utf-8')
++tel   = (ROOT / 'admin' / 'views' / 'telegram.php').read_text(encoding='utf-8')
++
++check('V1 version 10.12.16',
++      "define( 'STI_VERSION', '10.12.16' )" in main and 'Version:           10.12.16' in main)
++
++# ---------- RULE 6: the three missing fields + read errors ----------
++check('R6a maps_count from /proc/self/maps',
++      "'/proc/self/maps'" in diag and "'maps_count'" in diag and 'substr_count(' in diag)
++check('R6b max_map_count from /proc/sys/vm/max_map_count',
++      "'/proc/sys/vm/max_map_count'" in diag and "'max_map_count'" in diag)
++check('R6c rlimit_data from "Max data size"',
++      "'Max data size'" in diag and "'rlimit_data'" in diag)
++check('R6d diagnostic_read_errors emitted', "'diagnostic_read_errors'" in diag)
++check('R6e unreadable marked, never guessed', diag.count("'unreadable'") >= 3)
++
++# ---------- RULE 7: memory fields ----------
++for f in ('VmRSS', 'VmHWM', 'VmSize', 'VmPeak', 'MemAvailable', 'SwapFree', 'CommitLimit', 'Committed_AS'):
++    check(f'R7 field {f}', f"'{f}'" in diag)
++
++# ---------- RULE 5: gate preserved AND probed ----------
++check('R5a gate probe exists', 'function oom_gate_probe' in diag)
++check('R5b probe reports matched/skipped',
++      "'result' => 'matched'" in diag and "'result' => 'skipped'" in diag)
++check('R5c probe reasons recorded',
++      'contains_cannot_allocate_memory' in diag and 'no_pattern_match' in diag)
++check('R5d gate result logged in client()',
++      "$ctx['oom_gate_result']" in mtc and "$ctx['oom_gate_reason']" in mtc)
++# the ORIGINAL retry-loop gate must still be intact (not removed)
++check('R5e retry-loop memory gate NOT removed',
++      "$mem_fail   = ( false !== strpos( $low, 'cannot allocate memory' )" in mtc
++      and "strpos( $low, 'fiber stack allocate failed' )" in mtc)
++check('R5f raw error text captured for inspection', "$ctx['error_message_raw']" in mtc)
++
++# ---------- RULE 4: try/catch protection ----------
++check('R4a oom_context_safe wrapper exists', 'function oom_context_safe' in diag)
++check('R4b wrapper catches Throwable', 'catch ( \\Throwable $diag_error )' in diag)
++check('R4c client() diagnostic block catches Throwable',
++      'catch ( \\Throwable $diag_error )' in mtc)
++check('R4d logger failure also guarded', 'catch ( \\Throwable $ignored )' in mtc)
++
++# ---------- RULE 3: original error preserved ----------
++# $last_error must be assigned to client_error BEFORE the diagnostic block,
++# and the WP_Error return must still carry it unchanged.
++i_err   = mtc.find('$this->client_error = $last_error;')
++i_diag  = mtc.find("'OOM_DIAG '")
++i_ret   = mtc.find("return new WP_Error( 'sti_mt_client', 'ساخت client ناموفق: ' . $last_error )")
++check('R3a client_error set before diagnostics', -1 < i_err < i_diag)
++check('R3b original error returned unchanged', -1 < i_diag < i_ret)
++check('R3c failure log precedes diagnostics',
++      -1 < mtc.find("'MTProto: ساخت client ناموفق — '") < i_diag)
++check('R3d no reassignment of $last_error in diagnostic block',
++      '$last_error =' not in mtc[i_diag:i_ret])
++
++# ---------- RULE 10: feature flag ----------
++check('R10a flag defined', "'oom_diag' => array(" in flags)
++_od = flags.find("'oom_diag' => array(")
++check('R10b default true',
++      _od > -1 and re.search(r"'default'\s*=>\s*1", flags[_od:_od + 400]) is not None)
++check('R10c flag gates the new diagnostic', "STI_GS_Flags::on( 'oom_diag' )" in mtc)
++check('R10d graceful when Flags class absent', "! class_exists( 'STI_GS_Flags' ) || STI_GS_Flags::on( 'oom_diag' )" in mtc)
++
++# ---------- RULE 8: ipc_heal reported, not changed ----------
++check('R8a ipc_heal_possible recorded', "'ipc_heal_possible'" in diag)
++check('R8b ipc_heal_reason recorded', "'ipc_heal_reason'" in diag and 'exec_disabled' in diag)
++check('R8c ipc_heal guard (10.12.14) untouched',
++      'worker_state_unknown — exec unavailable: no unlink, no cleanup' in mtc)
++check('R8d ipc_heal not called from diagnostic block', 'ipc_heal' not in mtc[i_diag:i_ret])
++
++# ---------- RULE 9: UI distinguishes construction failure ----------
++check('R9a report method exists', 'function auth_state_report' in mt)
++check('R9b CLIENT_CONSTRUCTION_FAILED surfaced', 'CLIENT_CONSTRUCTION_FAILED' in mt)
++check('R9c auth_state() return values unchanged',
++      "return 'not_logged';" in mt and "return 'awaiting_code';" in mt and "return 'logged_in';" in mt)
++check('R9d ajax exposes display_state additively',
++      "'display_state'" in mt and "'construction_failed'" in mt and "'state'          => $state," in mt)
++check('R9e telegram UI shows real reason', 'construction_failed' in tel and 'CLIENT_CONSTRUCTION_FAILED' in tel)
++check('R9f system-check shows real reason', 'CLIENT_CONSTRUCTION_FAILED' in sc)
++
++# ---------- RULE 1/2: forbidden subsystems untouched ----------
++check('R1a memory_limit logic unchanged',
++      "$current_limit = (int) ini_get( 'memory_limit' );" in mtc
++      and "@ini_set( 'memory_limit', '512M' );" in mtc)
++check('R1b retry attempts unchanged', '$attempts = 2;' in mtc)
++check('R1c MAX_IPC_RECYCLES unchanged', 'const MAX_IPC_RECYCLES = 2;' in mtc)
++check('R1d no fiber.stack_size tampering', 'fiber.stack_size' not in mtc and 'fiber.stack_size' not in diagc)
++check('R1e polyfill (10.12.14) intact', "if ( ! function_exists( 'escapeshellarg' ) )" in mtc)
++check('R1f kill path intact', "kill -9 ' . (int) $pid" in mtc)
++
++# RULE 2: diagnostic region must remain read-only (no process/mutation calls)
++o_start = diagc.find('public static function oom_context')
++o_end   = diagc.find('public static function oom_gate_probe')
++region  = diagc[o_start:o_end] if o_start > -1 and o_end > o_start else ''
++forbidden = ['proc_open(', 'exec(', 'shell_exec(', 'popen(', 'system(', 'passthru(',
++             'unlink(', 'rmdir(', 'file_put_contents(', 'fwrite(', 'fputs(',
++             'update_option(', 'delete_option(', '$wpdb', 'ini_set(']
++hits = [f for f in forbidden if f in region]
++check('R2a oom region has no mutation/process calls', not hits, str(hits))
++check('R2b reads are read-only modes',
++      region.count("@file_get_contents(") >= 5 and "'wb'" not in region and "'w'" not in region)
++check('R2c is_callable used for exec probe, never invoked',
++      "is_callable( 'exec' )" in region and 'exec(' not in region.replace("is_callable( 'exec' )", ''))
++
++# ---------- PHP 8.4 nested-ternary detector (10.12.12 fatal class) ----------
++def nested_ternary(line):
++    code = re.sub(r'//.*', '', line)
++    code = code.replace('<?php', ' ').replace('?>', ' ').replace('::', ' ')
++    depth = 0; i = 0; n = len(code); in_str = None; events = []
++    while i < n:
++        c = code[i]
++        if in_str:
++            if c == in_str and code[i-1] != '\\': in_str = None
++        else:
++            if c in ('"', "'"): in_str = c
++            elif c in '([{': depth += 1
++            elif c in ')]}': depth -= 1
++            elif depth == 0:
++                if c == '?': events.append('?')
++                elif c == ':' and (i == 0 or code[i-1] != '='): events.append(':')
++                elif c == ',': events.append(',')
++        i += 1
++    for k, ch in enumerate(events):
++        if ch != ':': continue
++        for ch2 in events[k+1:]:
++            if ch2 == '?': return True
++            if ch2 in (':', ','): break
++    return False
++
++bad = {f: [ln for ln, l in enumerate(src.splitlines(), 1) if nested_ternary(l)]
++       for f, src in (('env-diag', diag), ('mtproto', mt), ('flags', flags),
++                      ('test-wizard', tw), ('system-check', sc))}
++bad = {k: v for k, v in bad.items() if v}
++check('S1 no unparenthesized nested ternary', len(bad) == 0, str(bad))
++
++# Brace-neutrality vs the previous released commit.
++# NOTE: a naive counter yields a constant non-zero offset on files containing
++# regex quantifiers like {1,10} inside single-quoted strings. Absolute balance
++# is therefore meaningless; what matters is that THIS patch did not change the
++# offset. We compare each touched file against its committed version.
++import subprocess
++
++def brace_delta(src):
++    s = re.sub(r"'(?:\\.|[^'\\])*'", "''", strip_code(src))
++    s = re.sub(r'"(?:\\.|[^"\\])*"', '""', s)
++    return s.count('{') - s.count('}')
++
++REL = 'plugin/sanil-telegram-importer/'
++for label, src, rel in (
++    ('env-diag',     diag,  REL + 'includes/golden-scan/class-gs-env-diag.php'),
++    ('mtproto',      mt,    REL + 'includes/class-sti-mtproto.php'),
++    ('flags',        flags, REL + 'includes/golden-scan/class-gs-flags.php'),
++    ('test-wizard',  tw,    REL + 'includes/golden-scan/class-gs-test-wizard.php'),
++    ('system-check', sc,    REL + 'includes/golden-scan/class-gs-system-check.php'),
++):
++    prev = subprocess.run(['git', 'show', f'HEAD:{rel}'],
++                          capture_output=True, text=True,
++                          cwd=str(pathlib.Path(__file__).resolve().parent.parent))
++    if prev.returncode != 0:
++        check(f'S2 brace-neutral ({label})', False, 'git show failed')
++        continue
++    before, after = brace_delta(prev.stdout), brace_delta(src)
++    check(f'S2 brace-neutral ({label})', before == after, f'was {before}, now {after}')
++
++print()
++if FAILS:
++    print(f'{len(FAILS)} FAILED'); sys.exit(1)
++print('10.12.16 DIAGNOSTIC-PATCH SUITE: ALL PASS')
