@@ -676,6 +676,10 @@ class STI_MTProto {
 		$mem_before = function_exists( 'memory_get_usage' ) ? memory_get_usage( true ) : 0;
 
 		$last_error = null;
+		/* 10.12.17 — مرحله ۳: شواهد exception اصلی، جدا از متن پیام. */
+		$last_exception_class = null;
+		$last_exception_trace = null;
+		$last_exception_file  = null;
 		/* 10.12.11 — فیوز تخصیص حافظه: یک‌بار در هر درخواست. */
 		static $mem_healed = false;
 		foreach ( $candidates as $settings ) {
@@ -697,6 +701,12 @@ class STI_MTProto {
 				} catch ( \Throwable $e ) {
 					self::rpc_fatal( $e ); // 10.9.3
 					$last_error = $e->getMessage();
+					/* 10.12.17 — مرحله ۳ (حفظ شواهد): کلاس و stack trace
+					 * جداگانه نگه داشته می‌شوند. فقط خواندنِ همان
+					 * exception است — نه تغییر آن، نه تغییر مسیر اجرا. */
+					$last_exception_class = get_class( $e );
+					$last_exception_trace = $e->getTraceAsString();
+					$last_exception_file  = $e->getFile() . ':' . $e->getLine();
 					$low        = mb_strtolower( (string) $last_error );
 					$mem_fail   = ( false !== strpos( $low, 'cannot allocate memory' )
 						|| false !== strpos( $low, 'fiber stack allocate failed' )
@@ -759,6 +769,18 @@ class STI_MTProto {
 				/* متن خام خطا برای بازرسی — بدون هیچ تغییر در خودِ خطا. */
 				$ctx['error_message_raw']   = mb_substr( (string) $last_error, 0, 400 );
 				$ctx['error_class_matched'] = $gate['matched'];
+
+				/* 10.12.17 — مرحله ۳: هر جزء شاهد در فیلد جداگانه‌ی خودش.
+				 * exception_message هرگز با متن خطای کد تشخیصی جایگزین
+				 * نمی‌شود؛ خطاهای تشخیصی مسیر جدا دارند
+				 * (diagnostic_read_errors). */
+				$ctx['exception_class']   = $last_exception_class;
+				$ctx['exception_message'] = mb_substr( (string) $last_error, 0, 400 );
+				$ctx['exception_origin']  = $last_exception_file;
+				$ctx['exception_trace']   = mb_substr( (string) $last_exception_trace, 0, 1500 );
+				$ctx['session_id']        = 0;
+				$ctx['stage']             = 'mtproto_client_construct';
+				$ctx['action']            = 'new danog\\MadelineProto\\API()';
 
 				STI_Logger::error( 'OOM_DIAG ' . wp_json_encode( $ctx ) );
 			}

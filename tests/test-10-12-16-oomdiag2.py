@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""10.12.16 — diagnostic-only patch. Static verification of each RULE.
+"""10.12.17 — diagnostic-only patch. Static verification of each RULE.
 
 RULE 0/2  observability only, no new execution path, no behavior change
 RULE 1    forbidden subsystems untouched
@@ -37,8 +37,8 @@ tw    = (ROOT / 'includes' / 'golden-scan' / 'class-gs-test-wizard.php').read_te
 sc    = (ROOT / 'includes' / 'golden-scan' / 'class-gs-system-check.php').read_text(encoding='utf-8')
 tel   = (ROOT / 'admin' / 'views' / 'telegram.php').read_text(encoding='utf-8')
 
-check('V1 version 10.12.16',
-      "define( 'STI_VERSION', '10.12.16' )" in main and 'Version:           10.12.16' in main)
+check('V1 version 10.12.17',
+      "define( 'STI_VERSION', '10.12.17' )" in main and 'Version:           10.12.17' in main)
 
 # ---------- RULE 6: the three missing fields + read errors ----------
 check('R6a maps_count from /proc/self/maps',
@@ -48,7 +48,7 @@ check('R6b max_map_count from /proc/sys/vm/max_map_count',
 check('R6c rlimit_data from "Max data size"',
       "'Max data size'" in diag and "'rlimit_data'" in diag)
 check('R6d diagnostic_read_errors emitted', "'diagnostic_read_errors'" in diag)
-check('R6e unreadable marked, never guessed', diag.count("'unreadable'") >= 3)
+check('R6e unavailable marked, never guessed', diag.count("'unavailable'") >= 5)
 
 # ---------- RULE 7: memory fields ----------
 for f in ('VmRSS', 'VmHWM', 'VmSize', 'VmPeak', 'MemAvailable', 'SwapFree', 'CommitLimit', 'Committed_AS'):
@@ -133,9 +133,45 @@ forbidden = ['proc_open(', 'exec(', 'shell_exec(', 'popen(', 'system(', 'passthr
 hits = [f for f in forbidden if f in region]
 check('R2a oom region has no mutation/process calls', not hits, str(hits))
 check('R2b reads are read-only modes',
-      region.count("@file_get_contents(") >= 5 and "'wb'" not in region and "'w'" not in region)
+      region.count("self::safe_read(") >= 5 and "'wb'" not in region and "'w'" not in region)
 check('R2c is_callable used for exec probe, never invoked',
       "is_callable( 'exec' )" in region and 'exec(' not in region.replace("is_callable( 'exec' )", ''))
+
+# ---------- 10.12.17 Stage 1: diagnostic must never emit a warning ----------
+check('W1 safe_read helper exists', 'private static function safe_read(' in diag)
+check('W2 is_readable guard before every read', 'if ( ! @is_readable( $path ) )' in diag)
+check('W3 temporary error handler neutralises MadelineProto handler',
+      'set_error_handler(' in diag and 'restore_error_handler();' in diag)
+check('W4 safe_read catches Throwable', diagc.count('catch ( \\Throwable $diag_error )') >= 2)
+# no bare/@ file_get_contents may remain inside oom_context()
+o_s = diagc.find('public static function oom_context')
+o_e = diagc.find('public static function oom_context_safe')
+oom_region = diagc[o_s:o_e] if o_s > -1 and o_e > o_s else ''
+check('W5 no direct file_get_contents left in oom_context()',
+      'file_get_contents(' not in oom_region, oom_region.count('file_get_contents('))
+check('W6 missing cgroup is normal, not an error',
+      "'unavailable'" in diag and "$cgroup['v2'] = 'unavailable';" in diag)
+check('W7 only unexpected failures recorded as errors', "': read_failed'" in diag)
+
+# ---------- 10.12.17 Stage 2: required measurements ----------
+for f in ('maps_count', 'max_map_count', 'rlimit_data', 'rlimit_as', 'rlimit_stack',
+          'memory_limit', 'memory_usage', 'memory_peak'):
+    check(f'M1 field {f}', f"'{f}'" in diag)
+check('M2 Max stack size requested from limits', "'Max stack size'" in diag)
+check('M3 all three cgroup v2 files probed',
+      "/sys/fs/cgroup/memory.max" in diag and "/sys/fs/cgroup/memory.current" in diag
+      and "/sys/fs/cgroup/memory.events" in diag)
+
+# ---------- 10.12.17 Stage 3: evidence preserved separately ----------
+for f in ('exception_class', 'exception_message', 'exception_origin', 'exception_trace',
+          'stage', 'action'):
+    check(f'E1 evidence field {f}', f"$ctx['{f}']" in mtc)
+check('E2 exception class/trace captured at catch site',
+      'get_class( $e )' in mtc and '$e->getTraceAsString()' in mtc)
+check('E3 original message never replaced by diagnostic text',
+      "$ctx['exception_message'] = mb_substr( (string) $last_error" in mtc)
+check('E4 diagnostic errors live on a separate channel',
+      "'diagnostic_read_errors'" in diag)
 
 # ---------- PHP 8.4 nested-ternary detector (10.12.12 fatal class) ----------
 def nested_ternary(line):
@@ -200,4 +236,4 @@ for label, src, rel in (
 print()
 if FAILS:
     print(f'{len(FAILS)} FAILED'); sys.exit(1)
-print('10.12.16 DIAGNOSTIC-PATCH SUITE: ALL PASS')
+print('10.12.17 DIAGNOSTIC-PATCH SUITE: ALL PASS')

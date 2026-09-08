@@ -109,29 +109,38 @@ class STI_GS_Env_Diag {
 		 * هم محدود می‌کند، پس برای تفکیک A/B/C لازم است. */
 		$limits = self::proc_kv(
 			'/proc/self/limits',
-			array( 'Max address space', 'Max data size', 'Max processes', 'Max open files', 'Max resident set', 'Max locked memory' )
+			array( 'Max address space', 'Max data size', 'Max stack size', 'Max processes', 'Max open files', 'Max resident set', 'Max locked memory' )
 		);
-		$cgroup = array( 'raw' => 'unreadable', 'v2' => null, 'v1' => null );
 
-		$rawcg = @file_get_contents( '/proc/self/cgroup' );
-		if ( $rawcg !== false ) {
-			$cgroup['raw'] = rtrim( (string) $rawcg );
+		/* 10.12.17 — cgroup: هر خواندن مستقل و محافظت‌شده.
+		 *
+		 * نکته‌ی حیاتی: نبودِ /sys/fs/cgroup/memory.max یک **وضعیت عادی**
+		 * است (هاست روی cgroup v1 است یا اصلاً cgroup ندارد) — نه خطا.
+		 * پس 'unavailable' ثبت می‌شود و در diagnostic_read_errors نمی‌آید. */
+		$cgroup = array( 'raw' => 'unavailable', 'v2' => null, 'v1' => null );
+
+		$cg_raw = self::safe_read( '/proc/self/cgroup', $read_errors );
+		if ( $cg_raw['ok'] ) {
+			$cgroup['raw'] = $cg_raw['value'];
 		}
 
 		/* cgroup v2 */
-		$v2max = @file_get_contents( '/sys/fs/cgroup/memory.max' );
-		$v2cur = @file_get_contents( '/sys/fs/cgroup/memory.current' );
-		$v2evt = @file_get_contents( '/sys/fs/cgroup/memory.events' );
-		if ( $v2max !== false || $v2cur !== false ) {
+		$v2max = self::safe_read( '/sys/fs/cgroup/memory.max', $read_errors );
+		$v2cur = self::safe_read( '/sys/fs/cgroup/memory.current', $read_errors );
+		$v2evt = self::safe_read( '/sys/fs/cgroup/memory.events', $read_errors );
+		if ( $v2max['ok'] || $v2cur['ok'] ) {
 			$cgroup['v2'] = array(
-				'memory_max'     => ( $v2max === false ) ? 'unreadable' : rtrim( (string) $v2max ),
-				'memory_current' => ( $v2cur === false ) ? 'unreadable' : rtrim( (string) $v2cur ),
-				'memory_events'  => ( $v2evt === false ) ? 'unreadable' : trim( (string) $v2evt ),
+				'memory_max'     => $v2max['value'],
+				'memory_current' => $v2cur['value'],
+				'memory_events'  => $v2evt['value'],
 			);
+		} else {
+			/* صریح: v2 در دسترس نیست و این خطا نیست. */
+			$cgroup['v2'] = 'unavailable';
 		}
 
 		/* cgroup v1 fallback: مسیر کنترلر memory از /proc/self/cgroup */
-		if ( null === $cgroup['v2'] && is_string( $cgroup['raw'] ) && '' !== $cgroup['raw'] ) {
+		if ( 'unavailable' === $cgroup['v2'] && is_string( $cgroup['raw'] ) && '' !== $cgroup['raw'] && 'unavailable' !== $cgroup['raw'] ) {
 			$cg_path = null;
 			foreach ( explode( "\n", $cgroup['raw'] ) as $cg_line ) {
 				$cg_parts = explode( ':', $cg_line, 3 );
@@ -142,19 +151,23 @@ class STI_GS_Env_Diag {
 			}
 			if ( null !== $cg_path ) {
 				$cg_base   = '/sys/fs/cgroup/memory' . ( '/' === $cg_path ? '' : $cg_path );
-				$cg_lim    = @file_get_contents( $cg_base . '/memory.limit_in_bytes' );
-				$cg_use    = @file_get_contents( $cg_base . '/memory.usage_in_bytes' );
-				$cg_fal    = @file_get_contents( $cg_base . '/memory.failcnt' );
-				$cg_maxuse = @file_get_contents( $cg_base . '/memory.max_usage_in_bytes' );
-				if ( $cg_lim !== false || $cg_use !== false ) {
+				$cg_lim    = self::safe_read( $cg_base . '/memory.limit_in_bytes', $read_errors );
+				$cg_use    = self::safe_read( $cg_base . '/memory.usage_in_bytes', $read_errors );
+				$cg_fal    = self::safe_read( $cg_base . '/memory.failcnt', $read_errors );
+				$cg_maxuse = self::safe_read( $cg_base . '/memory.max_usage_in_bytes', $read_errors );
+				if ( $cg_lim['ok'] || $cg_use['ok'] ) {
 					$cgroup['v1'] = array(
-						'path'                 => $cg_path,
-						'limit_in_bytes'       => ( $cg_lim === false ) ? 'unreadable' : rtrim( (string) $cg_lim ),
-						'usage_in_bytes'       => ( $cg_use === false ) ? 'unreadable' : rtrim( (string) $cg_use ),
-						'failcnt'              => ( $cg_fal === false ) ? 'unreadable' : rtrim( (string) $cg_fal ),
-						'max_usage_in_bytes'   => ( $cg_maxuse === false ) ? 'unreadable' : rtrim( (string) $cg_maxuse ),
+						'path'               => $cg_path,
+						'limit_in_bytes'     => $cg_lim['value'],
+						'usage_in_bytes'     => $cg_use['value'],
+						'failcnt'            => $cg_fal['value'],
+						'max_usage_in_bytes' => $cg_maxuse['value'],
 					);
+				} else {
+					$cgroup['v1'] = 'unavailable';
 				}
+			} else {
+				$cgroup['v1'] = 'unavailable';
 			}
 		}
 
@@ -163,36 +176,44 @@ class STI_GS_Env_Diag {
 		 * برسد — حتی اگر RAM آزاد باشد. هر Fiber دو VMA می‌سازد (ناحیه +
 		 * guard page). بدون این دو عدد، «سقف شمارشی» از «کمبود حجمی» قابل
 		 * تفکیک نیست. فقط خواندن. */
-		$maps_count     = 'unreadable';
-		$max_map_count  = 'unreadable';
+		$maps_count    = 'unavailable';
+		$max_map_count = 'unavailable';
 
-		$maps_raw = @file_get_contents( '/proc/self/maps' );
-		if ( false === $maps_raw ) {
-			$read_errors[] = '/proc/self/maps: unreadable';
-		} else {
-			$maps_count = substr_count( (string) $maps_raw, "\n" );
+		$maps_r = self::safe_read( '/proc/self/maps', $read_errors );
+		if ( $maps_r['ok'] ) {
+			/* شمارش خطوط = تعداد VMA. خودِ محتوا ذخیره نمی‌شود (حجیم و
+			 * حاوی مسیرهای داخلی است) — فقط عدد. */
+			$maps_count = substr_count( $maps_r['value'], "\n" ) + 1;
 		}
 
-		$mmc_raw = @file_get_contents( '/proc/sys/vm/max_map_count' );
-		if ( false === $mmc_raw ) {
-			$read_errors[] = '/proc/sys/vm/max_map_count: unreadable';
-		} else {
-			$max_map_count = trim( (string) $mmc_raw );
+		$mmc_r = self::safe_read( '/proc/sys/vm/max_map_count', $read_errors );
+		if ( $mmc_r['ok'] ) {
+			$max_map_count = trim( $mmc_r['value'] );
 		}
 
 		/* RULE 6: rlimit_data به‌صورت فیلد مستقل (علاوه بر limits) — اگر
-		 * /proc/self/limits خوانده نشد، صریحاً 'unreadable'، نه حدس. */
+		 * /proc/self/limits خوانده نشد، صریحاً 'unavailable'، نه حدس. */
 		$rlimit_data = ( isset( $limits['Max data size'] ) && '' !== $limits['Max data size'] )
 			? $limits['Max data size']
-			: 'unreadable';
+			: 'unavailable';
 
-		foreach ( array( 'meminfo' => $meminfo, 'status' => $status, 'limits' => $limits ) as $k => $blk ) {
+		/* 10.12.17 — مرحله ۲: RLIMIT_AS و RLIMIT_STACK و memory_limit.
+		 * memory_limit فقط برای ثبت است؛ Fiber از mmap خام استفاده می‌کند
+		 * و این عدد نه می‌تواند خطا را بسازد نه درمانش کند. */
+		$rlimit_as = ( isset( $limits['Max address space'] ) && '' !== $limits['Max address space'] )
+			? $limits['Max address space']
+			: 'unavailable';
+		$rlimit_stack = ( isset( $limits['Max stack size'] ) && '' !== $limits['Max stack size'] )
+			? $limits['Max stack size']
+			: 'unavailable';
+
+		/* /proc خوانده‌نشدن یک محدودیت محیطی است، نه خطای ما — ولی چون
+		 * بدون آن تشخیص ناقص می‌ماند، به‌عنوان «در دسترس نبودن» ثبت
+		 * می‌شود تا در گزارش دیده شود. */
+		foreach ( array( '/proc/meminfo' => $meminfo, '/proc/self/status' => $status, '/proc/self/limits' => $limits ) as $k => $blk ) {
 			if ( empty( $blk['available'] ) ) {
-				$read_errors[] = $k . ': unreadable';
+				$read_errors[] = $k . ': unavailable';
 			}
-		}
-		if ( 'unreadable' === $cgroup['raw'] ) {
-			$read_errors[] = '/proc/self/cgroup: unreadable';
 		}
 
 		/* 10.12.16 — RULE 8: ipc_heal فقط گزارش می‌شود، هرگز تغییر نمی‌کند.
@@ -211,6 +232,11 @@ class STI_GS_Env_Diag {
 			'maps_count'              => $maps_count,
 			'max_map_count'           => $max_map_count,
 			'rlimit_data'             => $rlimit_data,
+			'rlimit_as'               => $rlimit_as,
+			'rlimit_stack'            => $rlimit_stack,
+			'memory_limit'            => (string) ini_get( 'memory_limit' ),
+			'memory_usage'            => memory_get_usage( true ),
+			'memory_peak'             => memory_get_peak_usage( true ),
 			'ipc_heal_possible'       => $ipc_heal_possible,
 			'ipc_heal_reason'         => $ipc_heal_reason,
 			'diagnostic_read_errors'  => $read_errors,
@@ -269,6 +295,78 @@ class STI_GS_Env_Diag {
 			return array( 'matched' => true, 'result' => 'matched', 'reason' => 'contains_mmap_and_allocat' );
 		}
 		return array( 'matched' => false, 'result' => 'skipped', 'reason' => 'no_pattern_match' );
+	}
+
+	/**
+	 * 10.12.17 — تنها راهِ مجاز خواندن فایل در کد تشخیصی.
+	 *
+	 * ─────────────────────────────────────────────────────────────────
+	 * چرا `@file_get_contents()` کافی **نبود** (باگ واقعی ۱۰.۱۲.۱۶):
+	 *
+	 * MadelineProto در `Magic::start()` این را اجرا می‌کند:
+	 *     set_error_handler(Exception::exceptionErrorHandler(...));
+	 * و آن handler هر warning را به **پرتاب Exception** تبدیل می‌کند:
+	 *     throw new self($errstr, $errno, null, $errfile, $errline);
+	 *
+	 * تنها راه فرارش این است:
+	 *     if (error_reporting() === 0 || ...) return false;
+	 *
+	 * ولی از PHP 8.0 عملگر `@` دیگر `error_reporting()` را صفر نمی‌کند —
+	 * یک ماسک غیرصفر برمی‌گرداند. پس آن گارد رد نمی‌شود و warningِ
+	 * «file_get_contents(/sys/fs/cgroup/memory.max): Failed to open
+	 * stream» تبدیل به یک Exception می‌شود که از دل کد تشخیصی بالا
+	 * می‌آید و **جای خطای اصلیِ Fiber را می‌گیرد** — دقیقاً همان چیزی
+	 * که مشاهده شد.
+	 *
+	 * راه‌حل، سه لایه‌ی مستقل:
+	 *   ۱) `is_readable()` قبل از هر خواندن ⇒ در حالت عادی اصلاً
+	 *      warningی تولید نمی‌شود (خواسته‌ی صریح مرحله‌ی ۱).
+	 *   ۲) `set_error_handler` موقت که فقط `false` برمی‌گرداند ⇒ حتی اگر
+	 *      بین `is_readable()` و خواندن مسابقه‌ای رخ دهد، handler
+	 *      MadelineProto در این پنجره فعال نیست. بلافاصله restore.
+	 *   ۳) `try/catch (\Throwable)` ⇒ حتی اگر باز هم چیزی پرتاب شد،
+	 *      اینجا می‌میرد و به مسیر اصلی نمی‌رسد.
+	 *
+	 * «در دسترس نبودن» خطا نیست: مقدار `'unavailable'` برمی‌گردد و در
+	 * `diagnostic_read_errors` **ثبت نمی‌شود**. فقط شکست غیرمنتظره
+	 * (فایل خوانا بود ولی خواندن شکست خورد) به‌عنوان خطا ثبت می‌شود.
+	 *
+	 * @param string $path        مسیر فقط‌خواندنی.
+	 * @param array  $read_errors مرجع — خطاهای غیرمنتظره اینجا اضافه می‌شوند.
+	 * @return array{ok:bool, value:string}
+	 */
+	private static function safe_read( $path, array &$read_errors ) {
+		$restore = false;
+		try {
+			/* لایه ۱ — هیچ warningی تولید نشود. */
+			if ( ! @is_readable( $path ) ) {
+				return array( 'ok' => false, 'value' => 'unavailable' );
+			}
+
+			/* لایه ۲ — handler وردپرس/MadelineProto را در این پنجره خنثی کن. */
+			set_error_handler( static function () { return true; } ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions
+			$restore = true;
+
+			$raw = file_get_contents( $path );
+
+			restore_error_handler();
+			$restore = false;
+
+			if ( false === $raw ) {
+				/* خوانا بود ولی خوانده نشد — این واقعاً غیرمنتظره است. */
+				$read_errors[] = $path . ': read_failed';
+				return array( 'ok' => false, 'value' => 'unavailable' );
+			}
+
+			return array( 'ok' => true, 'value' => rtrim( (string) $raw ) );
+		} catch ( \Throwable $diag_error ) {
+			/* لایه ۳ — حتی اگر handler دیگری Exception پرتاب کرد. */
+			if ( $restore ) {
+				restore_error_handler();
+			}
+			$read_errors[] = $path . ': ' . $diag_error->getMessage();
+			return array( 'ok' => false, 'value' => 'unavailable' );
+		}
 	}
 
 	/**
