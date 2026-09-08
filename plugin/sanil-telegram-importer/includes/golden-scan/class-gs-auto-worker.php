@@ -66,6 +66,58 @@ class STI_GS_Auto_Worker {
 	const WAITING = array( 'WAITING_BOT', 'ERROR_BOT_TIMEOUT', 'CHAIN_WAITING' );
 
 	/**
+	 * ۱۰.۱۲.۱۸ — مهلت خواب هر حالتِ انتظار (ثانیه).
+	 *
+	 * ═══ چرا این ثابت اضافه شد ═══
+	 *
+	 * تا ۱۰.۱۲.۱۷ یک Session در حالت انتظار **هیچ** `next_retry_at`
+	 * نمی‌گرفت. مسیر دقیقاً این بود:
+	 *
+	 *   class-gs-chain-engine.php:1332
+	 *       return array( 'state' => 'CHAIN_WAITING', 'waiting' => true );
+	 *   class-gs-chain-engine.php:1333 (finally)
+	 *       STI_GS_Session::release()  →  locked_until = NULL
+	 *   class-gs-auto-worker.php:441
+	 *       $outcome = 'waiting';   ← فقط برچسب گزارش، بدون نوشتن در DB
+	 *
+	 * نتیجه: Session با `locked_until = NULL` و `next_retry_at = NULL`
+	 * در دیتابیس می‌ماند، هر سه شرط WHERE در pick() را پاس می‌کند و
+	 * چون مرتب‌سازی `id ASC` است دوباره اول صف می‌ایستد.
+	 *
+	 * شاهد میدانی (میزبان، ۱۶:۳۹ تا ۱۸:۱۲): در هر ۸ تیک متوالی
+	 *   AUTO_WORKER_PICK: selected=1 ids=[68]
+	 *   AUTO_WORKER_STAGE session=#68 CHAIN_WAITING → CHAIN_WAITING waiting
+	 * درحالی‌که eligible_queue=108 بود و advanced=0 / completed=0 ماند.
+	 *
+	 * ═══ چرا مقدارها متفاوت‌اند ═══
+	 *
+	 * سه حالت انتظار از نظر معنایی یکی نیستند:
+	 *
+	 *   CHAIN_WAITING      منتظر پاسخ ربات در یک گام زنجیره است. قفل poll
+	 *                      برابر POLL_LOCK_SECONDS=45 است، پس ۶۰ ثانیه
+	 *                      تضمین می‌کند دور بعدی بعد از آزاد شدن قفل باشد
+	 *                      بدون اینکه پاسخ تازه‌ی ربات دیر دیده شود.
+	 *
+	 *   WAITING_BOT        تازه پیام فرستاده و منتظر جواب است؛ ربات‌های
+	 *                      تلگرام معمولاً چند ده ثانیه طول می‌دهند و
+	 *                      STEP_LOCK_SECONDS=90 است ⇒ ۱۲۰ ثانیه.
+	 *
+	 *   ERROR_BOT_TIMEOUT  یک‌بار مهلتش تمام شده؛ فشار آوردن بی‌فایده است
+	 *                      و باید صف را برای بقیه باز بگذارد ⇒ ۳۰۰ ثانیه.
+	 *
+	 * این مقدارها سقف تلاش (attempts) را مصرف نمی‌کنند — انتظار خرابی
+	 * نیست. فقط جای Session را در صف موقتاً خالی می‌کنند.
+	 */
+	const WAITING_BACKOFF = array(
+		'CHAIN_WAITING'     => 60,
+		'WAITING_BOT'       => 120,
+		'ERROR_BOT_TIMEOUT' => 300,
+	);
+
+	/** مهلت پیش‌فرض اگر حالت انتظار در جدول بالا نبود. */
+	const WAITING_BACKOFF_DEFAULT = 90;
+
+	/**
 	 * مرحله‌هایی که با ربات حرف می‌زنند.
 	 *
 	 * گفت‌وگو با ربات ذاتاً **ترتیبی** است: یک /start می‌فرستیم، ربات جواب
@@ -474,12 +526,104 @@ class STI_GS_Auto_Worker {
 			if ( $is_md || $is_pr ) {
 				$prod_left--;
 			}
+
+			/*
+			 * ۱۰.۱۲.۱۸ — رفع گرسنگی صف.
+			 *
+			 * تا اینجا Session با قفلِ آزادشده و بدون `next_retry_at`
+			 * برمی‌گشت و در تیک بعد دوباره همان انتخاب می‌شد. حالا اگر
+			 * نتیجه «انتظار» بود یک مهلت کوتاه می‌گیرد تا نوبت به
+			 * Sessionهای بعدی برسد. attempts دست‌نخورده می‌ماند.
+			 *
+			 * `skipped` هم همین رفتار را دارد و عمداً پوشش داده شده:
+			 * مسیرهای no_progress در class-gs-chain-engine.php (خطوط
+			 * ۱۲۲، ۱۲۸، ۱۳۴، ۱۴۰، ۱۵۴، ۲۱۹، ۲۸۹ …) هم بدون تغییر state
+			 * و بدون next_retry_at برمی‌گردند و finally قفل را آزاد
+			 * می‌کند — یعنی همان حلقه‌ی بی‌پایان با برچسبی متفاوت.
+			 */
+			if ( 'waiting' === $outcome || 'skipped' === $outcome ) {
+				$after = $wpdb->get_var( $wpdb->prepare(
+					"SELECT state FROM " . STI_GS_DB::pipeline_items_table() . " WHERE id = %d",
+					(int) $session['id']
+				) );
+				self::defer_waiting( (int) $session['id'], (string) ( null === $after ? $state : $after ) );
+			}
+
 			if ( isset( $report[ $outcome ] ) ) {
 				$report[ $outcome ]++;
 			}
 		}
 
 		self::record( $report );
+	}
+
+	/**
+	 * ۱۰.۱۲.۱۸ — یک Sessionِ منتظر را کوتاه‌مدت می‌خواباند.
+	 *
+	 * تنها کاری که می‌کند نوشتن `next_retry_at` در آینده‌ی نزدیک است تا
+	 * pick() در تیک بعدی سراغ Session بعدی برود. عمداً:
+	 *
+	 *   • `attempts` را دست نمی‌زند (انتظار خرابی نیست).
+	 *   • `state` را عوض نمی‌کند (منطق زنجیره تغییر نمی‌کند).
+	 *   • اگر موتور خودش `next_retry_at` گذاشته باشد — مثل FLOOD_WAIT در
+	 *     class-gs-chain-engine.php:885 و :913 — آن را **بازنویسی
+	 *     نمی‌کند**؛ زمان تلگرام همیشه اولویت دارد.
+	 *
+	 * @param int    $session_id شناسه‌ی Session.
+	 * @param string $state      حالت فعلی (برای انتخاب مهلت).
+	 * @return int مهلت اعمال‌شده به ثانیه؛ صفر یعنی چیزی نوشته نشد.
+	 */
+	protected static function defer_waiting( $session_id, $state ) {
+		global $wpdb;
+		$session_id = (int) $session_id;
+		if ( $session_id <= 0 ) {
+			return 0;
+		}
+
+		$table = STI_GS_DB::pipeline_items_table();
+
+		/*
+		 * اگر موتور زنجیره پیش‌تر مهلت آینده گذاشته (FLOOD_WAIT)، دست
+		 * نمی‌زنیم. یک SELECT کوتاه، چون درست بودن مهم‌تر از یک کوئری است.
+		 */
+		$existing = $wpdb->get_var( $wpdb->prepare(
+			"SELECT next_retry_at FROM {$table} WHERE id = %d",
+			$session_id
+		) );
+		if ( ! empty( $existing ) && strtotime( (string) $existing ) > time() ) {
+			return 0;
+		}
+
+		$base = isset( self::WAITING_BACKOFF[ $state ] )
+			? (int) self::WAITING_BACKOFF[ $state ]
+			: (int) self::WAITING_BACKOFF_DEFAULT;
+
+		/**
+		 * مهلت خوابِ یک Session منتظر.
+		 *
+		 * @param int    $base       مهلت پیش‌فرض بر حسب ثانیه.
+		 * @param string $state      حالت Session.
+		 * @param int    $session_id شناسه‌ی Session.
+		 */
+		$delay = (int) apply_filters( 'sti_gs_waiting_backoff', $base, $state, $session_id );
+
+		/* حداقل ۱۰ ثانیه تا حلقه‌ی تنگ برنگردد؛ حداکثر یک ساعت. */
+		$delay = max( 10, min( HOUR_IN_SECONDS, $delay ) );
+
+		$wpdb->update(
+			$table,
+			array( 'next_retry_at' => self::mysql_time( time() + $delay ) ),
+			array( 'id' => $session_id )
+		);
+
+		if ( class_exists( 'STI_Logger' ) ) {
+			STI_Logger::info( sprintf(
+				'AUTO_WORKER_DEFER session=#%d state=%s delay=%ds reason=waiting_backoff',
+				$session_id, $state, $delay
+			) );
+		}
+
+		return $delay;
 	}
 
 	/**
