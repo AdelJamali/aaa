@@ -66,7 +66,7 @@ class STI_GS_Auto_Worker {
 	const WAITING = array( 'WAITING_BOT', 'ERROR_BOT_TIMEOUT', 'CHAIN_WAITING' );
 
 	/**
-	 * ۱۰.۱۲.۱۸ — مهلت خواب هر حالتِ انتظار (ثانیه).
+	 * ۱۰.۱۲.۱۹ — ضریب مهلت خواب هر حالتِ انتظار (نسبت به فاصله‌ی تیک).
 	 *
 	 * ═══ چرا این ثابت اضافه شد ═══
 	 *
@@ -77,45 +77,56 @@ class STI_GS_Auto_Worker {
 	 *       return array( 'state' => 'CHAIN_WAITING', 'waiting' => true );
 	 *   class-gs-chain-engine.php:1333 (finally)
 	 *       STI_GS_Session::release()  →  locked_until = NULL
-	 *   class-gs-auto-worker.php:441
+	 *   class-gs-auto-worker.php  tick_inner()
 	 *       $outcome = 'waiting';   ← فقط برچسب گزارش، بدون نوشتن در DB
 	 *
 	 * نتیجه: Session با `locked_until = NULL` و `next_retry_at = NULL`
 	 * در دیتابیس می‌ماند، هر سه شرط WHERE در pick() را پاس می‌کند و
 	 * چون مرتب‌سازی `id ASC` است دوباره اول صف می‌ایستد.
 	 *
-	 * شاهد میدانی (میزبان، ۱۶:۳۹ تا ۱۸:۱۲): در هر ۸ تیک متوالی
+	 * شاهد میدانی (میزبان، ۱۶:۳۹ تا ۱۹:۱۶): در هر تیک
 	 *   AUTO_WORKER_PICK: selected=1 ids=[68]
 	 *   AUTO_WORKER_STAGE session=#68 CHAIN_WAITING → CHAIN_WAITING waiting
 	 * درحالی‌که eligible_queue=108 بود و advanced=0 / completed=0 ماند.
 	 *
-	 * ═══ چرا مقدارها متفاوت‌اند ═══
+	 * ═══ چرا «ضریب» و نه عدد ثابت ═══
 	 *
-	 * سه حالت انتظار از نظر معنایی یکی نیستند:
+	 * در ۱۰.۱۲.۱۸ این جدول اعداد ثابت ۶۰/۱۲۰/۳۰۰ ثانیه داشت که از روی
+	 * قفل‌های موتور (POLL_LOCK_SECONDS=45، STEP_LOCK_SECONDS=90) گرفته
+	 * شده بود. **این اشتباه بود.** قفل ربطی به فاصله‌ی تیک ندارد:
+	 * `worker_interval` به‌صورت پیش‌فرض ۳۰۰ ثانیه است، پس مهلت ۶۰
+	 * ثانیه‌ای تا رسیدن تیک بعدی مدت‌ها منقضی شده بود و همان Session
+	 * دوباره انتخاب می‌شد. لاگ میزبان بعد از نصب ۱۰.۱۲.۱۸ این را ثابت
+	 * کرد: ids=[68] در ۱۸:۵۲، ۱۹:۰۱ و ۱۹:۱۶ تکرار شد.
 	 *
-	 *   CHAIN_WAITING      منتظر پاسخ ربات در یک گام زنجیره است. قفل poll
-	 *                      برابر POLL_LOCK_SECONDS=45 است، پس ۶۰ ثانیه
-	 *                      تضمین می‌کند دور بعدی بعد از آزاد شدن قفل باشد
-	 *                      بدون اینکه پاسخ تازه‌ی ربات دیر دیده شود.
+	 * حالا مهلت **مضربی از فاصله‌ی واقعی تیک** است، پس اگر کاربر
+	 * `worker_interval` را عوض کند مهلت‌ها خودشان تنظیم می‌شوند:
 	 *
-	 *   WAITING_BOT        تازه پیام فرستاده و منتظر جواب است؛ ربات‌های
-	 *                      تلگرام معمولاً چند ده ثانیه طول می‌دهند و
-	 *                      STEP_LOCK_SECONDS=90 است ⇒ ۱۲۰ ثانیه.
+	 *   CHAIN_WAITING      1.2 برابر تیک — دست‌کم یک دور کامل رد می‌شود
+	 *                      تا نوبت به Session بعدی برسد، ولی پاسخ تازه‌ی
+	 *                      ربات هم خیلی دیر دیده نمی‌شود.
 	 *
-	 *   ERROR_BOT_TIMEOUT  یک‌بار مهلتش تمام شده؛ فشار آوردن بی‌فایده است
-	 *                      و باید صف را برای بقیه باز بگذارد ⇒ ۳۰۰ ثانیه.
+	 *   WAITING_BOT        2.0 برابر — تازه پیام فرستاده؛ ربات تلگرام
+	 *                      معمولاً چند ده ثانیه طول می‌دهد و عجله فایده
+	 *                      ندارد.
+	 *
+	 *   ERROR_BOT_TIMEOUT  4.0 برابر — یک‌بار مهلتش تمام شده؛ باید صف را
+	 *                      برای بقیه باز بگذارد.
 	 *
 	 * این مقدارها سقف تلاش (attempts) را مصرف نمی‌کنند — انتظار خرابی
 	 * نیست. فقط جای Session را در صف موقتاً خالی می‌کنند.
 	 */
-	const WAITING_BACKOFF = array(
-		'CHAIN_WAITING'     => 60,
-		'WAITING_BOT'       => 120,
-		'ERROR_BOT_TIMEOUT' => 300,
+	const WAITING_BACKOFF_FACTOR = array(
+		'CHAIN_WAITING'     => 1.2,
+		'WAITING_BOT'       => 2.0,
+		'ERROR_BOT_TIMEOUT' => 4.0,
 	);
 
-	/** مهلت پیش‌فرض اگر حالت انتظار در جدول بالا نبود. */
-	const WAITING_BACKOFF_DEFAULT = 90;
+	/** ضریب پیش‌فرض اگر حالت انتظار در جدول بالا نبود. */
+	const WAITING_BACKOFF_FACTOR_DEFAULT = 1.5;
+
+	/** کف مطلق مهلت خواب (ثانیه) — حتی اگر تیک خیلی کوتاه باشد. */
+	const WAITING_BACKOFF_MIN = 60;
 
 	/**
 	 * مرحله‌هایی که با ربات حرف می‌زنند.
@@ -594,21 +605,35 @@ class STI_GS_Auto_Worker {
 			return 0;
 		}
 
-		$base = isset( self::WAITING_BACKOFF[ $state ] )
-			? (int) self::WAITING_BACKOFF[ $state ]
-			: (int) self::WAITING_BACKOFF_DEFAULT;
+		/*
+		 * ۱۰.۱۲.۱۹ — مهلت نسبت به فاصله‌ی واقعی تیک محاسبه می‌شود، نه
+		 * عدد ثابت. اگر مهلت از فاصله‌ی تیک کوتاه‌تر باشد، تا رسیدن تیک
+		 * بعدی منقضی شده و همان Session دوباره انتخاب می‌شود — یعنی
+		 * دقیقاً همان گرسنگی که قرار بود رفع شود.
+		 */
+		$interval = (int) self::interval_seconds();
+		$factor   = isset( self::WAITING_BACKOFF_FACTOR[ $state ] )
+			? (float) self::WAITING_BACKOFF_FACTOR[ $state ]
+			: (float) self::WAITING_BACKOFF_FACTOR_DEFAULT;
+
+		$base = (int) ceil( $interval * $factor );
 
 		/**
 		 * مهلت خوابِ یک Session منتظر.
 		 *
-		 * @param int    $base       مهلت پیش‌فرض بر حسب ثانیه.
+		 * @param int    $base       مهلت محاسبه‌شده بر حسب ثانیه.
 		 * @param string $state      حالت Session.
 		 * @param int    $session_id شناسه‌ی Session.
+		 * @param int    $interval   فاصله‌ی فعلی تیک Worker (ثانیه).
 		 */
-		$delay = (int) apply_filters( 'sti_gs_waiting_backoff', $base, $state, $session_id );
+		$delay = (int) apply_filters( 'sti_gs_waiting_backoff', $base, $state, $session_id, $interval );
 
-		/* حداقل ۱۰ ثانیه تا حلقه‌ی تنگ برنگردد؛ حداکثر یک ساعت. */
-		$delay = max( 10, min( HOUR_IN_SECONDS, $delay ) );
+		/*
+		 * کف: هم از WAITING_BACKOFF_MIN و هم از خودِ فاصله‌ی تیک بزرگ‌تر
+		 * باشد — تضمین می‌کند دست‌کم یک دور کامل رد شود. سقف: یک ساعت.
+		 */
+		$floor = max( self::WAITING_BACKOFF_MIN, $interval + 10 );
+		$delay = max( $floor, min( HOUR_IN_SECONDS, $delay ) );
 
 		$wpdb->update(
 			$table,
@@ -618,8 +643,9 @@ class STI_GS_Auto_Worker {
 
 		if ( class_exists( 'STI_Logger' ) ) {
 			STI_Logger::info( sprintf(
-				'AUTO_WORKER_DEFER session=#%d state=%s delay=%ds reason=waiting_backoff',
-				$session_id, $state, $delay
+				'AUTO_WORKER_DEFER session=#%d state=%s delay=%ds interval=%ds factor=%.1f next=%s reason=waiting_backoff',
+				$session_id, $state, $delay, $interval, $factor,
+				self::mysql_time( time() + $delay )
 			) );
 		}
 
@@ -1115,7 +1141,17 @@ class STI_GS_Auto_Worker {
 		return array(
 			'enabled'    => self::is_enabled(),
 			'interval'   => self::interval_seconds(),
-			'batch'      => self::batch_size(),
+			/*
+			 * ۱۰.۱۲.۱۹ — عدد واقعی، نه عدد آرزویی.
+			 *
+			 * پیش از این `batch_size()` گزارش می‌شد (پیش‌فرض ۳) ولی آنچه
+			 * واقعاً در هر تیک پردازش می‌شود `effective_batch_size()` است:
+			 *   min( batch_size, sessions_per_tick ) × ضریب Governor
+			 * با `sessions_per_tick = 1` نتیجه ۱ است، پس هدر صفحه
+			 * «۳ مورد» می‌نوشت درحالی‌که Worker یک مورد برمی‌داشت.
+			 */
+			'batch'      => self::effective_batch_size(),
+			'batch_max'  => self::batch_size(),
 			'pending'    => $pending,
 			'stuck'      => $stuck,
 			'review'     => $review,

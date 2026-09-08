@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""10.12.18 — WORKER STARVATION fix. Static verification.
+"""10.12.19 — WORKER STARVATION fix. Static verification.
 
 PROVEN DEFECT (code-level, before this patch)
 ---------------------------------------------
@@ -22,8 +22,18 @@ PROVEN DEFECT (code-level, before this patch)
      forever. Host evidence: 8 consecutive ticks ids=[68],
      eligible_queue=108, advanced=0, completed=0.
 
-FIX: on outcome waiting|skipped, write a short next_retry_at.
-     attempts untouched, state untouched, FLOOD_WAIT never overwritten.
+FIX: on outcome waiting|skipped, write a next_retry_at that is a MULTIPLE
+     OF THE REAL TICK INTERVAL. attempts untouched, state untouched,
+     FLOOD_WAIT never overwritten.
+
+10.12.18 REGRESSION (why 10.12.19 exists)
+-----------------------------------------
+10.12.18 used fixed 60/120/300s taken from the engine's locks
+(POLL_LOCK_SECONDS=45, STEP_LOCK_SECONDS=90). But worker_interval
+defaults to 300s, so a 60s deferral had already expired by the time the
+next tick ran -> same session re-picked. Host log after installing
+10.12.18 proved it: ids=[68] at 18:52, 19:01, 19:16, no AUTO_WORKER_DEFER
+effect. Backoff must therefore be derived from interval_seconds().
 """
 import re
 import sys
@@ -51,8 +61,8 @@ session = read('includes/golden-scan/class-gs-session.php')
 main = read('sanil-telegram-importer.php')
 
 # ---------- version ----------
-check('V1 header 10.12.18', 'Version:           10.12.18' in main)
-check('V2 STI_VERSION 10.12.18', "define( 'STI_VERSION', '10.12.18' )" in main)
+check('V1 header 10.12.19', 'Version:           10.12.19' in main)
+check('V2 STI_VERSION 10.12.19', "define( 'STI_VERSION', '10.12.19' )" in main)
 
 # ---------- S: the defect still exists upstream (regression anchors) ----------
 # These assert the ENVIRONMENT the fix must survive. If chain-engine ever
@@ -66,19 +76,23 @@ check('S3 pick() still orders by id ASC',
 check('S4 pick() still filters on next_retry_at',
       'AND ( next_retry_at IS NULL OR next_retry_at <= %s )' in worker)
 
-# ---------- B: backoff table ----------
-check('B1 WAITING_BACKOFF const exists', 'const WAITING_BACKOFF = array(' in worker)
-for state, secs in (('CHAIN_WAITING', 60), ('WAITING_BOT', 120), ('ERROR_BOT_TIMEOUT', 300)):
-    check('B2 %s => %d' % (state, secs),
-          re.search(r"'%s'\s*=>\s*%d," % (state, secs), worker) is not None)
-check('B3 default backoff const', 'const WAITING_BACKOFF_DEFAULT = 90;' in worker)
+# ---------- B: backoff is interval-relative, not a fixed constant ----------
+check('B1 WAITING_BACKOFF_FACTOR const exists', 'const WAITING_BACKOFF_FACTOR = array(' in worker)
+for state, factor in (('CHAIN_WAITING', '1.2'), ('WAITING_BOT', '2.0'), ('ERROR_BOT_TIMEOUT', '4.0')):
+    check('B2 %s => %s x interval' % (state, factor),
+          re.search(r"'%s'\s*=>\s*%s," % (state, re.escape(factor)), worker) is not None)
+check('B3 default factor const', 'const WAITING_BACKOFF_FACTOR_DEFAULT = 1.5;' in worker)
+check('B4 absolute floor const', 'const WAITING_BACKOFF_MIN = 60;' in worker)
 
-# every WAITING state must have a backoff entry
+# the 10.12.18 fixed-seconds table must be GONE
+check('B5 old fixed-seconds table removed', 'const WAITING_BACKOFF = array(' not in worker)
+
+# every WAITING state must have a factor entry
 m = re.search(r"const WAITING = array\(([^)]*)\)", worker)
 waiting_states = re.findall(r"'([A-Z_]+)'", m.group(1)) if m else []
-check('B4 all three WAITING states covered',
+check('B6 all three WAITING states covered',
       len(waiting_states) == 3 and all(
-          re.search(r"'%s'\s*=>\s*\d+," % s, worker) for s in waiting_states))
+          re.search(r"'%s'\s*=>\s*[0-9.]+," % s, worker) for s in waiting_states))
 
 # ---------- D: defer_waiting implementation ----------
 check('D1 defer_waiting() defined',
@@ -90,14 +104,19 @@ body = worker[start:end]
 check('D1a defer_waiting body isolated', start > 0 and end > start)
 
 check('D2 writes next_retry_at', "'next_retry_at' => self::mysql_time( time() + $delay )" in body)
+check('D2a delay derives from interval_seconds()', 'self::interval_seconds()' in body)
+check('D2b delay = interval * factor', 'ceil( $interval * $factor )' in body)
+check('D2c floor >= interval + 10', 'max( self::WAITING_BACKOFF_MIN, $interval + 10 )' in body)
 check('D3 does NOT touch attempts', 'attempts' not in body)
 check('D4 does NOT touch state column', "'state' =>" not in body)
 check('D5 respects existing future next_retry_at',
       'SELECT next_retry_at FROM' in body and 'strtotime( (string) $existing ) > time()' in body)
-check('D6 filter hook present', "apply_filters( 'sti_gs_waiting_backoff'" in body)
-check('D7 delay clamped', 'max( 10, min( HOUR_IN_SECONDS, $delay ) )' in body)
+check('D6 filter hook present + passes interval',
+      "apply_filters( 'sti_gs_waiting_backoff', $base, $state, $session_id, $interval )" in body)
+check('D7 delay clamped to [floor, 1h]', 'max( $floor, min( HOUR_IN_SECONDS, $delay ) )' in body)
 check('D8 guards bad id', '$session_id <= 0' in body)
 check('D9 logs the deferral', 'AUTO_WORKER_DEFER' in body)
+check('D9a log includes interval+factor+next', 'interval=%ds factor=%.1f next=%s' in body)
 
 # ---------- C: call site ----------
 check('C1 called on waiting OR skipped',
@@ -121,6 +140,14 @@ check('N3 WAITING list unchanged',
 check('N4 max_active gate untouched', 'active_sessions() >= $max_active' in worker
       or 'self::active_sessions()' in worker)
 check('N5 no backlog_limit change in worker', 'backlog_limit' not in worker)
+check('N6 sessions_per_tick default still 1 (user choice)',
+      "'sessions_per_tick'   => array( 1," in read('includes/golden-scan/class-gs-automation.php'))
+check('N7 max_active_sessions default still 1 (user choice)',
+      "'max_active_sessions' => array( 1," in read('includes/golden-scan/class-gs-automation.php'))
+
+# ---------- U: UI must report the REAL batch ----------
+check('U1 stats report effective batch', "'batch'      => self::effective_batch_size()," in worker)
+check('U2 stats also expose configured max', "'batch_max'  => self::batch_size()," in worker)
 
 # ---------- S: syntax hygiene ----------
 def strip_php(s):
@@ -149,8 +176,8 @@ check('S8 no BOM / CRLF', not worker.startswith('\ufeff') and '\r\n' not in work
 
 print()
 if fails:
-    print('10.12.18 STARVATION SUITE: %d FAILED' % len(fails))
+    print('10.12.19 STARVATION SUITE: %d FAILED' % len(fails))
     for f in fails:
         print('  -', f)
     sys.exit(1)
-print('10.12.18 STARVATION SUITE: ALL PASS')
+print('10.12.19 STARVATION SUITE: ALL PASS')

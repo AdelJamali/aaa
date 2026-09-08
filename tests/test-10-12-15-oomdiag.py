@@ -29,7 +29,7 @@ diag   = (ROOT / 'includes' / 'golden-scan' / 'class-gs-env-diag.php').read_text
 diagc  = strip_code(diag)
 tw     = (ROOT / 'includes' / 'golden-scan' / 'class-gs-test-wizard.php').read_text(encoding='utf-8')
 
-check('V1 version 10.12.18', "define( 'STI_VERSION', '10.12.18' )" in main and 'Version:           10.12.18' in main)
+check('V1 version 10.12.19', "define( 'STI_VERSION', '10.12.19' )" in main and 'Version:           10.12.19' in main)
 
 # OOM context content
 check('O1 meminfo keys', all(k in diag for k in
@@ -52,7 +52,7 @@ check('O8 no process/mutation calls in oom region', len(hits) == 0, str(hits))
 check('O9 only rb reads (2 fopen total, both rb)', diagc.count('fopen') == 2 and diagc.count(", 'rb' )") == 2)
 
 # OOM_DIAG log wiring in client()
-check('O10 OOM_DIAG logged at client() failure (10.12.18: safe wrapper + gate probe)',
+check('O10 OOM_DIAG logged at client() failure (10.12.19: safe wrapper + gate probe)',
       "STI_Logger::error( 'OOM_DIAG ' . wp_json_encode( $ctx ) );" in mtcode
       and 'STI_GS_Env_Diag::oom_context_safe()' in mtcode
       and 'STI_GS_Env_Diag::oom_gate_probe(' in mtcode)
