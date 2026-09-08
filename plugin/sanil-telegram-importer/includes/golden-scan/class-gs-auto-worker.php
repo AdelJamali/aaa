@@ -128,6 +128,30 @@ class STI_GS_Auto_Worker {
 	/** کف مطلق مهلت خواب (ثانیه) — حتی اگر تیک خیلی کوتاه باشد. */
 	const WAITING_BACKOFF_MIN = 60;
 
+	/** کلید ذخیره‌ی فاصله‌ی واقعیِ مشاهده‌شده بین دو تیک. */
+	const OBSERVED_GAP_KEY = 'sti_gs_worker_observed_gap';
+
+	/**
+	 * ۱۰.۱۲.۲۰ — حداکثر Sessionای که در یک تیک امتحان می‌شود تا به یکی
+	 * برسیم که واقعاً پیشرفت کند.
+	 *
+	 * ═══ چرا لازم شد ═══
+	 *
+	 * حتی با مهلت درست، هر Sessionِ منتظر یک دور کامل می‌سوزاند. در
+	 * وضعیت واقعی میزبان، چهار Session اول صف همگی منتظر بودند:
+	 *   #68 CHAIN_WAITING · #69 CHAIN_WAITING · #70 WAITING_BOT
+	 *   #78 WAITING_BOT   · #79 SCANNED  ← اولین موردِ قابل پیشرفت
+	 * با فاصله‌ی واقعی ~۲۵ دقیقه بین تیک‌ها، رسیدن به #79 بیش از یک
+	 * ساعت‌ونیم طول می‌کشید.
+	 *
+	 * حالا اگر نتیجه waiting/skipped بود، همان تیک سراغ بعدی می‌رود —
+	 * تا سقف این عدد یا تا پایان بودجه‌ی زمانی تیک.
+	 *
+	 * قانون bot_used دست‌نخورده می‌ماند: هنوز فقط **یک** Session در هر
+	 * تیک اجازه‌ی گفت‌وگو با ربات دارد، پس فشار تلگرام بالا نمی‌رود.
+	 */
+	const WAITING_SKIP_BUDGET = 5;
+
 	/**
 	 * مرحله‌هایی که با ربات حرف می‌زنند.
 	 *
@@ -426,6 +450,29 @@ class STI_GS_Auto_Worker {
 			&& ! STI_GS_Cron_Gate::pass( 'auto_worker', self::interval_seconds() ) ) {
 			return;
 		}
+
+		/*
+		 * ۱۰.۱۲.۲۰ — فاصله‌ی **واقعی** بین دو تیک را ثبت می‌کنیم.
+		 *
+		 * `worker_interval` فقط یک آرزوست: WP-Cron با بازدید سایت اجرا
+		 * می‌شود، نه با ساعت سیستم. در میزبان واقعی فاصله‌ی مشاهده‌شده
+		 * ۱۴۶۰ تا ۱۷۸۸ ثانیه بود درحالی‌که تنظیمات ۳۰۰ می‌گفت — تقریباً
+		 * پنج برابر. مهلت‌های ۱۰.۱۲.۱۹ که بر پایه‌ی ۳۰۰ حساب می‌شدند
+		 * پیش از رسیدن تیک بعدی منقضی می‌شدند و همان Session دوباره
+		 * انتخاب می‌شد (شاهد: ids=[68] در ۱۹:۴۶ و ۲۰:۱۰).
+		 */
+		$prev_tick = (int) get_option( self::STATS_KEY . '_last', 0 );
+		if ( $prev_tick > 0 ) {
+			$gap = time() - $prev_tick;
+			/* بازه‌ی معقول؛ مقدار پرت (ری‌استارت/خاموشی طولانی) کنار می‌رود. */
+			if ( $gap > 0 && $gap <= 6 * HOUR_IN_SECONDS ) {
+				$prev_avg = (int) get_option( self::OBSERVED_GAP_KEY, 0 );
+				/* میانگین متحرک وزن‌دار تا یک نوسان عدد را نپراند. */
+				$avg = $prev_avg > 0 ? (int) round( ( $prev_avg * 2 + $gap ) / 3 ) : $gap;
+				update_option( self::OBSERVED_GAP_KEY, $avg, false );
+			}
+		}
+
 		update_option( self::STATS_KEY . '_last', time(), false );
 
 		// حالت ایمن یا توقف اضطراری = دست نگه دار.
@@ -457,7 +504,14 @@ class STI_GS_Auto_Worker {
 		$heavy_left  = class_exists( 'STI_GS_Automation' ) ? (int) STI_GS_Automation::get( 'max_downloads_per_tick' ) : 1;
 		$prod_left   = class_exists( 'STI_GS_Automation' ) ? (int) STI_GS_Automation::get( 'max_products_per_tick' ) : 1;
 
-		$sessions = self::pick( self::effective_batch_size() );
+		/*
+		 * ۱۰.۱۲.۲۰ — علاوه بر ظرفیت واقعی، چند Session اضافه برمی‌داریم
+		 * تا اگر اولی‌ها «منتظر» بودند بتوانیم از رویشان رد شویم و به
+		 * موردی برسیم که واقعاً پیشرفت می‌کند. سقفِ کارِ انجام‌شده هنوز
+		 * effective_batch_size() است — این فقط عمقِ جست‌وجوست.
+		 */
+		$work_budget = self::effective_batch_size();
+		$sessions    = self::pick( $work_budget + self::WAITING_SKIP_BUDGET );
 		if ( empty( $sessions ) ) {
 			if ( class_exists( 'STI_Logger' ) ) {
 				STI_Logger::info( 'AUTO_WORKER_PICK: selected=0' );
@@ -477,9 +531,22 @@ class STI_GS_Auto_Worker {
 		/* ۱۰.۸.۳ — بودجه‌ی تیک: مابقی Sessionها به تیک بعدی موکول می‌شوند. */
 		$tick_started = time();
 
+		/*
+		 * ۱۰.۱۲.۲۰ — شمارنده‌ی «کار مفید».
+		 *
+		 * فقط نتیجه‌های advanced / completed / failed کارِ واقعی حساب
+		 * می‌شوند. waiting و skipped پیشرفتی نیستند، پس از بودجه کم
+		 * نمی‌شوند و حلقه سراغ Session بعدی می‌رود — همان چیزی که
+		 * گرسنگی را می‌شکند.
+		 */
+		$work_done = 0;
+
 		foreach ( $sessions as $session ) {
 			if ( ( time() - $tick_started ) >= self::TICK_BUDGET_SEC ) {
 				break;
+			}
+			if ( $work_done >= $work_budget ) {
+				break; // ظرفیت واقعیِ این تیک پر شد.
 			}
 
 			$state = (string) $session['state'];
@@ -558,6 +625,12 @@ class STI_GS_Auto_Worker {
 					(int) $session['id']
 				) );
 				self::defer_waiting( (int) $session['id'], (string) ( null === $after ? $state : $after ) );
+			} else {
+				/*
+				 * ۱۰.۱۲.۲۰ — فقط پیشرفت واقعی از بودجه کم می‌کند.
+				 * advanced / completed / failed = کارِ انجام‌شده.
+				 */
+				$work_done++;
 			}
 
 			if ( isset( $report[ $outcome ] ) ) {
@@ -566,6 +639,27 @@ class STI_GS_Auto_Worker {
 		}
 
 		self::record( $report );
+	}
+
+	/**
+	 * ۱۰.۱۲.۲۰ — فاصله‌ی مؤثر تیک: بزرگ‌ترینِ «تنظیم‌شده» و «مشاهده‌شده».
+	 *
+	 * `interval_seconds()` چیزی است که کاربر تنظیم کرده؛ اما WP-Cron با
+	 * بازدید سایت اجرا می‌شود و ممکن است خیلی دیرتر بیاید. برای
+	 * زمان‌بندی مهلت خواب باید عدد بدبینانه‌تر (بزرگ‌تر) را گرفت، وگرنه
+	 * مهلت پیش از تیک بعدی تمام می‌شود و گرسنگی برمی‌گردد.
+	 *
+	 * @return int ثانیه.
+	 */
+	protected static function effective_interval() {
+		$configured = (int) self::interval_seconds();
+		$observed   = (int) get_option( self::OBSERVED_GAP_KEY, 0 );
+
+		/* مقدار مشاهده‌شده فقط اگر معقول باشد وارد محاسبه می‌شود. */
+		if ( $observed > 0 && $observed <= 6 * HOUR_IN_SECONDS ) {
+			return max( $configured, $observed );
+		}
+		return $configured;
 	}
 
 	/**
@@ -611,7 +705,7 @@ class STI_GS_Auto_Worker {
 		 * بعدی منقضی شده و همان Session دوباره انتخاب می‌شود — یعنی
 		 * دقیقاً همان گرسنگی که قرار بود رفع شود.
 		 */
-		$interval = (int) self::interval_seconds();
+		$interval = self::effective_interval();
 		$factor   = isset( self::WAITING_BACKOFF_FACTOR[ $state ] )
 			? (float) self::WAITING_BACKOFF_FACTOR[ $state ]
 			: (float) self::WAITING_BACKOFF_FACTOR_DEFAULT;

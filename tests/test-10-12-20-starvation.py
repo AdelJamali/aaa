@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""10.12.19 — WORKER STARVATION fix. Static verification.
+"""10.12.20 — WORKER STARVATION fix. Static verification.
 
 PROVEN DEFECT (code-level, before this patch)
 ---------------------------------------------
@@ -61,8 +61,8 @@ session = read('includes/golden-scan/class-gs-session.php')
 main = read('sanil-telegram-importer.php')
 
 # ---------- version ----------
-check('V1 header 10.12.19', 'Version:           10.12.19' in main)
-check('V2 STI_VERSION 10.12.19', "define( 'STI_VERSION', '10.12.19' )" in main)
+check('V1 header 10.12.20', 'Version:           10.12.20' in main)
+check('V2 STI_VERSION 10.12.20', "define( 'STI_VERSION', '10.12.20' )" in main)
 
 # ---------- S: the defect still exists upstream (regression anchors) ----------
 # These assert the ENVIRONMENT the fix must survive. If chain-engine ever
@@ -104,7 +104,7 @@ body = worker[start:end]
 check('D1a defer_waiting body isolated', start > 0 and end > start)
 
 check('D2 writes next_retry_at', "'next_retry_at' => self::mysql_time( time() + $delay )" in body)
-check('D2a delay derives from interval_seconds()', 'self::interval_seconds()' in body)
+check('D2a delay derives from effective_interval()', 'self::effective_interval()' in body)
 check('D2b delay = interval * factor', 'ceil( $interval * $factor )' in body)
 check('D2c floor >= interval + 10', 'max( self::WAITING_BACKOFF_MIN, $interval + 10 )' in body)
 check('D3 does NOT touch attempts', 'attempts' not in body)
@@ -129,6 +129,44 @@ call = worker.find("if ( 'waiting' === $outcome || 'skipped' === $outcome ) {", 
 rep = worker.find("if ( isset( $report[ $outcome ] ) ) {", ti)
 check('C3 call site is inside tick_inner before report increment',
       ti > 0 and ti < call < rep)
+
+# ---------- O: 10.12.20 observed-gap + skip-ahead ----------
+# 10.12.19 scaled the backoff off worker_interval (300s). The host actually
+# ticks every 1460-1788s, so a 360s deferral expired before the next tick and
+# #68 was re-picked at 19:46 and 20:10. Backoff must use the OBSERVED gap.
+check('O1 observed-gap option key', "const OBSERVED_GAP_KEY = 'sti_gs_worker_observed_gap';" in worker)
+check('O2 effective_interval() defined',
+      'protected static function effective_interval()' in worker)
+ei = worker[worker.find('protected static function effective_interval()'):]
+ei = ei[:ei.find('/**', 10)]
+check('O3 effective_interval takes max(configured, observed)',
+      'max( $configured, $observed )' in ei)
+check('O4 observed gap is sanity-bounded', '6 * HOUR_IN_SECONDS' in ei)
+check('O5 tick records the real gap', 'update_option( self::OBSERVED_GAP_KEY' in worker)
+check('O6 gap uses a moving average', '( $prev_avg * 2 + $gap ) / 3' in worker)
+
+# skip-ahead: waiting/skipped must NOT consume the work budget
+check('O7 skip budget const', 'const WAITING_SKIP_BUDGET = 5;' in worker)
+check('O8 pick() over-fetches by the skip budget',
+      'self::pick( $work_budget + self::WAITING_SKIP_BUDGET )' in worker)
+check('O9 work_done gates the loop', 'if ( $work_done >= $work_budget ) {' in worker)
+check('O10 only real progress increments work_done',
+      '$work_done++;' in worker and worker.count('$work_done++;') == 1)
+
+# the increment must live in the ELSE of the waiting/skipped branch
+wb = worker.find("if ( 'waiting' === $outcome || 'skipped' === $outcome ) {")
+inc = worker.find('$work_done++;', wb)
+els = worker.find('} else {', wb)
+check('O11 increment sits in the else branch', wb > 0 and wb < els < inc)
+
+# bot_used must be untouched - Telegram pressure must not rise
+check('O12 bot_used rule intact',
+      'if ( $bot_used ) {' in worker and 'continue; // نوبتش تیک بعدی' in worker)
+
+# ---------- A: the audit panel must be able to SHOW the new log ----------
+audit = read('includes/golden-scan/class-gs-chain-audit.php')
+check('A1 audit log filter includes AUTO_WORKER_DEFER',
+      "message LIKE '%AUTO_WORKER_DEFER%'" in audit)
 
 # ---------- N: nothing else changed ----------
 check('N1 retry limit untouched', 'const RETRY_AFTER_GIVEUP = 6 * HOUR_IN_SECONDS;' in worker)
@@ -176,8 +214,8 @@ check('S8 no BOM / CRLF', not worker.startswith('\ufeff') and '\r\n' not in work
 
 print()
 if fails:
-    print('10.12.19 STARVATION SUITE: %d FAILED' % len(fails))
+    print('10.12.20 STARVATION SUITE: %d FAILED' % len(fails))
     for f in fails:
         print('  -', f)
     sys.exit(1)
-print('10.12.19 STARVATION SUITE: ALL PASS')
+print('10.12.20 STARVATION SUITE: ALL PASS')
