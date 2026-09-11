@@ -14,7 +14,7 @@
 | # | مسئله | وضعیت ریشه‌یابی |
 |---|---|---|
 | ۱ | `Fiber stack allocate failed: mmap failed: Cannot allocate memory (12)` | ❌ **ریشه‌یابی نشده — این درخواست اصلی ماست** |
-| ۲ | گرسنگی Worker (یک Session صف را قفل می‌کرد) | ✅ اثبات و اصلاح شد — نیاز به تأیید روی میزبان |
+| ۲ | گرسنگی Worker (یک Session صف را قفل می‌کرد) | ✅ اثبات شد · دو اصلاح روی میزبان تأیید شد · **یک نقص باقی‌مانده — بخش ۳-۶** |
 | ۳ | ۸۲۵ رکورد یتیم در جدول انتخاب | 🔶 شناسایی شد، دست‌نخورده |
 
 **درخواست مشخص:** مسئله‌ی شماره ۱ را ریشه‌یابی کنید و طبق قالب بخش ۱۰
@@ -287,7 +287,7 @@ return array( 'state' => 'CHAIN_WAITING', 'waiting' => true );
 | 10.12.18 | مهلت مبتنی بر ثابت قفل | ❌ بی‌اثر |
 | 10.12.19 | عقب‌گرد حالت | 🔶 نسبی |
 | 10.12.20 | `next_retry_at` با backoff به‌ازای هر حالت | ✅ **مکانیزم اثبات شد** |
-| 10.12.21 | اصلاح دو نقص جانبی | ⏳ نصب‌نشده |
+| 10.12.21 | اصلاح دو نقص جانبی | ✅ **نصب شد — دامپ `06:11:35` تأیید کرد** |
 
 شاهد قطعی از دامپ میزبان (`2026-09-11 05:55:26`) — اولین تغییر شناسه
 بعد از ۱۹۰ دور:
@@ -314,7 +314,73 @@ Session ‎#68 از ۸ تا ۱۱ سپتامبر (بیش از ۷۲ ساعت) با
 هم آزادش نمی‌کرد. حالا `WAITING_DEADLINE = 12 * HOUR_IN_SECONDS` اجرا
 می‌شود و Session به `NEEDS_REVIEW` می‌رود (حذف نمی‌شود).
 
-### ۳-۵) نکته‌ی مهم درباره‌ی WP-Cron
+### ۳-۵) تأیید روی میزبان — دامپ `2026-09-11 06:11:35`
+
+نسخه ۱۰.۱۲.۲۱ نصب شد و دامپ تازه گرفته شد. **هر دو اصلاح کار کردند:**
+
+```
+06:08:08  AUTO_WORKER_PICK: selected=6 ids=[68,69,70,78,79,80]
+06:08:27  DEFER #80 state=SCANNED delay=1344s interval=896s factor=1.5
+06:08:27  DEFER #79 state=SCANNED delay=1344s interval=896s factor=1.5
+```
+
+| سنجه | قبل | بعد |
+|---|---|---|
+| `interval` | ۳۰۰ ثانیه (عدد تنظیمات) | **۸۹۶ ثانیه (اندازه‌گیری واقعی)** |
+| `delay` | ۳۶۰ ثانیه | **۱۳۴۴ ثانیه** |
+| `selected` | ۱ | **۶** |
+| صف در دسترس | فقط `[68]` | `[68,69,70,78,79,80]` |
+| `eligible_queue` | ۱۰۹ | ۱۰۷ |
+
+اندازه‌گیری فاصله حالا درست کار می‌کند و صف دیگر روی یک Session قفل
+نیست. اما ⬇️
+
+### ۳-۶) ★ نقص چهارم — کشف‌شده، هنوز رفع‌نشده
+
+`AUTO_WORKER_WAIT_DEADLINE` در دامپ **صفر بار** ظاهر شد، با اینکه ‎#68
+بیش از ۸۰ ساعت در `CHAIN_WAITING` است و آستانه ۱۲ ساعت است.
+
+**علت — با ارجاع خطی:**
+
+`class-gs-auto-worker.php` خط ۸۵۳ آستانه را از `updated_at` می‌سنجد:
+```php
+$updated = isset( $session['updated_at'] ) ? strtotime( (string) $session['updated_at'] ) : 0;
+if ( $updated > 0 && ( time() - $updated ) > self::WAITING_DEADLINE ) {
+```
+
+اما `class-gs-session.php` خط ۱۶۷ — متد `claim()` — در **هر** تصاحب
+`updated_at` را تازه می‌کند:
+```sql
+UPDATE {$table} SET locked_until = %s, worker_id = %s, updated_at = %s
+ WHERE id = %d AND (locked_until IS NULL OR locked_until < %s)
+```
+
+و `class-gs-session.php` خط ۱۵۵ — متد `update()` — همین کار را می‌کند:
+```php
+$row['updated_at'] = current_time( 'mysql' );
+```
+
+`class-gs-chain-engine.php` در چهار نقطه (خطوط ۱۱۲، ۳۰۱، ۵۱۰، ۷۸۲)
+`claim()` را در هر تیک صدا می‌زند.
+
+**نتیجه:** `updated_at` هرگز کهنه نمی‌شود. اختلاف `time() - $updated`
+همیشه چند ثانیه است، نه چند ساعت. **شرط هیچ‌وقت درست نمی‌شود.**
+
+> این دقیقاً **همان الگوی اشتباهِ نقص یک** است: ستونی به‌عنوان مرجع
+> زمان انتخاب شد که خودِ چرخه‌ی اندازه‌گیری آن را بازنویسی می‌کند. دو
+> بار در یک نسخه.
+
+**نکته‌ی مهم برای شما:** این باگ باعث می‌شود `class-gs-recovery.php`
+خطوط ۴۵۳ و ۴۹۳ هم — که با `AND updated_at < %s` دنبال Session یتیم
+می‌گردند — هرگز چیزی پیدا نکنند. یک ستون خراب، دو سازوکار بازیابی را
+از کار انداخته است.
+
+مسیر اصلاح پیشنهادی (اجرا نشده، منتظر نظر شما): استفاده از ستونی که
+چرخه‌ی Worker آن را لمس نمی‌کند — مثل `clicked_at` یا
+`last_polled_at` — یا افزودن یک `waiting_since` که فقط در **گذارِ
+ورود** به حالت انتظار نوشته شود.
+
+### ۳-۷) نکته‌ی مهم درباره‌ی WP-Cron
 
 زمان‌بندی این سایت WP-Cron است، یعنی **بازدید-محور**. فاصله‌ی تنظیم‌شده
 ۵ دقیقه است ولی فاصله‌ی واقعی بین ۱۴۶۰ تا ۵۴۶۰ ثانیه نوسان دارد. هر
@@ -570,7 +636,9 @@ php -i | grep -E 'fiber.stack_size|memory_limit'
 | ۱ | `includes/golden-scan/class-gs-env-diag.php` | ابزار تشخیص + `safe_read()` |
 | ۲ | `includes/golden-scan/class-gs-auto-worker.php` | زمان‌بند، انتخاب، backoff |
 | ۲ | `includes/golden-scan/class-gs-chain-engine.php` خط ۱۳۳۲ | مبدأ `CHAIN_WAITING` |
-| ۳ | `includes/golden-scan/class-gs-session.php` خط ۱۶۰/۱۸۸ | `claim()` / `release()` |
+| ۱ | `includes/golden-scan/class-gs-session.php` خط ۱۵۵/۱۶۷ | ★ منشأ نقص چهارم — بازنویسی `updated_at` |
+| ۳ | `includes/golden-scan/class-gs-session.php` خط ۱۸۸ | `release()` |
+| ۳ | `includes/golden-scan/class-gs-recovery.php` خط ۴۵۳/۴۹۳ | قربانی دوم همان ستون |
 | ۳ | `includes/golden-scan/class-gs-cron-gate.php` | گیت CAS اتمیک |
 | ۴ | `GUZARESH-10.12.21.md` | گزارش کامل آخرین دور |
 | ۴ | `tests/` | ۹ مجموعه‌ی تست ایستا |
