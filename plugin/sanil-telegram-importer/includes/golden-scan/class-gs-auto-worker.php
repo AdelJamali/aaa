@@ -173,6 +173,16 @@ class STI_GS_Auto_Worker {
 	const WAITING_SKIP_BUDGET = 5;
 
 	/**
+	 * ۱۰.۱۲.۲۲ — جزئیات نوع‌دارِ آخرین نتیجه (فقط برای لاگ و آمار).
+	 *
+	 * `advance_one()` پرش. `run_batch()` می‌خواند و پاک می‌کند. هیچ
+	 * تصمیم رفتاری بر پایه‌ی آن گرفته نمی‌شود.
+	 *
+	 * @var array{outcome:string,reason:string,route:string}|null
+	 */
+	protected static $last_detail = null;
+
+	/**
 	 * مرحله‌هایی که با ربات حرف می‌زنند.
 	 *
 	 * گفت‌وگو با ربات ذاتاً **ترتیبی** است: یک /start می‌فرستیم، ربات جواب
@@ -605,16 +615,25 @@ class STI_GS_Auto_Worker {
 			$is_md  = ( STI_GS_Stage::MEDIA === $stage );
 			$is_pr  = ( STI_GS_Stage::PRODUCT === $stage );
 			if ( $is_dl || $is_md || $is_pr ) {
+				/*
+				 * ۱۰.۱۲.۲۲ — این سه دلیل تا اینجا همگی در شمارنده‌ی
+				 * `waiting` جمع می‌شدند و از «منتظر پاسخ ربات» قابل
+				 * تفکیک نبودند. حالا شمارنده‌ی جداگانه دارند؛ خودِ
+				 * `waiting` برای سازگاری پنل دست‌نخورده بالا می‌رود.
+				 */
 				if ( class_exists( 'STI_GS_Governor' ) && ! STI_GS_Governor::allow_heavy() ) {
 					$report['waiting']++;
+					$report['throttled'] = ( $report['throttled'] ?? 0 ) + 1;
 					continue; // فشار زیاد — تیک بعدی؛ خرابی نیست
 				}
 				if ( $is_dl && $heavy_left <= 0 ) {
 					$report['waiting']++;
+					$report['capacity_download'] = ( $report['capacity_download'] ?? 0 ) + 1;
 					continue;
 				}
 				if ( ( $is_md || $is_pr ) && $prod_left <= 0 ) {
 					$report['waiting']++;
+					$report['capacity_product'] = ( $report['capacity_product'] ?? 0 ) + 1;
 					continue;
 				}
 			}
@@ -629,9 +648,18 @@ class STI_GS_Auto_Worker {
 					"SELECT state FROM " . STI_GS_DB::pipeline_items_table() . " WHERE id = %d",
 					(int) $session['id']
 				) );
+				/* ۱۰.۱۲.۲۲ — outcome/reason/route به خط لاگ اضافه شد. */
+				$detail = '';
+				if ( is_array( self::$last_detail ) ) {
+					$detail = sprintf( ' outcome=%s reason=%s',
+						self::$last_detail['outcome'], self::$last_detail['reason'] );
+					if ( '' !== self::$last_detail['route'] ) {
+						$detail .= ' route=' . self::$last_detail['route'];
+					}
+				}
 				STI_Logger::info( sprintf(
-					'AUTO_WORKER_STAGE session=#%d from=%s to=%s result=%s',
-					(int) $session['id'], $state, ( null === $new_state ? '?' : $new_state ), $outcome
+					'AUTO_WORKER_STAGE session=#%d from=%s to=%s result=%s%s',
+					(int) $session['id'], $state, ( null === $new_state ? '?' : $new_state ), $outcome, $detail
 				) );
 			}
 			if ( $is_dl ) {
@@ -669,9 +697,27 @@ class STI_GS_Auto_Worker {
 				$work_done++;
 			}
 
-			if ( isset( $report[ $outcome ] ) ) {
-				$report[ $outcome ]++;
+			/*
+			 * ۱۰.۱۲.۲۲ — هیچ نتیجه‌ای دیگر بی‌صدا دور ریخته نمی‌شود.
+			 *
+			 * تا ۱۰.۱۲.۲۱ کلید `skipped` در `$report` نبود، پس این شرط
+			 * `isset` آن را ساکت حذف می‌کرد و رویداد در هیچ آماری
+			 * نمی‌آمد. حالا هر نتیجه‌ی ناشناخته هم شمرده می‌شود.
+			 */
+			if ( ! isset( $report[ $outcome ] ) ) {
+				$report[ $outcome ] = 0;
 			}
+			$report[ $outcome ]++;
+
+			/* تفکیک دلیل — منبع اصلی برای تشخیص، جدا از شمارنده‌ی کلی. */
+			if ( is_array( self::$last_detail ) ) {
+				$key = 'by_reason:' . self::$last_detail['outcome'];
+				if ( ! isset( $report[ $key ] ) ) {
+					$report[ $key ] = 0;
+				}
+				$report[ $key ]++;
+			}
+			self::$last_detail = null;
 		}
 
 		self::record( $report );
@@ -988,6 +1034,21 @@ class STI_GS_Auto_Worker {
 				 */
 				if ( is_array( $result ) && ! empty( $result['no_progress'] ) ) {
 					$outcome = ! empty( $result['waiting'] ) ? 'waiting' : 'skipped';
+					/*
+					 * ۱۰.۱۲.۲۲ — رصدپذیری: دلیلِ نوع‌دار کنار نتیجه‌ی
+					 * قدیمی ثبت می‌شود. `$outcome` عمداً دست‌نخورده
+					 * می‌ماند تا رفتار این نسخه با ۱۰.۱۲.۲۱ یکسان باشد.
+					 */
+					self::$last_detail = array(
+						'outcome' => isset( $result['outcome'] ) ? (string) $result['outcome'] : 'unclassified',
+						'reason'  => isset( $result['reason'] ) ? (string) $result['reason'] : 'unknown',
+						'route'   => isset( $result['route'] ) && is_array( $result['route'] )
+							? sprintf( '%s→%s/affected=%d/%s',
+								$result['route']['before'], $result['route']['after'],
+								(int) $result['route']['affected'],
+								$result['route']['ok'] ? 'PERSISTED' : 'LOST' )
+							: '',
+					);
 				} elseif ( in_array( $new, self::TERMINAL, true ) ) {
 					STI_GS_Event::log( $session_id, 'auto_worker', 'ok',
 						'Worker مسیر را تا «' . $new . '» کامل کرد.' );
@@ -1250,8 +1311,23 @@ class STI_GS_Auto_Worker {
 			: array( 'day' => $day, 'advanced' => 0, 'waiting' => 0, 'failed' => 0, 'completed' => 0, 'ticks' => 0 );
 
 		foreach ( array( 'advanced', 'waiting', 'failed', 'completed' ) as $k ) {
-			$today[ $k ] = (int) $today[ $k ] + (int) $report[ $k ];
+			$today[ $k ] = (int) $today[ $k ] + (int) ( $report[ $k ] ?? 0 );
 		}
+
+		/*
+		 * ۱۰.۱۲.۲۲ — هر کلید دیگری هم ذخیره می‌شود.
+		 *
+		 * تا ۱۰.۱۲.۲۱ فقط چهار شمارنده‌ی بالا ماندگار می‌شدند؛ `skipped`
+		 * و تفکیک دلیل‌ها در پایان تیک از بین می‌رفتند. حلقه‌ی زیر
+		 * چیزی را بازنویسی نمی‌کند، فقط کلیدهای تازه را جمع می‌زند.
+		 */
+		foreach ( $report as $k => $v ) {
+			if ( in_array( $k, array( 'advanced', 'waiting', 'failed', 'completed' ), true ) ) {
+				continue;
+			}
+			$today[ $k ] = (int) ( $today[ $k ] ?? 0 ) + (int) $v;
+		}
+
 		$today['ticks'] = (int) $today['ticks'] + 1;
 		$today['last']  = current_time( 'mysql' );
 

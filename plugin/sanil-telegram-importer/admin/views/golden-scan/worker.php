@@ -601,6 +601,48 @@ $wt = class_exists( 'STI_GS_Channel_Watcher' ) ? STI_GS_Channel_Watcher::stats()
 					<tr><td>تعداد دورها</td><td class="gi-nums" style="text-align:end;font-weight:800;"><?php echo (int) ( $today['ticks'] ?? 0 ); ?></td></tr>
 				</tbody>
 			</table>
+			<?php
+			/* ۱۰.۱۲.۲۲ — تفکیک دلیل. تا نسخه‌ی قبل، «بدون پیشرفت» در هیچ
+			 * شمارنده‌ای نمی‌آمد و سه دلیلِ متفاوتِ ظرفیت با «منتظر پاسخ
+			 * ربات» یکی شمرده می‌شد. این جدول فقط وقتی ظاهر می‌شود که
+			 * داده‌ای برای نشان دادن باشد. */
+			$gs_labels = array(
+				'skipped'           => 'بدون پیشرفت (رد شد)',
+				'throttled'         => 'توقف به‌خاطر فشار سیستم',
+				'capacity_download' => 'سقف دانلود این دور',
+				'capacity_product'  => 'سقف ساخت محصول این دور',
+			);
+			$gs_reason_labels = array(
+				'route_changed'       => 'مسیر به قدیمی تغییر کرد',
+				'route_change_failed' => '⚠️ ثبت تغییر مسیر ناموفق',
+				'invalid_route'       => 'مسیر نامعتبر',
+				'unclassified'        => 'دسته‌بندی‌نشده',
+			);
+			$gs_rows = array();
+			foreach ( $gs_labels as $gs_k => $gs_lbl ) {
+				if ( ! empty( $today[ $gs_k ] ) ) {
+					$gs_rows[ $gs_lbl ] = (int) $today[ $gs_k ];
+				}
+			}
+			foreach ( $today as $gs_k => $gs_v ) {
+				if ( 0 === strpos( (string) $gs_k, 'by_reason:' ) && $gs_v ) {
+					$gs_sub = substr( (string) $gs_k, 10 );
+					$gs_rows[ $gs_reason_labels[ $gs_sub ] ?? $gs_sub ] = (int) $gs_v;
+				}
+			}
+			if ( $gs_rows ) : ?>
+				<div style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--gi-border,#ddd);">
+					<div style="font-size:12px;opacity:.75;margin-bottom:6px;">تفکیک دلیل (۱۰.۱۲.۲۲)</div>
+					<table class="gi-table"><tbody>
+					<?php foreach ( $gs_rows as $gs_lbl => $gs_n ) : ?>
+						<tr>
+							<td style="font-size:12px;"><?php echo esc_html( $gs_lbl ); ?></td>
+							<td class="gi-nums" style="text-align:end;font-weight:700;font-size:12px;"><?php echo (int) $gs_n; ?></td>
+						</tr>
+					<?php endforeach; ?>
+					</tbody></table>
+				</div>
+			<?php endif; ?>
 		</div>
 
 		<!-- Chain mode -->

@@ -119,25 +119,55 @@ class STI_GS_Chain_Engine {
 				return new WP_Error( 'sti_gs_no_session', 'Session پیدا نشد.' );
 			}
 			if ( 'SCANNED' !== (string) $session['state'] ) {
-				return array( 'state' => $session['state'], 'skipped' => true, 'no_progress' => true );
+				return array(
+					'state'       => $session['state'],
+					'skipped'     => true,
+					'no_progress' => true,
+					/* ۱۰.۱۲.۲۲ — رصدپذیری: چرا پیشرفتی نبود. */
+					'outcome'     => 'invalid_route',
+					'reason'      => 'state_not_scanned',
+				);
 			}
 
 			$mode = self::mode();
 			if ( STI_GS_Node::MODE_LEGACY === $mode ) {
 				// حالت legacy: اصلاً دست به کاری نمی‌زنیم — Resolver قدیمی ادامه می‌دهد.
-				return array( 'state' => 'SCANNED', 'skipped' => true, 'no_progress' => true, 'mode' => $mode );
+				return array(
+					'state'       => 'SCANNED',
+					'skipped'     => true,
+					'no_progress' => true,
+					'mode'        => $mode,
+					'outcome'     => 'invalid_route',
+					'reason'      => 'global_mode_legacy',
+				);
 			}
 
 			$message = self::load_message( (int) $session['message_pk'] );
 			if ( ! $message ) {
-				self::fallback_to_legacy( $session_id, 'پیام مبدأ در sti_gs_messages پیدا نشد.' );
-				return array( 'state' => 'SCANNED', 'skipped' => true, 'no_progress' => true, 'decision' => 'legacy' );
+				$route = self::fallback_to_legacy( $session_id, 'پیام مبدأ در sti_gs_messages پیدا نشد.' );
+				return array(
+					'state'       => 'SCANNED',
+					'skipped'     => true,
+					'no_progress' => true,
+					'decision'    => 'legacy',
+					'outcome'     => $route['ok'] ? 'route_changed' : 'route_change_failed',
+					'reason'      => 'message_not_found',
+					'route'       => $route,
+				);
 			}
 
 			$raw = json_decode( (string) ( $message['raw_json'] ?? '' ), true );
 			if ( ! is_array( $raw ) ) {
-				self::fallback_to_legacy( $session_id, 'raw_json پیام مبدأ قابل decode نیست.' );
-				return array( 'state' => 'SCANNED', 'skipped' => true, 'no_progress' => true, 'decision' => 'legacy' );
+				$route = self::fallback_to_legacy( $session_id, 'raw_json پیام مبدأ قابل decode نیست.' );
+				return array(
+					'state'       => 'SCANNED',
+					'skipped'     => true,
+					'no_progress' => true,
+					'decision'    => 'legacy',
+					'outcome'     => $route['ok'] ? 'route_changed' : 'route_change_failed',
+					'reason'      => 'raw_json_invalid',
+					'route'       => $route,
+				);
 			}
 
 			$node = STI_GS_Node_Classifier::classify( $raw );
@@ -150,8 +180,16 @@ class STI_GS_Chain_Engine {
 
 			// فقط گره‌های قابل اجرا وارد زنجیره می‌شوند؛ ASSET/UNKNOWN/متن ساده → legacy.
 			if ( ! $node->is_executable() ) {
-				self::fallback_to_legacy( $session_id, 'گره‌ی مبدأ قابل اجرا نیست (' . STI_GS_Node::type_label( $node->type ) . ').' );
-				return array( 'state' => 'SCANNED', 'skipped' => true, 'no_progress' => true, 'decision' => 'legacy' );
+				$route = self::fallback_to_legacy( $session_id, 'گره‌ی مبدأ قابل اجرا نیست (' . STI_GS_Node::type_label( $node->type ) . ').' );
+				return array(
+					'state'       => 'SCANNED',
+					'skipped'     => true,
+					'no_progress' => true,
+					'decision'    => 'legacy',
+					'outcome'     => $route['ok'] ? 'route_changed' : 'route_change_failed',
+					'reason'      => 'node_not_executable:' . STI_GS_Node::type_label( $node->type ),
+					'route'       => $route,
+				);
 			}
 
 			// کانتکست دکمه‌ی کانال: peer و msg_id برای callback لازم است.
@@ -1375,14 +1413,67 @@ class STI_GS_Chain_Engine {
 	}
 
 	/** تصمیم legacy روی Session ثبت می‌شود تا نگاشت Stage به Resolver قدیمی برگردد. */
+	/**
+	 * تغییر مسیر Session به Resolver قدیمی.
+	 *
+	 * ۱۰.۱۲.۲۲ — رصدپذیری (بدون تغییر رفتار).
+	 *
+	 * تا اینجا این تابع می‌نوشت و بدون بررسی برمی‌گشت. اگر نوشتن اثر
+	 * نمی‌کرد، Session در دور بعد دوباره به Chain Init می‌رسید و همان
+	 * `no_progress` را برمی‌گرداند — یک حلقه‌ی بی‌پایانِ خاموش.
+	 *
+	 * حالا مقدار قبلی، تعداد ردیف تغییرکرده و مقدار **واقعیِ ذخیره‌شده**
+	 * (read-back) ثبت می‌شود. هیچ تصمیمی بر پایه‌ی این مقادیر گرفته
+	 * نمی‌شود — فقط گزارش. اصلاح رفتاری به نسخه‌ی بعد موکول است تا اثر
+	 * این نسخه روی میزبان قابل اندازه‌گیری باشد.
+	 *
+	 * @return array{ok:bool,before:string,after:string,affected:int,reason:string}
+	 */
 	protected static function fallback_to_legacy( $session_id, $reason ) {
-		STI_GS_Session::update( $session_id, array(
+		global $wpdb;
+		$table = STI_GS_DB::pipeline_items_table();
+
+		$before = (string) $wpdb->get_var( $wpdb->prepare(
+			"SELECT chain_mode FROM {$table} WHERE id = %d", (int) $session_id
+		) );
+
+		$affected = STI_GS_Session::update( $session_id, array(
 			'chain_mode'   => STI_GS_Node::MODE_LEGACY,
 			'stage'        => 'chain_engine',
 			'error_reason' => null,
 		) );
-		STI_GS_Event::log( $session_id, 'chain_engine', 'ok',
-			'زنجیره فعال نشد؛ مسیر قدیمی ادامه می‌دهد: ' . $reason );
+
+		/* read-back: مقدار واقعاً ذخیره‌شده، نه مقداری که فرستادیم. */
+		$after = (string) $wpdb->get_var( $wpdb->prepare(
+			"SELECT chain_mode FROM {$table} WHERE id = %d", (int) $session_id
+		) );
+
+		$ok = ( STI_GS_Node::MODE_LEGACY === $after );
+
+		STI_GS_Event::log( $session_id, 'chain_engine', $ok ? 'ok' : 'warning',
+			'زنجیره فعال نشد؛ مسیر قدیمی ادامه می‌دهد: ' . $reason
+			. ( $ok ? '' : ' — ⚠️ ثبت مسیر ناموفق بود (chain_mode=' . ( '' === $after ? 'NULL' : $after ) . ').' ) );
+
+		if ( class_exists( 'STI_Logger' ) ) {
+			STI_Logger::info( sprintf(
+				'AUTO_WORKER_ROUTE session=#%d from=%s to=%s affected=%d readback=%s result=%s reason=%s',
+				(int) $session_id,
+				'' === $before ? 'NULL' : $before,
+				STI_GS_Node::MODE_LEGACY,
+				(int) $affected,
+				'' === $after ? 'NULL' : $after,
+				$ok ? 'PERSISTED' : 'LOST',
+				$reason
+			) );
+		}
+
+		return array(
+			'ok'       => $ok,
+			'before'   => '' === $before ? 'NULL' : $before,
+			'after'    => '' === $after ? 'NULL' : $after,
+			'affected' => (int) $affected,
+			'reason'   => $reason,
+		);
 	}
 
 	protected static function load_message( $message_pk ) {

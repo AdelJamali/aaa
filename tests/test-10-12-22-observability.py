@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""10.12.21 — WORKER STARVATION fix. Static verification.
+"""10.12.22 — WORKER STARVATION fix. Static verification.
 
 PROVEN DEFECT (code-level, before this patch)
 ---------------------------------------------
@@ -61,8 +61,8 @@ session = read('includes/golden-scan/class-gs-session.php')
 main = read('sanil-telegram-importer.php')
 
 # ---------- version ----------
-check('V1 header 10.12.21', 'Version:           10.12.21' in main)
-check('V2 STI_VERSION 10.12.21', "define( 'STI_VERSION', '10.12.21' )" in main)
+check('V1 header 10.12.22', 'Version:           10.12.22' in main)
+check('V2 STI_VERSION 10.12.22', "define( 'STI_VERSION', '10.12.22' )" in main)
 
 # ---------- S: the defect still exists upstream (regression anchors) ----------
 # These assert the ENVIRONMENT the fix must survive. If chain-engine ever
@@ -126,11 +126,11 @@ check('C2 call site invokes defer_waiting', 'self::defer_waiting( (int) $session
 # call site must sit inside tick_inner's foreach, before the report increment
 ti = worker.find('protected static function tick_inner()')
 call = worker.find("if ( 'waiting' === $outcome || 'skipped' === $outcome ) {", ti)
-rep = worker.find("if ( isset( $report[ $outcome ] ) ) {", ti)
+rep = worker.find("if ( ! isset( $report[ $outcome ] ) ) {", ti)  # 10.12.22: guard inverted
 check('C3 call site is inside tick_inner before report increment',
       ti > 0 and ti < call < rep)
 
-# ---------- O: 10.12.21 observed-gap + skip-ahead ----------
+# ---------- O: 10.12.22 observed-gap + skip-ahead ----------
 # 10.12.19 scaled the backoff off worker_interval (300s). The host actually
 # ticks every 1460-1788s, so a 360s deferral expired before the next tick and
 # #68 was re-picked at 19:46 and 20:10. Backoff must use the OBSERVED gap.
@@ -168,7 +168,7 @@ audit = read('includes/golden-scan/class-gs-chain-audit.php')
 check('A1 audit log filter includes AUTO_WORKER_DEFER',
       "message LIKE '%AUTO_WORKER_DEFER%'" in audit)
 
-# ---------- G: 10.12.21 gap must be read from the CRON GATE ----------
+# ---------- G: 10.12.22 gap must be read from the CRON GATE ----------
 # 10.12.20 read the previous tick from STATS_KEY.'_last', but that option is
 # written AFTER the block, so it never held the previous tick's time.
 # OBSERVED_GAP stayed 0 and the log still said interval=300s three days later.
@@ -244,10 +244,93 @@ for ln, raw in enumerate(worker.split('\n'), 1):
 check('S7 no unparenthesized nested ternary (per line)', not nested)
 check('S8 no BOM / CRLF', not worker.startswith('\ufeff') and '\r\n' not in worker)
 
+# ══════════════════════════════════════════════════════════════════
+# 10.12.22 — OBSERVABILITY (no behaviour change)
+# ══════════════════════════════════════════════════════════════════
+ce = open(PLUGIN / 'includes/golden-scan/class-gs-chain-engine.php', encoding='utf-8').read()
+au = open(PLUGIN / 'includes/golden-scan/class-gs-chain-audit.php', encoding='utf-8').read()
+wv = open(PLUGIN / 'admin/views/golden-scan/worker.php', encoding='utf-8').read()
+
+# --- R: fallback_to_legacy must verify its own write -------------
+fb = re.search(r'protected static function fallback_to_legacy.*?\n\t\}', ce, re.S)
+check('R1 fallback_to_legacy exists', bool(fb))
+fbb = fb.group(0) if fb else ''
+check('R2 reads chain_mode BEFORE update', fbb.index('SELECT chain_mode') < fbb.index('STI_GS_Session::update')
+      if ('SELECT chain_mode' in fbb and 'STI_GS_Session::update' in fbb) else False)
+check('R3 captures affected rows', '$affected = STI_GS_Session::update' in fbb)
+check('R4 read-back after update', fbb.count('SELECT chain_mode') >= 2)
+check('R5 ok flag compares read-back to legacy', "$ok = ( STI_GS_Node::MODE_LEGACY === $after )" in fbb)
+check('R6 emits AUTO_WORKER_ROUTE', 'AUTO_WORKER_ROUTE' in fbb)
+check('R7 logs PERSISTED/LOST verdict', 'PERSISTED' in fbb and 'LOST' in fbb)
+check('R8 returns structured array', "'affected' =>" in fbb and "'ok'" in fbb)
+check('R9 still writes MODE_LEGACY (behaviour unchanged)', 'MODE_LEGACY' in fbb)
+check('R10 event level degrades on failure', "$ok ? 'ok' : 'warning'" in fbb)
+
+# --- E: every no_progress return must carry outcome+reason -------
+nps = [m.start() for m in re.finditer(r"'no_progress'\s*=>\s*true", ce)]
+check('E1 no_progress sites still present', len(nps) >= 10)
+_i0 = ce.index('public static function init(')
+# Bound at the NEXT method, not a fixed window: init() is 5354 chars and a
+# 9000-char slice swallowed the following method's returns too.
+_i1 = ce.index('public static function ', _i0 + 30)
+init = ce[_i0:_i1]
+# Split on the marker itself: each no_progress return is followed, within the
+# same array literal, by its own outcome/reason pair before the next return.
+init_chunks = init.split("'no_progress' => true")
+init_np = init_chunks[1:]  # text following each marker
+check('E2 init() has 5 no_progress returns', len(init_np) == 5)
+check('E3 all init returns carry outcome',
+      all("'outcome'" in c.split('return')[0] for c in init_np))
+check('E4 all init returns carry reason',
+      all("'reason'" in c.split('return')[0] for c in init_np))
+_reasons = [re.search(r"'reason'\s*=>\s*'([^']+)", c.split('return')[0]) for c in init_np]
+check('E5 reason values are distinct',
+      len({m.group(1) for m in _reasons if m}) >= 4)
+check('E6 route_changed keyed off persistence', "$route['ok'] ? 'route_changed' : 'route_change_failed'" in ce)
+
+# --- D: worker plumbing, behaviour must be identical -------------
+check('D1 last_detail property declared', 'protected static $last_detail' in worker)
+check('D2 outcome mapping unchanged', "$outcome = ! empty( $result['waiting'] ) ? 'waiting' : 'skipped';" in worker)
+check('D3 detail captured next to mapping', 'self::$last_detail = array(' in worker)
+check('D4 detail reset after use', 'self::$last_detail = null;' in worker)
+check('D5 STAGE log carries outcome=', 'outcome=%s reason=%s' in worker)
+
+# --- C: counters must not drop anything --------------------------
+check('C10 unknown outcomes no longer dropped', 'if ( ! isset( $report[ $outcome ] ) ) {' in worker)
+check('C11 old silent-drop guard is gone', 'if ( isset( $report[ $outcome ] ) ) {' not in worker)
+check('C12 throttled counted separately', "$report['throttled']" in worker)
+check('C13 download capacity separate', "$report['capacity_download']" in worker)
+check('C14 product capacity separate', "$report['capacity_product']" in worker)
+check('C15 waiting still incremented (panel compat)', worker.count("$report['waiting']++") == 3)
+check('C16 by_reason breakdown recorded', "'by_reason:'" in worker)
+rec = re.search(r'protected static function record.*?\n\t\}', worker, re.S).group(0)
+check('C17 record() persists extra keys', 'foreach ( $report as $k => $v )' in rec)
+check('C18 record() does not double-count the four', "in_array( $k, array( 'advanced', 'waiting', 'failed', 'completed' ), true )" in rec)
+
+# --- P: evidence must reach the panel ----------------------------
+check('P1 audit filter allows ROUTE', 'AUTO_WORKER_ROUTE' in au)
+check('P2 audit filter allows WAIT_DEADLINE', 'AUTO_WORKER_WAIT_DEADLINE' in au)
+check('P3 panel renders breakdown', 'تفکیک دلیل' in wv)
+check('P4 panel hides empty breakdown', 'if ( $gs_rows )' in wv)
+check('P5 panel escapes labels', 'esc_html( $gs_lbl )' in wv)
+
+# --- N: nothing behavioural changed ------------------------------
+check('N1 WAITING set unchanged', "const WAITING = array( 'WAITING_BOT', 'ERROR_BOT_TIMEOUT', 'CHAIN_WAITING' )" in worker)
+check('N2 SCANNED not added to WAITING', "'SCANNED'" not in worker.split('const WAITING')[1].split(');')[0])
+check('N3 retry limit untouched', 'retry_limit()' in worker)
+check('N4 attempts not touched by new code', 'last_detail' in worker and "$report[ $key ]++" in worker)
+check('N5 chain-engine braces balanced', ce.count('{') == ce.count('}'))
+# N6: this file has parens inside Persian prose comments, so raw counting is
+# meaningless (it was already unbalanced before 10.12.22). What matters is
+# that every function we touched still parses as balanced in isolation.
+_fb = re.search(r'protected static function fallback_to_legacy.*?\n\t\}', ce, re.S).group(0)
+check('N6 touched function parens balanced', _fb.count('(') == _fb.count(')'))
+check('N7 no BOM/CRLF in chain-engine', not ce.startswith('\ufeff') and '\r\n' not in ce)
+
 print()
 if fails:
-    print('10.12.21 STARVATION SUITE: %d FAILED' % len(fails))
+    print('10.12.22 OBSERVABILITY SUITE: %d FAILED' % len(fails))
     for f in fails:
         print('  -', f)
     sys.exit(1)
-print('10.12.21 STARVATION SUITE: ALL PASS')
+print('10.12.22 OBSERVABILITY SUITE: ALL PASS')

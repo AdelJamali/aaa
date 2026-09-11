@@ -1237,6 +1237,8 @@ class STI_GS_Chain_Audit {
 			    OR message LIKE '%AUTO_WORKER_SELFHEAL%' OR message LIKE '%LINE_START_FAILED%'
 			    OR message LIKE '%LINE_PERSISTENCE%' OR message LIKE '%CRON_GATE%'
 			    OR message LIKE '%AUTO_WORKER_DEFER%'
+			    OR message LIKE '%AUTO_WORKER_ROUTE%'
+			    OR message LIKE '%AUTO_WORKER_WAIT_DEADLINE%'
 			 ORDER BY id DESC LIMIT 40", ARRAY_A );
 		}
 
