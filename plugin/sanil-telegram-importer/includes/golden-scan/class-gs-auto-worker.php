@@ -128,6 +128,26 @@ class STI_GS_Auto_Worker {
 	/** کف مطلق مهلت خواب (ثانیه) — حتی اگر تیک خیلی کوتاه باشد. */
 	const WAITING_BACKOFF_MIN = 60;
 
+	/**
+	 * ۱۰.۱۲.۲۱ — سقف زمانی که یک Session اجازه دارد «منتظر» بماند.
+	 *
+	 * ═══ چرا لازم شد ═══
+	 *
+	 * در کد یک کامنت بود که وعده می‌داد «انتظارِ بی‌پایان هم یک بن‌بست
+	 * است… بعد از پایان مهلت به کلیک دوباره برمی‌گردیم» — ولی **هیچ
+	 * کدی برای آن نوشته نشده بود**. فقط توضیح یتیم مانده بود.
+	 *
+	 * نتیجه روی میزبان: Session #68 از ۸ سپتامبر تا ۱۱ سپتامبر
+	 * (بیش از ۷۲ ساعت) در CHAIN_WAITING ماند با `attempts=0`. چون
+	 * انتظار خطا شمرده نمی‌شود، شمارنده‌ی تلاش بالا نمی‌رفت و هیچ
+	 * سازوکاری آن را از حالت انتظار بیرون نمی‌آورد.
+	 *
+	 * حالا اگر Session بیش از این مدت در حالت انتظار بماند و هیچ
+	 * پیشرفتی نکرده باشد، به NEEDS_REVIEW می‌رود تا آدم تصمیم بگیرد —
+	 * نه حذف، نه تلاش بی‌پایان.
+	 */
+	const WAITING_DEADLINE = 12 * HOUR_IN_SECONDS;
+
 	/** کلید ذخیره‌ی فاصله‌ی واقعیِ مشاهده‌شده بین دو تیک. */
 	const OBSERVED_GAP_KEY = 'sti_gs_worker_observed_gap';
 
@@ -446,24 +466,40 @@ class STI_GS_Auto_Worker {
 		 * نوشتنِ جدا: دو تیک هم‌زمان دیگر نمی‌توانند هر دو رد شوند.
 		 * (LAST برای نمایش در «وضعیت» همچنان نوشته می‌شود.)
 		 */
+		/*
+		 * ۱۰.۱۲.۲۱ — مقدار gate را **پیش از** pass() برمی‌داریم.
+		 *
+		 * `Cron_Gate::pass()` با یک CAS اتمیک مقدار را به «الان» تغییر
+		 * می‌دهد. اگر بعد از آن بخوانیم، همیشه صفر ثانیه فاصله می‌بینیم.
+		 */
+		$gate_prev = (int) get_option( 'sti_gs_gate_auto_worker', 0 );
+
 		if ( class_exists( 'STI_GS_Cron_Gate' )
 			&& ! STI_GS_Cron_Gate::pass( 'auto_worker', self::interval_seconds() ) ) {
 			return;
 		}
 
 		/*
-		 * ۱۰.۱۲.۲۰ — فاصله‌ی **واقعی** بین دو تیک را ثبت می‌کنیم.
+		 * ۱۰.۱۲.۲۱ — فاصله‌ی **واقعی** بین دو تیک را ثبت می‌کنیم.
 		 *
 		 * `worker_interval` فقط یک آرزوست: WP-Cron با بازدید سایت اجرا
-		 * می‌شود، نه با ساعت سیستم. در میزبان واقعی فاصله‌ی مشاهده‌شده
-		 * ۱۴۶۰ تا ۱۷۸۸ ثانیه بود درحالی‌که تنظیمات ۳۰۰ می‌گفت — تقریباً
-		 * پنج برابر. مهلت‌های ۱۰.۱۲.۱۹ که بر پایه‌ی ۳۰۰ حساب می‌شدند
-		 * پیش از رسیدن تیک بعدی منقضی می‌شدند و همان Session دوباره
-		 * انتخاب می‌شد (شاهد: ids=[68] در ۱۹:۴۶ و ۲۰:۱۰).
+		 * می‌شود، نه با ساعت سیستم. فاصله‌های واقعی مشاهده‌شده روی
+		 * میزبان (۱۱ سپتامبر): ۹۱ دقیقه، ۲۶ دقیقه، ۳۱ دقیقه — درحالی‌که
+		 * تنظیمات ۵ دقیقه می‌گفت.
+		 *
+		 * ═══ چرا ۱۰.۱۲.۲۰ این را ثبت نکرد ═══
+		 *
+		 * آن نسخه فاصله را از `STATS_KEY . '_last'` می‌خواند، ولی آن
+		 * option **بعد از** همین بلوک نوشته می‌شد و در عمل هرگز مقدار
+		 * تیکِ قبلی را نداشت. نتیجه: OBSERVED_GAP هیچ‌وقت پر نشد و
+		 * لاگ همچنان `interval=300s` می‌گفت.
+		 *
+		 * منبع درست خودِ Cron Gate است: `sti_gs_gate_auto_worker`
+		 * دقیقاً timestamp تیک قبلی را نگه می‌دارد و همین چند خط بالاتر
+		 * توسط `pass()` با CAS اتمیک نوشته شده است.
 		 */
-		$prev_tick = (int) get_option( self::STATS_KEY . '_last', 0 );
-		if ( $prev_tick > 0 ) {
-			$gap = time() - $prev_tick;
+		if ( $gate_prev > 0 ) {
+			$gap = time() - $gate_prev;
 			/* بازه‌ی معقول؛ مقدار پرت (ری‌استارت/خاموشی طولانی) کنار می‌رود. */
 			if ( $gap > 0 && $gap <= 6 * HOUR_IN_SECONDS ) {
 				$prev_avg = (int) get_option( self::OBSERVED_GAP_KEY, 0 );
@@ -808,8 +844,37 @@ class STI_GS_Auto_Worker {
 		 * بود که ربات فایلشان را همان موقع فرستاده و Session دیگری برداشته
 		 * بود؛ Poll دوباره هرگز چیزی پیدا نمی‌کرد.
 		 *
-		 * بعد از پایان مهلت، به کلیک دوباره برمی‌گردیم.
+		 * ۱۰.۱۲.۲۱ — این کامنت از نسخه‌های قبل اینجا بود ولی **کدش
+		 * هرگز نوشته نشده بود**. شاهد میزبان: Session #68 بیش از ۷۲
+		 * ساعت (۸ تا ۱۱ سپتامبر) در CHAIN_WAITING با attempts=0 ماند.
+		 * حالا واقعاً پیاده شده است.
 		 */
+		if ( in_array( $state, self::WAITING, true ) ) {
+			$updated = isset( $session['updated_at'] ) ? strtotime( (string) $session['updated_at'] ) : 0;
+			if ( $updated > 0 && ( time() - $updated ) > self::WAITING_DEADLINE ) {
+				$hours = (int) round( ( time() - $updated ) / HOUR_IN_SECONDS );
+				STI_GS_Session::update( $session_id, array(
+					'state'        => 'NEEDS_REVIEW',
+					'stage'        => 'auto_worker',
+					'error_reason' => mb_substr( sprintf(
+						'انتظار بی‌پایان: %d ساعت در وضعیت «%s» بدون پیشرفت.',
+						$hours, $state
+					), 0, 250 ),
+				) );
+				STI_GS_Event::log( $session_id, 'auto_worker', 'warning', sprintf(
+					'پس از %d ساعت انتظار در «%s» هیچ پاسخی نیامد — برای بازبینی دستی کنار گذاشته شد.',
+					$hours, $state
+				) );
+				if ( class_exists( 'STI_Logger' ) ) {
+					STI_Logger::info( sprintf(
+						'AUTO_WORKER_WAIT_DEADLINE session=#%d state=%s waited=%dh limit=%dh action=NEEDS_REVIEW',
+						$session_id, $state, $hours, (int) ( self::WAITING_DEADLINE / HOUR_IN_SECONDS )
+					) );
+				}
+				return 'failed';
+			}
+		}
+
 		/**
 		 * بازیابی از مرگ وسط راه.
 		 *

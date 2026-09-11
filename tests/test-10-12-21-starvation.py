@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""10.12.20 — WORKER STARVATION fix. Static verification.
+"""10.12.21 — WORKER STARVATION fix. Static verification.
 
 PROVEN DEFECT (code-level, before this patch)
 ---------------------------------------------
@@ -61,8 +61,8 @@ session = read('includes/golden-scan/class-gs-session.php')
 main = read('sanil-telegram-importer.php')
 
 # ---------- version ----------
-check('V1 header 10.12.20', 'Version:           10.12.20' in main)
-check('V2 STI_VERSION 10.12.20', "define( 'STI_VERSION', '10.12.20' )" in main)
+check('V1 header 10.12.21', 'Version:           10.12.21' in main)
+check('V2 STI_VERSION 10.12.21', "define( 'STI_VERSION', '10.12.21' )" in main)
 
 # ---------- S: the defect still exists upstream (regression anchors) ----------
 # These assert the ENVIRONMENT the fix must survive. If chain-engine ever
@@ -130,7 +130,7 @@ rep = worker.find("if ( isset( $report[ $outcome ] ) ) {", ti)
 check('C3 call site is inside tick_inner before report increment',
       ti > 0 and ti < call < rep)
 
-# ---------- O: 10.12.20 observed-gap + skip-ahead ----------
+# ---------- O: 10.12.21 observed-gap + skip-ahead ----------
 # 10.12.19 scaled the backoff off worker_interval (300s). The host actually
 # ticks every 1460-1788s, so a 360s deferral expired before the next tick and
 # #68 was re-picked at 19:46 and 20:10. Backoff must use the OBSERVED gap.
@@ -167,6 +167,38 @@ check('O12 bot_used rule intact',
 audit = read('includes/golden-scan/class-gs-chain-audit.php')
 check('A1 audit log filter includes AUTO_WORKER_DEFER',
       "message LIKE '%AUTO_WORKER_DEFER%'" in audit)
+
+# ---------- G: 10.12.21 gap must be read from the CRON GATE ----------
+# 10.12.20 read the previous tick from STATS_KEY.'_last', but that option is
+# written AFTER the block, so it never held the previous tick's time.
+# OBSERVED_GAP stayed 0 and the log still said interval=300s three days later.
+# The real previous-tick timestamp lives in the Cron Gate row.
+check('G1 gap read from the cron gate option',
+      "get_option( 'sti_gs_gate_auto_worker', 0 )" in worker)
+check('G2 gate value captured BEFORE pass() mutates it',
+      worker.find("$gate_prev = (int) get_option( 'sti_gs_gate_auto_worker'")
+      < worker.find("STI_GS_Cron_Gate::pass( 'auto_worker'"))
+check('G3 no longer derives the gap from STATS_KEY _last',
+      "$prev_tick = (int) get_option( self::STATS_KEY" not in worker)
+check('G4 gap still bounded to 6h', '$gap <= 6 * HOUR_IN_SECONDS' in worker)
+
+# ---------- W: waiting deadline (the comment that had no code) ----------
+# A comment promised "endless waiting is a dead end ... after the deadline we
+# go back to clicking" but no code implemented it. Host proof: #68 sat in
+# CHAIN_WAITING with attempts=0 from Sep 8 to Sep 11 (>72h).
+check('W1 WAITING_DEADLINE const exists', 'const WAITING_DEADLINE = 12 * HOUR_IN_SECONDS;' in worker)
+ao = worker[worker.find('protected static function advance_one('):]
+ao = ao[:ao.find('protected static function ', 40)]
+check('W2 deadline enforced inside advance_one',
+      'in_array( $state, self::WAITING, true )' in ao and 'self::WAITING_DEADLINE' in ao)
+check('W3 uses updated_at as the clock', "strtotime( (string) $session['updated_at'] )" in ao)
+check('W4 routes to NEEDS_REVIEW, never deletes',
+      "'state'        => 'NEEDS_REVIEW'," in ao)
+check('W5 NEEDS_REVIEW is terminal so it stops being re-picked',
+      "'NEEDS_REVIEW'" in worker[worker.find('const TERMINAL'):worker.find('const TERMINAL')+200])
+check('W6 logs the deadline hit', 'AUTO_WORKER_WAIT_DEADLINE' in ao)
+check('W7 deadline check runs before the stage machinery',
+      ao.find('self::WAITING_DEADLINE') < ao.find('$rewind = array('))
 
 # ---------- N: nothing else changed ----------
 check('N1 retry limit untouched', 'const RETRY_AFTER_GIVEUP = 6 * HOUR_IN_SECONDS;' in worker)
@@ -214,8 +246,8 @@ check('S8 no BOM / CRLF', not worker.startswith('\ufeff') and '\r\n' not in work
 
 print()
 if fails:
-    print('10.12.20 STARVATION SUITE: %d FAILED' % len(fails))
+    print('10.12.21 STARVATION SUITE: %d FAILED' % len(fails))
     for f in fails:
         print('  -', f)
     sys.exit(1)
-print('10.12.20 STARVATION SUITE: ALL PASS')
+print('10.12.21 STARVATION SUITE: ALL PASS')

@@ -26,8 +26,8 @@ mt     = (ROOT / 'includes' / 'class-sti-mtproto.php').read_text(encoding='utf-8
 mtcode = strip_code(mt)
 
 # version
-check('V1 header 10.12.14', 'Version:           10.12.20' in main)
-check('V2 STI_VERSION 10.12.14', "define( 'STI_VERSION', '10.12.20' )" in main)
+check('V1 header 10.12.14', 'Version:           10.12.21' in main)
+check('V2 STI_VERSION 10.12.14', "define( 'STI_VERSION', '10.12.21' )" in main)
 
 # FIX #1 — escapeshellarg polyfill (failure: Call to undefined function escapeshellarg)
 check('F1a polyfill present', "if ( ! function_exists( 'escapeshellarg' ) )" in mtcode)
