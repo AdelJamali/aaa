@@ -6,7 +6,7 @@
 سلام ادمین
 G
 گلدن اسکن
-GOLDEN IMPORTER v10.12.21
+GOLDEN IMPORTER v10.12.22
 در حال اجرا
 🌓
 📦 صف انتشار
@@ -33,25 +33,27 @@ Review
 ۱. آیا #gs-wt-toggle در DOM وجود دارد؟ → YES disabled=false data-on="0"
 ۲. آیا #gs-wt-run در DOM وجود دارد؟ → YES disabled=false
 ۳. آیا STI در زمان اجرای script وجود دارد؟ → YES typeof STI = object (at load)
-۴. آیا STI.nonce مقدار دارد؟ → YES 28751501f8
+۴. آیا STI.nonce مقدار دارد؟ → YES 95d6d023f5
 مکمل: STI.ajaxUrl / window.ajaxurl → YES https://goldenfile.ir/wp-admin/admin-ajax.php / /wp-admin/admin-ajax.php
 ۵. آیا Script مربوط به Watcher اجرا شده است؟ → YES executed up to line 771 (last REG there)
-۶. آیا bind() واقعاً listener ثبت کرده؟ → YES registered @06:11:26.485 — type=click
+۶. آیا bind() واقعاً listener ثبت کرده؟ → YES registered @23:14:49.575 — type=click
 ردیای زنده (REG / CLICK / FETCH / RESP):
-[06:11:26.485] REG gs-wt-toggle — type=click
-[06:11:26.485] REG gs-wt-run — type=click
-[06:11:26.485] REG gs-wd-run — type=click
-[06:11:26.485] REG gs-flag — type=change
-[06:11:26.485] REG gs-flag — type=change
-[06:11:26.485] REG gs-flag — type=change
-[06:11:26.485] REG gs-flag — type=change
-[06:11:26.485] REG gs-flag — type=change
-[06:11:26.485] REG gs-flag — type=change
-[06:11:26.485] REG gs-flag — type=change
-[06:11:26.810] REG gs-wt-toggle — type=click [diag-probe] [capture]
-[06:11:26.811] REG gs-wt-run — type=click [diag-probe] [capture]
-[06:11:32.120] FETCH https://goldenfile.ir/wp-admin/admin-ajax.php — method=POST action=sti_gs_chain_audit body=action=sti_gs_chain_audit&nonce=28751501f8
-[06:11:34.677] RESP 200 application/json; charset=UTF-8 — json=yes success=true raw={"success":true,"data":{"snapshot":{"watcher_enabled_option":{"raw":"0","bool":false},"php_version":"8.4.23","memory_limit":"280M","memory_usage_bytes":103729560,"memory_peak_bytes":103768416,"wp_version":"7.1","woocommerce":true,"classes":{"STI_GS_Channel_Watcher":true,"STI_GS_Session":true,"STI_GS_Test_Wizard":true,"STI_GS_Auto_Worker":true,"STI_GS_Line":true,"STI_GS_Publish_Queue":true}},"db":{"profiles_total":8,"profile_items_total":5938,"profile_items_by_status":{"available":5810,"queued":1 ...(+ 71124 chars)
+[23:14:49.575] REG gs-wt-toggle — type=click
+[23:14:49.575] REG gs-wt-run — type=click
+[23:14:49.575] REG gs-wd-run — type=click
+[23:14:49.575] REG gs-flag — type=change
+[23:14:49.575] REG gs-flag — type=change
+[23:14:49.575] REG gs-flag — type=change
+[23:14:49.575] REG gs-flag — type=change
+[23:14:49.575] REG gs-flag — type=change
+[23:14:49.575] REG gs-flag — type=change
+[23:14:49.575] REG gs-flag — type=change
+[23:14:50.068] REG gs-wt-toggle — type=click [diag-probe] [capture]
+[23:14:50.069] REG gs-wt-run — type=click [diag-probe] [capture]
+[23:14:57.367] FETCH https://goldenfile.ir/wp-admin/admin-ajax.php — method=POST action=sti_gs_chain_audit body=action=sti_gs_chain_audit&nonce=95d6d023f5
+[23:15:02.161] RESP 200 application/json; charset=UTF-8 — json=yes success=true raw={"success":true,"data":{"snapshot":{"watcher_enabled_option":{"raw":"0","bool":false},"php_version":"8.4.23","memory_limit":"280M","memory_usage_bytes":103752144,"memory_peak_bytes":103791000,"wp_version":"7.1","woocommerce":true,"classes":{"STI_GS_Channel_Watcher":true,"STI_GS_Session":true,"STI_GS_Test_Wizard":true,"STI_GS_Auto_Worker":true,"STI_GS_Line":true,"STI_GS_Publish_Queue":true}},"db":{"profiles_total":8,"profile_items_total":5938,"profile_items_by_status":{"available":5810,"queued":1 ...(+ 71092 chars)
+[23:15:09.581] FETCH https://goldenfile.ir/wp-admin/admin-ajax.php — method=POST action=sti_gs_worker_stats body=action=sti_gs_worker_stats&nonce=95d6d023f5
+[23:15:11.440] RESP 200 application/json; charset=UTF-8 — json=yes success=true raw={"success":true,"data":{"enabled":true,"interval":300,"batch":1,"batch_max":3,"pending":91,"stuck":17,"review":2,"today":{"day":"1405-06-20","advanced":3,"waiting":20,"failed":1,"completed":0,"ticks":21,"last":"2026-09-11 23:10:39"},"failures":{"items":[{"session_id":67,"state":"BUTTON_FOUND","stage":"Execute Action","message":"\u0627\u062f\u0627\u0645\u0647 \u0628\u0627 backoff \u0628\u0644\u0646\u062f: file_get_contents(\/sys\/fs\/cgroup\/memory.max): Failed to open stream: No such file or dir ...(+ 6185 chars)
 FIRST BROKEN POINT:
 (none yet) — NO BROKEN POINT DETECTED; awaiting click
 
@@ -81,22 +83,22 @@ eligible=5810, no_category=0, candidates=1, NO_ITEM=1, EXISTING_SESSION=0 — ا
 FIRST HARD BREAK
 D — Watcher State
 Evidence:
-option='0', is_enabled=false, stats.enabled=false, cron_next=2026-09-11 03:02:34, last_run=2026-09-05 21:43:43, line_state=RUNNING, safe_mode=false, halted=false
+option='0', is_enabled=false, stats.enabled=false, cron_next=2026-09-11 20:02:34, last_run=2026-09-05 21:43:43, line_state=RUNNING, safe_mode=false, halted=false
 Chain	Runtime Result	Evidence
 A · Profile	PASS	profiles_total=8, with_default_category=8
 B · Profile Item	PASS	total=5938, available=5810, by_status={"available":5810,"queued":128}
 C1 · Message	PASS	messages_total=14592
 C · Selection	PASS	eligible(available+category)=5810, no_category_excluded=0
-D · Watcher State	FAIL	option='0', is_enabled=false, stats.enabled=false, cron_next=2026-09-11 03:02:34, last_run=2026-09-05 21:43:43, line_state=RUNNING, safe_mode=false, halted=false
+D · Watcher State	FAIL	option='0', is_enabled=false, stats.enabled=false, cron_next=2026-09-11 20:02:34, last_run=2026-09-05 21:43:43, line_state=RUNNING, safe_mode=false, halted=false
 D2 · Watcher UI	PASS	Watcher card=FOUND · #gs-wt-toggle=FOUND · #gs-wt-run=FOUND · STI=defined (at DOMContentLoaded)
 D3 · AJAX Registration	FAIL	sti_gs_watcher_toggle: YES → STI_GS_Test_Wizard::ajax_watcher_toggle ✓  sti_gs_watcher_run: YES → STI_GS_Test_Wizard::ajax_watcher_run ✓
 E0 · create_sessions path	PASS	tick() L149 [gates L150/L159/safe/halt] → run() L179 [gates L189/L201/L208] → create_sessions() L369 [selection L405-420, caller→create_from_profile_item L422] · UI path: ajax_watcher_run L86 → run() مستقیم L91 (بای‌پس از gateهای tick)
 — · Would Create	0	candidates=1, NO_ITEM=1, EXISTING_SESSION=0, WOULD_CREATE=0 · THIS ROUND BLOCKED AT: BACKLOG_LIMIT (run L189)
 E · Session	FAIL	sessions_total=162, orphan_candidates(NO_ITEM)=1, would_create=0
-F · Pipeline	PASS	sessions_total=162, terminal=53, with_product=0, orphan_24h_no_queue=0
-F2 · Worker pickup	PASS	eligible=100, locked=0, retry_wait=2, terminal=53, active=0/1, worker_enabled=true, line=RUNNING, cron_next=2026-09-11 02:45:34
+F · Pipeline	PASS	sessions_total=162, terminal=54, with_product=0, orphan_24h_no_queue=0
+F2 · Worker pickup	PASS	eligible=100, locked=0, retry_wait=0, terminal=54, active=0/1, worker_enabled=true, line=RUNNING, cron_next=2026-09-11 19:45:34
 G · Telegram	PASS	mtproto_configured=true, channels=1, running_scan=0, budget_left='n/a', last_scan=2026-09-04 20:19:03
-H · Fiber / mmap	PASS	memory_limit=280M, peak=103932864 bytes (35.4%), recent_fiber_logs=1672 — logs evidence-only (classification rule: see fiber_memory.classification_note)
+H · Fiber / mmap	PASS	memory_limit=280M, peak=103954640 bytes (35.4%), recent_fiber_logs=1821 — logs evidence-only (classification rule: see fiber_memory.classification_note)
 PART 1 — Runtime Snapshot
 PART 2 — Real Database Read
 PART 3 — Real Watcher State (option / is_enabled / stats)
@@ -105,7 +107,7 @@ option_bool	false
 is_enabled	false
 stats_enabled	false
 state_inconsistency	false
-cron_next_tick_ts	1789095754
+cron_next_tick_ts	1789156954
 last_run_ts	1788644623
 gate_last_ts	1788644623
 safe_mode	false
@@ -118,17 +120,17 @@ interval_min	30
 batch	20
 daily_cap	200
 created_today	0
-backlog	109
+backlog	108
 backlog_limit	100
 ready	5810
 no_category	0
 note	109 Session ناتمام در صف است (سقف 100) — ورودی تازه گرفته نشد.
 last_run	2026-09-06 08:02:30
-next_tick	1789095754
+next_tick	1789156954
 interval_sec	1800
 batch	20
 daily_cap	200
-backlog	109
+backlog	108
 backlog_limit	100
 created_today	0
 PART 5 — AJAX Registration (runtime hooks)
@@ -140,7 +142,7 @@ file	wp-cron (core)
 line	—
 exists	true
 caller	add_action( HOOK, [ STI_GS_Channel_Watcher::tick ] ) @ includes/golden-scan/class-gs-channel-watcher.php L47 (داخل init L46)
-condition	event scheduled = 2026-09-11 03:02:34
+condition	event scheduled = 2026-09-11 20:02:34
 [1] 
 step	STI_GS_Channel_Watcher::tick()
 file	includes/golden-scan/class-gs-channel-watcher.php
@@ -154,7 +156,7 @@ file	includes/golden-scan/class-gs-channel-watcher.php
 line	179
 exists	true
 caller	tick() @ L171
-condition	gates: backlog 109 >= limit 100 (L189) | daily_cap left < 1 (L201, created_today=0/200) | room < 1 (L208, batch=20)
+condition	gates: backlog 108 >= limit 100 (L189) | daily_cap left < 1 (L201, created_today=0/200) | room < 1 (L208, batch=20)
 [3] 
 step	scan_new_messages()
 file	includes/golden-scan/class-gs-channel-watcher.php
@@ -187,13 +189,13 @@ condition	check_ajax(L87) → STI_GS_Channel_Watcher::run() مستقیم @ L91 �
 note	run() مستقیماً tick() را صدا نمی‌زند — مسیر معکوس است: tick() در L171 run() را صدا می‌زند. دکمهٔ Run از طریق AJAX مستقیم به run() می‌رسد.
 PART 8 — create_sessions Read-Only Simulation
 round_gates	
-backlog	109
+backlog	108
 backlog_limit	100
 daily_cap	200
 created_today	0
 left	200
 batch	20
-room	-9
+room	-8
 room_effective	1
 blocked_at	BACKLOG_LIMIT (run L189)
 candidate_items	1
@@ -415,19 +417,19 @@ worker_cron_scheduled — کران Worker schedule شده	PASS
 watcher_cron_scheduled — کران Watcher schedule شده	PASS
 db_value(raw)="RUNNING"
 state()(logical)="RUNNING"
-cron_gate_rows={"sti_gs_gate_watcher":"1788644623","sti_gs_gate_auto_worker":"1789094288"}
-cron_scheduled={"worker":{"next_ts":1789094734,"in_sec":239},"watcher":{"next_ts":1789095754,"in_sec":1259}}
+cron_gate_rows={"sti_gs_gate_watcher":"1788644623","sti_gs_gate_auto_worker":"1789155621"}
+cron_scheduled={"worker":{"next_ts":1789155934,"in_sec":33},"watcher":{"next_ts":1789156954,"in_sec":1053}}
 recent persistence logs
 📋 LINE PERSISTENCE EVIDENCE (قابل کپی)
 LINE PERSISTENCE VERIFICATION (10.12.10 — read-only)
 option_row = option_id=41372 autoload=off
 db_value(raw) = 'RUNNING'
 state()(logical) = 'RUNNING'
-cron_gate_rows = {"sti_gs_gate_watcher":"1788644623","sti_gs_gate_auto_worker":"1789094288"}
-cron_scheduled = {"worker":{"next_ts":1789094734,"in_sec":239},"watcher":{"next_ts":1789095754,"in_sec":1259}}
+cron_gate_rows = {"sti_gs_gate_watcher":"1788644623","sti_gs_gate_auto_worker":"1789155621"}
+cron_scheduled = {"worker":{"next_ts":1789155934,"in_sec":33},"watcher":{"next_ts":1789156954,"in_sec":1053}}
 invalid_option_modified_sql_present = {"includes\/golden-scan\/class-gs-line.php":false,"includes\/golden-scan\/class-gs-cron-gate.php":false}
 verdicts = {"row_exists":true,"db_value_valid":true,"logical_matches_db":true,"gate_rows_present":true,"invalid_sql_removed":true,"worker_cron_scheduled":true,"watcher_cron_scheduled":true}
-recent_persistence_logs = [{"id":"15178","level":"info","message":"CRON_GATE name=auto_worker prev=1789094288 write_affected=0 read_back=1789094288 result=BLOCKED","created_at":"2026-09-11 06:10:45"},{"id":"15177","level":"info","message":"AUTO_WORKER_TICK enabled=true line=RUNNING safe_mode=false halted=false active=0 max_active=1 eligible_queue=107","created_at":"2026-09-11 06:10:45"},{"id":"15175","level":"info","message":"CRON_GATE name=watchdog prev=1789092977 write_affected=1 read_back=1789094307 result=PASS","created_at":"2026-09-11 06:08:27"},{"id":"15174","level":"info","message":"AUTO_WORKER_DEFER session=#80 state=SCANNED delay=1344s interval=896s factor=1.5 next=2026-09-11 06:30:51 reason=waiting_backoff","created_at":"2026-09-11 06:08:27"},{"id":"15173","level":"info","message":"AUTO_WORKER_STAGE session=#80 from=SCANNED to=SCANNED result=skipped","created_at":"2026-09-11 06:08:27"},{"id":"15172","level":"info","message":"AUTO_WORKER_DEFER session=#79 state=SCANNED delay=1344s interval=896s factor=1.5 next=2026-09-11 06:30:51 reason=waiting_backoff","created_at":"2026-09-11 06:08:27"},{"id":"15171","level":"info","message":"AUTO_WORKER_STAGE session=#79 from=SCANNED to=SCANNED result=skipped","created_at":"2026-09-11 06:08:27"},{"id":"15170","level":"info","message":"AUTO_WORKER_STAGE session=#68 from=CHAIN_WAITING to=CHAIN_WAITING result=waiting","created_at":"2026-09-11 06:08:27"},{"id":"15157","level":"info","message":"AUTO_WORKER_PICK: selected=6 ids=[68,69,70,78,79,80]","created_at":"2026-09-11 06:08:08"},{"id":"15154","level":"info","message":"CRON_GATE name=auto_worker prev=1789093392 write_affected=1 read_back=1789094288 result=PASS","created_at":"2026-09-11 06:08:08"},{"id":"15153","level":"info","message":"AUTO_WORKER_TICK enabled=true line=RUNNING safe_mode=false halted=false active=0 max_active=1 eligible_queue=109","created_at":"2026-09-11 06:08:08"},{"id":"15150","level":"info","message":"CRON_GATE name=auto_worker prev=1789093392 write_affected=0 read_back=1789093392 result=BLOCKED","created_at":"2026-09-11 05:55:36"},{"id":"15149","level":"info","message":"AUTO_WORKER_TICK enabled=true line=RUNNING safe_mode=false halted=false active=0 max_active=1 eligible_queue=109","created_at":"2026-09-11 05:55:36"},{"id":"15146","level":"info","message":"AUTO_WORKER_STAGE session=#68 from=CHAIN_WAITING to=CHAIN_WAITING result=waiting","created_at":"2026-09-11 05:53:30"},{"id":"15133","level":"info","message":"AUTO_WORKER_PICK: selected=1 ids=[68]","created_at":"2026-09-11 05:53:12"},{"id":"15130","level":"info","message":"CRON_GATE name=auto_worker prev=1789092938 write_affected=1 read_back=1789093392 result=PASS","created_at":"2026-09-11 05:53:12"},{"id":"15129","level":"info","message":"AUTO_WORKER_TICK enabled=true line=RUNNING safe_mode=false halted=false active=0 max_active=1 eligible_queue=109","created_at":"2026-09-11 05:53:12"},{"id":"15128","level":"info","message":"CRON_GATE name=watchdog prev=1789092977 write_affected=0 read_back=1789092977 result=BLOCKED","created_at":"2026-09-11 05:53:12"},{"id":"15126","level":"info","message":"CRON_GATE name=watchdog prev=1789091091 write_affected=1 read_back=1789092977 result=PASS","created_at":"2026-09-11 05:46:17"},{"id":"15125","level":"info","message":"AUTO_WORKER_DEFER session=#68 state=CHAIN_WAITING delay=360s interval=300s factor=1.2 next=2026-09-11 05:52:17 reason=waiting_backoff","created_at":"2026-09-11 05:46:17"},{"id":"15124","level":"info","message":"AUTO_WORKER_STAGE session=#68 from=CHAIN_WAITING to=CHAIN_WAITING result=waiting","created_at":"2026-09-11 05:46:17"},{"id":"15111","level":"info","message":"AUTO_WORKER_PICK: selected=1 ids=[68]","created_at":"2026-09-11 05:45:38"},{"id":"15108","level":"info","message":"CRON_GATE name=auto_worker prev=1789091072 write_affected=1 read_back=1789092938 result=PASS","created_at":"2026-09-11 05:45:38"},{"id":"15107","level":"info","message":"AUTO_WORKER_TICK enabled=true line=RUNNING safe_mode=false halted=false active=0 max_active=1 eligible_queue=109","created_at":"2026-09-11 05:45:38"},{"id":"15106","level":"info","message":"CRON_GATE name=watchdog prev=1789090176 write_affected=1 read_back=1789091091 result=PASS","created_at":"2026-09-11 05:14:51"},{"id":"15105","level":"info","message":"AUTO_WORKER_STAGE session=#68 from=CHAIN_WAITING to=CHAIN_WAITING result=waiting","created_at":"2026-09-11 05:14:51"},{"id":"15092","level":"info","message":"AUTO_WORKER_PICK: selected=1 ids=[68]","created_at":"2026-09-11 05:14:32"},{"id":"15089","level":"info","message":"CRON_GATE name=auto_worker prev=1789090134 write_affected=1 read_back=1789091072 result=PASS","created_at":"2026-09-11 05:14:32"},{"id":"15088","level":"info","message":"AUTO_WORKER_TICK enabled=true line=RUNNING safe_mode=false halted=false active=0 max_active=1 eligible_queue=109","created_at":"2026-09-11 05:14:32"},{"id":"15087","level":"info","message":"CRON_GATE name=watchdog prev=1789088586 write_affected=1 read_back=1789090176 result=PASS","created_at":"2026-09-11 04:59:36"},{"id":"15086","level":"info","message":"AUTO_WORKER_STAGE session=#68 from=CHAIN_WAITING to=CHAIN_WAITING result=waiting","created_at":"2026-09-11 04:59:36"},{"id":"15071","level":"info","message":"AUTO_WORKER_PICK: selected=1 ids=[68]","created_at":"2026-09-11 04:58:54"},{"id":"15068","level":"info","message":"CRON_GATE name=auto_worker prev=1789088586 write_affected=1 read_back=1789090134 result=PASS","created_at":"2026-09-11 04:58:54"},{"id":"15067","level":"info","message":"AUTO_WORKER_TICK enabled=true line=RUNNING safe_mode=false halted=false active=0 max_active=1 eligible_queue=109","created_at":"2026-09-11 04:58:54"},{"id":"15066","level":"info","message":"AUTO_WORKER_STAGE session=#68 from=CHAIN_WAITING to=CHAIN_WAITING result=waiting","created_at":"2026-09-11 04:33:23"},{"id":"15053","level":"info","message":"AUTO_WORKER_PICK: selected=1 ids=[68]","created_at":"2026-09-11 04:33:06"},{"id":"15050","level":"info","message":"CRON_GATE name=auto_worker prev=1789083072 write_affected=1 read_back=1789088586 result=PASS","created_at":"2026-09-11 04:33:06"},{"id":"15049","level":"info","message":"AUTO_WORKER_TICK enabled=true line=RUNNING safe_mode=false halted=false active=0 max_active=1 eligible_queue=109","created_at":"2026-09-11 04:33:06"},{"id":"15048","level":"info","message":"CRON_GATE name=watchdog prev=1789083086 write_affected=1 read_back=1789088586 result=PASS","created_at":"2026-09-11 04:33:06"},{"id":"15047","level":"info","message":"CRON_GATE name=watchdog prev=1789079294 write_affected=1 read_back=1789083086 result=PASS","created_at":"2026-09-11 03:01:26"}]
+recent_persistence_logs = [{"id":"15470","level":"info","message":"CRON_GATE name=auto_worker prev=1789155621 write_affected=0 read_back=1789155621 result=BLOCKED","created_at":"2026-09-11 23:12:01"},{"id":"15469","level":"info","message":"AUTO_WORKER_TICK enabled=true line=RUNNING safe_mode=false halted=false active=0 max_active=1 eligible_queue=108","created_at":"2026-09-11 23:12:01"},{"id":"15468","level":"info","message":"CRON_GATE name=watchdog prev=1789149873 write_affected=1 read_back=1789155639 result=PASS","created_at":"2026-09-11 23:10:39"},{"id":"15467","level":"info","message":"AUTO_WORKER_STAGE session=#68 from=CHAIN_WAITING to=CHAIN_WAITING result=waiting","created_at":"2026-09-11 23:10:39"},{"id":"15454","level":"info","message":"AUTO_WORKER_PICK: selected=6 ids=[68,69,78,79,80,81]","created_at":"2026-09-11 23:10:21"},{"id":"15451","level":"info","message":"CRON_GATE name=auto_worker prev=1789149858 write_affected=1 read_back=1789155621 result=PASS","created_at":"2026-09-11 23:10:21"},{"id":"15450","level":"info","message":"AUTO_WORKER_TICK enabled=true line=RUNNING safe_mode=false halted=false active=0 max_active=1 eligible_queue=108","created_at":"2026-09-11 23:10:21"},{"id":"15449","level":"info","message":"CRON_GATE name=watchdog prev=1789147658 write_affected=1 read_back=1789149873 result=PASS","created_at":"2026-09-11 21:34:33"},{"id":"15448","level":"info","message":"AUTO_WORKER_STAGE session=#68 from=CHAIN_WAITING to=CHAIN_WAITING result=waiting","created_at":"2026-09-11 21:34:33"},{"id":"15435","level":"info","message":"AUTO_WORKER_PICK: selected=6 ids=[68,69,78,79,80,81]","created_at":"2026-09-11 21:34:18"},{"id":"15432","level":"info","message":"CRON_GATE name=auto_worker prev=1789147640 write_affected=1 read_back=1789149858 result=PASS","created_at":"2026-09-11 21:34:18"},{"id":"15431","level":"info","message":"AUTO_WORKER_TICK enabled=true line=RUNNING safe_mode=false halted=false active=0 max_active=1 eligible_queue=108","created_at":"2026-09-11 21:34:18"},{"id":"15430","level":"info","message":"CRON_GATE name=watchdog prev=1789143310 write_affected=1 read_back=1789147658 result=PASS","created_at":"2026-09-11 20:57:38"},{"id":"15429","level":"info","message":"AUTO_WORKER_STAGE session=#68 from=CHAIN_WAITING to=CHAIN_WAITING result=waiting","created_at":"2026-09-11 20:57:38"},{"id":"15416","level":"info","message":"AUTO_WORKER_PICK: selected=6 ids=[68,69,78,79,80,81]","created_at":"2026-09-11 20:57:20"},{"id":"15413","level":"info","message":"CRON_GATE name=auto_worker prev=1789143270 write_affected=1 read_back=1789147640 result=PASS","created_at":"2026-09-11 20:57:20"},{"id":"15412","level":"info","message":"AUTO_WORKER_TICK enabled=true line=RUNNING safe_mode=false halted=false active=0 max_active=1 eligible_queue=108","created_at":"2026-09-11 20:57:20"},{"id":"15411","level":"info","message":"CRON_GATE name=watchdog prev=1789141223 write_affected=1 read_back=1789143310 result=PASS","created_at":"2026-09-11 19:45:10"},{"id":"15410","level":"info","message":"AUTO_WORKER_DEFER session=#68 state=CHAIN_WAITING delay=3161s interval=2634s factor=1.2 next=2026-09-11 20:37:51 reason=waiting_backoff","created_at":"2026-09-11 19:45:10"},{"id":"15409","level":"info","message":"AUTO_WORKER_STAGE session=#68 from=CHAIN_WAITING to=CHAIN_WAITING result=waiting","created_at":"2026-09-11 19:45:10"},{"id":"15394","level":"info","message":"AUTO_WORKER_PICK: selected=6 ids=[68,69,78,79,80,81]","created_at":"2026-09-11 19:44:30"},{"id":"15391","level":"info","message":"CRON_GATE name=auto_worker prev=1789141182 write_affected=1 read_back=1789143270 result=PASS","created_at":"2026-09-11 19:44:30"},{"id":"15390","level":"info","message":"AUTO_WORKER_TICK enabled=true line=RUNNING safe_mode=false halted=false active=0 max_active=1 eligible_queue=108","created_at":"2026-09-11 19:44:30"},{"id":"15389","level":"info","message":"CRON_GATE name=watchdog prev=1789140255 write_affected=1 read_back=1789141223 result=PASS","created_at":"2026-09-11 19:10:23"},{"id":"15388","level":"info","message":"AUTO_WORKER_STAGE session=#68 from=CHAIN_WAITING to=CHAIN_WAITING result=waiting","created_at":"2026-09-11 19:10:23"},{"id":"15374","level":"info","message":"AUTO_WORKER_PICK: selected=6 ids=[68,69,78,79,80,81]","created_at":"2026-09-11 19:09:42"},{"id":"15371","level":"info","message":"CRON_GATE name=auto_worker prev=1789140235 write_affected=1 read_back=1789141182 result=PASS","created_at":"2026-09-11 19:09:42"},{"id":"15370","level":"info","message":"AUTO_WORKER_TICK enabled=true line=RUNNING safe_mode=false halted=false active=0 max_active=1 eligible_queue=108","created_at":"2026-09-11 19:09:42"},{"id":"15369","level":"info","message":"CRON_GATE name=watchdog prev=1789136300 write_affected=1 read_back=1789140255 result=PASS","created_at":"2026-09-11 18:54:15"},{"id":"15368","level":"info","message":"AUTO_WORKER_STAGE session=#68 from=CHAIN_WAITING to=CHAIN_WAITING result=waiting","created_at":"2026-09-11 18:54:15"},{"id":"15355","level":"info","message":"AUTO_WORKER_PICK: selected=6 ids=[68,69,78,79,80,81]","created_at":"2026-09-11 18:53:55"},{"id":"15352","level":"info","message":"CRON_GATE name=auto_worker prev=1789136261 write_affected=1 read_back=1789140235 result=PASS","created_at":"2026-09-11 18:53:55"},{"id":"15351","level":"info","message":"AUTO_WORKER_TICK enabled=true line=RUNNING safe_mode=false halted=false active=0 max_active=1 eligible_queue=108","created_at":"2026-09-11 18:53:55"},{"id":"15350","level":"info","message":"CRON_GATE name=watchdog prev=1789135035 write_affected=1 read_back=1789136300 result=PASS","created_at":"2026-09-11 17:48:20"},{"id":"15349","level":"info","message":"AUTO_WORKER_STAGE session=#68 from=CHAIN_WAITING to=CHAIN_WAITING result=waiting","created_at":"2026-09-11 17:48:20"},{"id":"15336","level":"info","message":"AUTO_WORKER_PICK: selected=6 ids=[68,69,78,79,80,81]","created_at":"2026-09-11 17:47:41"},{"id":"15333","level":"info","message":"CRON_GATE name=auto_worker prev=1789134991 write_affected=1 read_back=1789136261 result=PASS","created_at":"2026-09-11 17:47:41"},{"id":"15332","level":"info","message":"AUTO_WORKER_TICK enabled=true line=RUNNING safe_mode=false halted=false active=0 max_active=1 eligible_queue=108","created_at":"2026-09-11 17:47:41"},{"id":"15331","level":"info","message":"CRON_GATE name=watchdog prev=1789128263 write_affected=1 read_back=1789135035 result=PASS","created_at":"2026-09-11 17:27:15"},{"id":"15330","level":"info","message":"AUTO_WORKER_STAGE session=#81 from=SCANNED to=BUTTON_FOUND result=advanced","created_at":"2026-09-11 17:27:15"}]
 PART 9 — create_from_profile_item Path
 PART 10 — Real Session Check (sample ≤ 10)
 rows	
@@ -443,18 +445,18 @@ worker_enabled	true
 line_state	RUNNING
 safe_mode	false
 halted	false
-cron_next_tick_ts	1789094734
-gate_last_ts	1789094288
+cron_next_tick_ts	1789155934
+gate_last_ts	1789155621
 active_sessions	0
 max_active	1
 max_active_blocked	false
 total	162
-terminal	53
+terminal	54
 locked	0
-retry_wait	2
+retry_wait	0
 eligible_for_worker	100
 already_processing	0
-blocked_for_worker	9
+blocked_for_worker	8
 eligible_sample	
 [0] 
 id	68
@@ -465,42 +467,42 @@ id	69
 state	CHAIN_WAITING
 attempts	0
 [2] 
-id	70
-state	WAITING_BOT
-attempts	1
-[3] 
 id	78
 state	WAITING_BOT
 attempts	1
+[3] 
+id	79
+state	BUTTON_FOUND
+attempts	0
 [4] 
-id	81
-state	SCANNED
+id	80
+state	BUTTON_FOUND
 attempts	0
 [5] 
+id	81
+state	BUTTON_FOUND
+attempts	0
+[6] 
 id	82
 state	SCANNED
 attempts	0
-[6] 
+[7] 
 id	86
 state	SCANNED
 attempts	0
-[7] 
+[8] 
 id	87
 state	SCANNED
 attempts	0
-[8] 
-id	89
-state	SCANNED
-attempts	0
 [9] 
-id	90
+id	89
 state	SCANNED
 attempts	0
 pick_condition	state NOT IN (terminal 6) AND (locked_until IS NULL OR < now) AND (next_retry_at IS NULL OR <= now) ORDER BY (attempts>=5) ASC, priority DESC, id ASC — class-gs-auto-worker.php L375-403
 tick_gates_lines	is_enabled L209 · line STOPPED/PAUSING L225/228 · Cron_Gate L267 · safe_mode L273 · halt L276 · active>=max L289 · pick L301
 PART 13 — Fiber / Memory
 Telegram (row G)
-generated_at=2026-09-11 06:11:35 · plugin_version=10.12.21
+generated_at=2026-09-11 23:15:01 · plugin_version=10.12.22
 Worker روشن
 هر 5 دقیقه · 1 Session در هر دور
 ⏸ خاموش کردن
@@ -509,16 +511,16 @@ Worker روشن
 ⟳ به‌روزرسانی
 وضعیت صف
 به‌روزرسانی زنده هر ۲۰ ثانیه
-92
+91
 در انتظار پردازش
-18
+19
 نیازمند بازبینی (NEEDS_REVIEW / فایل یافت‌نشده)
 📊 گزارش امروز
-مرحله جلو رفت	0
-منتظر پاسخ ربات	6
+مرحله جلو رفت	3
+منتظر پاسخ ربات	20
 کامل شد	0
-خطا خورد	0
-تعداد دورها	6
+خطا خورد	1
+تعداد دورها	21
 🔗 معماری زنجیره (Chain Mode) — v10.8
 گلدن اسکن حالا تلگرام را به‌صورت زنجیره‌ای می‌بیند: Telegram Node → Node → Node → Asset (مثلاً کانال → دکمه → PartyManagerBot → دکمه → FileechBot → فایل). این حالت فقط روی Sessionهای تازه اثر می‌گذارد؛ Sessionهای قدیمی و کانال‌های تک‌دکمه‌ای با حالت legacy بدون تغییر کار می‌کنند.
 
@@ -591,7 +593,7 @@ Execute Action — [recoverable] The channel was already closed!
 وضعیت Watcher
 5,810
 آماده‌ی ساخت Session
-109 / 100
+108 / 100
 صف ناتمام (فشار معکوس)
 0 / 200
 ساخته‌شده امروز
@@ -611,7 +613,7 @@ Execute Action — [recoverable] The channel was already closed!
 ترمیم‌شده امروز
 0
 صف مرده
-2
+0
 در صف تلاش دوباره
 حالت مهلت‌گذاری: 🟢 سیگنال — تماس قفل‌شده با خطای کنترل‌شده متوقف می‌شود و قفل بلافاصله آزاد می‌گردد.
 
