@@ -1,0 +1,13 @@
+{
+  "name": "Stickman Animation Studio",
+  "short_name": "Stickman Studio",
+  "description": "Write an English script, animate a stickman, export a real 1080p MP4 from your phone.",
+  "start_url": ".",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#05070b",
+  "theme_color": "#05070b",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

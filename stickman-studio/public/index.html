@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=5">
+<meta name="theme-color" content="#05070b">
+<meta name="description" content="Stickman Animation Studio — write a script, animate a stickman, export a real 1080p MP4 from your phone.">
+<title>Stickman Animation Studio</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-row">
+    <div class="brand">
+      <svg class="brand-glyph" viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="12" cy="5" r="3"></circle>
+        <path d="M12 8v7M12 15l-3.5 5M12 15l3.5 5M6.5 11.5L12 10l5.5 1.5"></path>
+      </svg>
+      <div class="brand-text">
+        <strong>Stickman Studio</strong>
+        <span id="projectTitleLabel">Untitled story</span>
+      </div>
+    </div>
+    <button id="menuBtn" class="icon-btn" aria-label="Menu" aria-expanded="false">
+      <svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+    </button>
+  </div>
+  <div class="topbar-status" id="statusRow">
+    <span class="chip" id="chipFfmpeg">FFmpeg: checking…</span>
+    <span class="chip" id="chipDuration">—</span>
+    <span class="chip" id="chipJobs" hidden>—</span>
+  </div>
+</header>
+
+<nav class="drawer" id="drawer" hidden>
+  <button class="drawer-item" data-jump="tab-script">Script → storyboard</button>
+  <button class="drawer-item" data-jump="tab-scene">Scene editor</button>
+  <button class="drawer-item" data-jump="tab-audio">Audio &amp; narration</button>
+  <button class="drawer-item" data-jump="tab-export">Export MP4</button>
+  <button class="drawer-item" data-jump="tab-project">Save / load / source</button>
+  <button class="drawer-item" id="drawerDemo">Load the 15s demo</button>
+  <button class="drawer-item" id="drawerHint">How it works</button>
+</nav>
+
+<main>
+  <!-- ======================= PREVIEW ======================= -->
+  <section class="stage-wrap">
+    <div class="stage" id="stage">
+      <canvas id="preview" width="960" height="540" aria-label="Animation preview"></canvas>
+      <div class="stage-overlay" id="stageOverlay" hidden>
+        <div class="overlay-card" id="overlayCard">Rendering…</div>
+      </div>
+    </div>
+
+    <div class="transport">
+      <button class="tbtn" id="btnStart" aria-label="Go to start">
+        <svg viewBox="0 0 24 24"><path d="M6 5v14M19 5l-10 7 10 7z"/></svg>
+      </button>
+      <button class="tbtn" id="btnPrev" aria-label="Previous scene">
+        <svg viewBox="0 0 24 24"><path d="M16 5l-9 7 9 7zM8 5v14"/></svg>
+      </button>
+      <button class="tbtn tbtn-play" id="btnPlay" aria-label="Play">
+        <svg id="icoPlay" viewBox="0 0 24 24"><path d="M7 4l13 8-13 8z"/></svg>
+        <svg id="icoPause" viewBox="0 0 24 24" hidden><path d="M7 4h4v16H7zM13 4h4v16h-4z"/></svg>
+      </button>
+      <button class="tbtn" id="btnNext" aria-label="Next scene">
+        <svg viewBox="0 0 24 24"><path d="M8 5l9 7-9 7zM16 5v14"/></svg>
+      </button>
+      <button class="tbtn" id="btnEnd" aria-label="Go to end">
+        <svg viewBox="0 0 24 24"><path d="M18 5v14M5 5l10 7-10 7z"/></svg>
+      </button>
+      <div class="time-code"><span id="timeCurrent">00:00.00</span> / <span id="timeTotal">00:15.00</span></div>
+      <label class="switch" title="Preview audio">
+        <input type="checkbox" id="previewAudio" checked>
+        <span>Audio</span>
+      </label>
+    </div>
+
+    <input type="range" id="seek" class="seek" min="0" max="15" step="0.01" value="0" aria-label="Seek">
+
+    <div class="scene-strip" id="sceneStrip" aria-label="Scenes"></div>
+    <p class="stage-meta">
+      <span id="previewInfo">Preview 960×540</span> ·
+      <label class="inline-select">Quality
+        <select id="previewQuality">
+          <option value="low">Low 640×360 (fastest on phones)</option>
+          <option value="medium" selected>Medium 960×540</option>
+          <option value="high">High 1280×720</option>
+        </select>
+      </label> ·
+      <span id="sceneInfo">Scene 1 / 5</span>
+    </p>
+  </section>
+
+  <!-- ======================= TABS ======================= -->
+  <nav class="tabs" role="tablist">
+    <button role="tab" class="tab is-active" data-tab="tab-script">Script</button>
+    <button role="tab" class="tab" data-tab="tab-scene">Scene</button>
+    <button role="tab" class="tab" data-tab="tab-audio">Audio</button>
+    <button role="tab" class="tab" data-tab="tab-export">Export</button>
+    <button role="tab" class="tab" data-tab="tab-project">Project</button>
+  </nav>
+
+  <!-- ======================= SCRIPT ======================= -->
+  <section class="panel is-active" id="tab-script">
+    <h2>1 · Write the script (English)</h2>
+    <p class="hint">One paragraph or <code>Scene 1: …</code> per line. Mentioning “alarm”, “phone”, “bed”, “exercise”, “run”, “work”… picks the matching pose, prop and background automatically. Duration defaults to 3s per beat when you don't write one.</p>
+    <textarea id="scriptInput" rows="8" spellcheck="true" placeholder="Scene 1 (3s): A digital alarm clock reads 5:00 AM and rings while he sleeps.
+Scene 2 (2.6s): He reaches for his phone and crawls back into bed."></textarea>
+    <div class="row row-wrap">
+      <button class="btn primary" id="btnBuild">Build storyboard from script</button>
+      <button class="btn" id="btnDemo">Load 15s demo</button>
+      <button class="btn" id="btnExample">Insert example script</button>
+    </div>
+    <div class="field-grid">
+      <label>Target total length (seconds, 0 = keep as written)
+        <input type="number" id="targetDuration" min="0" max="180" step="1" value="15">
+      </label>
+      <label>Story title
+        <input type="text" id="storyTitle" value="Untitled story">
+      </label>
+    </div>
+    <div class="row">
+      <button class="btn" id="btnApplyTitle">Apply title</button>
+      <button class="btn" id="btnNormalize">Re-fit scene timings</button>
+    </div>
+  </section>
+
+  <!-- ======================= SCENE ======================= -->
+  <section class="panel" id="tab-scene">
+    <h2>2 · Scene editor</h2>
+    <div class="row row-wrap scene-tools">
+      <button class="btn small" id="btnAddScene">+ Add scene</button>
+      <button class="btn small" id="btnDupScene">Duplicate</button>
+      <button class="btn small danger" id="btnDelScene">Delete</button>
+      <button class="btn small" id="btnSceneUp">Move ◀</button>
+      <button class="btn small" id="btnSceneDown">Move ▶</button>
+      <span class="chip" id="sceneIndexChip">Scene 1 / 5</span>
+    </div>
+
+    <details open>
+      <summary>Beat &amp; duration</summary>
+      <div class="field-grid">
+        <label>Scene title <input type="text" id="scTitle"></label>
+        <label>Duration <output id="scDurOut" class="out">3.0s</output>
+          <input type="range" id="scDuration" min="0.5" max="15" step="0.1">
+        </label>
+        <label class="full">Description <textarea id="scDescription" rows="2"></textarea></label>
+        <label class="full">Narration line (spoken text / subtitle reference) <textarea id="scNarration" rows="2"></textarea></label>
+        <label>Background
+          <select id="scBackground"></select>
+        </label>
+        <label>Transition in
+          <select id="scTransIn">
+            <option value="cut">Cut</option>
+            <option value="fadeFromBlack">Fade from black</option>
+            <option value="dissolve">Dissolve (previous scene)</option>
+            <option value="barsOut">Cinematic bars open</option>
+          </select>
+        </label>
+        <label>Transition out
+          <select id="scTransOut">
+            <option value="cut">Cut</option>
+            <option value="fade">Fade to black</option>
+            <option value="fadeToWhite">Fade to white</option>
+            <option value="fadeToRed">Fade to red</option>
+            <option value="wipeLeft">Wipe left</option>
+            <option value="wipeRight">Wipe right</option>
+            <option value="wipeUp">Wipe up</option>
+            <option value="wipeDown">Wipe down</option>
+            <option value="flash">Flash out</option>
+            <option value="barsIn">Cinematic bars close</option>
+          </select>
+        </label>
+      </div>
+    </details>
+
+    <details>
+      <summary>Stickman — poses &amp; animation</summary>
+      <div id="actorList"></div>
+      <button class="btn small" id="btnAddClip">+ Add animation clip</button>
+      <p class="hint">Clips run back to back. “Morph” blends smoothly from one pose to the next; “loop” cycles a procedural action (walk, run, curl …) for its whole duration.</p>
+    </details>
+
+    <details>
+      <summary>Props</summary>
+      <div id="propList"></div>
+      <button class="btn small" id="btnAddProp">+ Add prop</button>
+    </details>
+
+    <details>
+      <summary>On-screen text</summary>
+      <div id="textList"></div>
+      <button class="btn small" id="btnAddText">+ Add text</button>
+      <p class="hint">Wrap words in <code>**double asterisks**</code> for red emphasis.</p>
+    </details>
+
+    <details>
+      <summary>Camera, lights, effects</summary>
+      <div class="field-grid">
+        <label>Camera zoom (start → end) <output id="camZoomOut" class="out"></output>
+          <input type="range" id="camZoomStart" min="0.6" max="2.6" step="0.02">
+          <input type="range" id="camZoomEnd" min="0.6" max="2.6" step="0.02">
+        </label>
+        <label>Camera pan X (start → end) <output id="camXOut" class="out"></output>
+          <input type="range" id="camXStart" min="0" max="10" step="0.05">
+          <input type="range" id="camXEnd" min="0" max="10" step="0.05">
+        </label>
+        <label>Camera pan Y (start → end) <output id="camYOut" class="out"></output>
+          <input type="range" id="camYStart" min="0.6" max="4.6" step="0.02">
+          <input type="range" id="camYEnd" min="0.6" max="4.6" step="0.02">
+        </label>
+        <label>Handheld drift <output id="camHandOut" class="out">0</output>
+          <input type="range" id="camHandheld" min="0" max="1.5" step="0.05">
+        </label>
+        <label class="full checkbox"><input type="checkbox" id="camShake"> Camera shake when the alarm rings (adds/removes a shake cue)</label>
+      </div>
+      <div id="lightList"></div>
+      <button class="btn small" id="btnAddLight">+ Add light</button>
+      <div id="effectList"></div>
+      <button class="btn small" id="btnAddEffect">+ Add effect</button>
+    </details>
+  </section>
+
+  <!-- ======================= AUDIO ======================= -->
+  <section class="panel" id="tab-audio">
+    <h2>3 · Music, sound effects &amp; narration</h2>
+    <p class="hint">Every sound is generated from code (deterministic synthesis) — no audio files, no API keys. The MP4 gets the exact same mix.</p>
+    <div class="field-grid">
+      <label>Master <output id="volMasterOut" class="out"></output>
+        <input type="range" id="volMaster" min="0" max="1.4" step="0.02">
+      </label>
+      <label>Music <output id="volMusicOut" class="out"></output>
+        <input type="range" id="volMusic" min="0" max="1.4" step="0.02">
+      </label>
+      <label>Sound effects <output id="volSfxOut" class="out"></output>
+        <input type="range" id="volSfx" min="0" max="1.4" step="0.02">
+      </label>
+      <label>Narration <output id="volNarrOut" class="out"></output>
+        <input type="range" id="volNarr" min="0" max="1.4" step="0.02">
+      </label>
+      <label class="checkbox"><input type="checkbox" id="muteMusic"> Mute music</label>
+      <label class="checkbox"><input type="checkbox" id="muteSfx"> Mute sound effects</label>
+      <label>Music bed
+        <select id="musicStyle">
+          <option value="dark-pulse">Dark pulse (A minor, 92 BPM)</option>
+          <option value="none">No music bed</option>
+        </select>
+      </label>
+      <label>Music tempo (BPM) <output id="musicBpmOut" class="out"></output>
+        <input type="range" id="musicBpm" min="60" max="140" step="1">
+      </label>
+    </div>
+
+    <h3>Narration (optional)</h3>
+    <p class="hint">This app does not fake text-to-speech. Record your own voice or use any TTS you like, then upload the audio file here — it is muxed into the MP4 at the volume above.</p>
+    <div class="row row-wrap">
+      <input type="file" id="narrFile" accept="audio/*">
+      <button class="btn small" id="btnNarrUpload">Upload narration</button>
+      <button class="btn small" id="btnNarrRemove">Remove</button>
+      <audio id="narrPlayer" controls hidden></audio>
+    </div>
+    <p class="hint" id="narrStatus">No narration file uploaded.</p>
+
+    <h3>Sound cues in this project</h3>
+    <div id="cueList"></div>
+    <p class="hint">Cue types: alarm beeps, room tone, blanket rustle, chime, boom, heartbeat, riser, whoosh, footsteps, clink, thunder, horn, music.</p>
+    <div class="row row-wrap">
+      <button class="btn small" id="btnPreviewAudio">▶ Play the mix from the preview position</button>
+      <a class="btn small" id="btnAudioDownload" href="#" download="stickman-audio.wav">⬇ Download mix (WAV)</a>
+    </div>
+  </section>
+
+  <!-- ======================= EXPORT ======================= -->
+  <section class="panel" id="tab-export">
+    <h2>4 · Export a real MP4</h2>
+    <p class="hint">The server renders every frame with the same deterministic engine you just previewed, pipes raw frames into FFmpeg (libx264) and muxes the generated audio. No paid service or API key is involved.</p>
+    <div class="field-grid">
+      <label>Resolution
+        <select id="expSize">
+          <option value="1920x1080">1080p — 1920×1080 (final)</option>
+          <option value="1280x720">720p — 1280×720 (fast)</option>
+          <option value="960x540">540p — 960×540 (draft)</option>
+        </select>
+      </label>
+      <label>Frame rate
+        <select id="expFps">
+          <option value="30">30 fps (YouTube standard)</option>
+          <option value="24">24 fps (cinematic)</option>
+        </select>
+      </label>
+      <label>Quality (CRF, lower = better)
+        <input type="number" id="expCrf" min="12" max="28" step="1" value="18">
+      </label>
+      <label class="checkbox"><input type="checkbox" id="expAudio" checked> Include generated audio (AAC)</label>
+      <label class="checkbox"><input type="checkbox" id="expNarration"> Include uploaded narration</label>
+      <label class="checkbox"><input type="checkbox" id="expGrain" checked> Film grain</label>
+    </div>
+    <div class="row row-wrap">
+      <button class="btn primary big" id="btnRender">Render MP4</button>
+      <button class="btn danger" id="btnCancel" hidden>Cancel render</button>
+    </div>
+
+    <div class="progress-wrap" id="progressWrap" hidden>
+      <div class="progress"><div class="progress-bar" id="progressBar"></div></div>
+      <p class="hint" id="progressText">Starting…</p>
+    </div>
+
+    <div id="renderResult" hidden>
+      <h3>Finished</h3>
+      <div id="renderResultBody" class="result-card"></div>
+      <a class="btn primary big" id="btnDownloadMp4" download>⬇ Download MP4</a>
+      <video id="resultVideo" controls playsinline preload="metadata"></video>
+    </div>
+
+    <h3>Previous exports</h3>
+    <div id="exportList"></div>
+  </section>
+
+  <!-- ======================= PROJECT ======================= -->
+  <section class="panel" id="tab-project">
+    <h2>5 · Save, reopen and download everything</h2>
+    <div class="row row-wrap">
+      <button class="btn primary" id="btnSaveProject">Save to server</button>
+      <button class="btn" id="btnSaveAs">Save as…</button>
+      <button class="btn" id="btnExportJson">⬇ Download project JSON</button>
+      <label class="btn file-btn">⬆ Open JSON file<input type="file" id="importJson" accept="application/json,.json"></label>
+      <button class="btn" id="btnNewProject">New empty project</button>
+    </div>
+    <p class="hint">Projects are plain editable JSON (schema <code id="schemaLabel">stickman-studio/project@1</code>). The browser keeps a local autosave too, so a refresh never loses work.</p>
+
+    <h3>Projects on the server</h3>
+    <div id="projectList"></div>
+
+    <h3>Source code &amp; assets</h3>
+    <p class="hint">Everything that renders this film is plain HTML/CSS/JS plus one Node server. Download the whole studio (source, fonts, scripts, docs) as a single zip:</p>
+    <a class="btn" href="/api/source.zip" download="stickman-animation-studio.zip">⬇ Download source zip</a>
+    <h3>Costs &amp; accounts</h3>
+    <ul class="hint">
+      <li><strong>No paid service or API key is required</strong> for preview, audio synthesis or MP4 export.</li>
+      <li>FFmpeg is resolved automatically: <code>$FFMPEG_PATH</code> → system <code>ffmpeg</code> → the <code>@ffmpeg-installer</code> npm package → a one-time download of the same public static build.</li>
+      <li>Optional: narration needs a voice recording (your own mic, or any TTS you already pay for). Nothing in the app is gated behind an account.</li>
+    </ul>
+  </section>
+</main>
+
+<footer class="footer">
+  <span>Stickman Animation Studio v1.0</span> · <span id="footerInfo">deterministic renderer · FFmpeg MP4</span>
+</footer>
+
+<script src="shared/core.js"></script>
+<script src="shared/render.js"></script>
+<script src="shared/story.js"></script>
+<script src="shared/audio.js"></script>
+<script src="js/preview.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,32 @@
+{
+  "name": "stickman-animation-studio",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Mobile-first studio for creating English motivational stickman animations and exporting real 1080p MP4 files.",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "test": "node scripts/test-render.js 1920 1080 final",
+    "test:fast": "node scripts/test-render.js 960 540 draft",
+    "test:ui": "node scripts/test-ui.js",
+    "test:api": "node scripts/test-api.js",
+    "test:parser": "node scripts/test-parser.js",
+    "check:browser": "node scripts/check-browser-env.js",
+    "contact-sheet": "node scripts/contact-sheet.js",
+    "setup-ffmpeg": "node scripts/setup-ffmpeg.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@napi-rs/canvas": "^0.1.65",
+    "adm-zip": "^0.6.1",
+    "express": "^4.19.2"
+  },
+  "optionalDependencies": {
+    "@ffmpeg-installer/ffmpeg": "^1.1.0"
+  },
+  "devDependencies": {
+    "jsdom": "^30.1.2"
+  }
+}

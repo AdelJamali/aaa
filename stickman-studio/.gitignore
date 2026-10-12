@@ -1,0 +1,9 @@
+node_modules/
+vendor/
+data/exports/*.mp4
+data/test/
+data/media/
+*.log
+.DS_Store
+data/exports/*.json
+data/projects/*.json
