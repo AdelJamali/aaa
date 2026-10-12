@@ -178,9 +178,14 @@ app.post('/api/render', async (req, res) => {
         downloadUrl: '/api/export/' + encodeURIComponent(file)
       };
     } catch (e) {
-      job.status = e.message === 'cancelled' ? 'cancelled' : 'error';
-      job.error = e.message;
-      console.error('[render] failed', e);
+      if (e.message === 'cancelled') {
+        job.status = 'cancelled';
+        console.log('[render] job ' + job.id + ' cancelled by request');
+      } else {
+        job.status = 'error';
+        job.error = e.message;
+        console.error('[render] failed', e);
+      }
     }
   })();
 });
